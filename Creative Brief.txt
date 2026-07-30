@@ -1,0 +1,214 @@
+Cellular Automata Granular Audio Engine - Creative Brief
+Project Overview
+This project is an experimental web-based audiovisual instrument that transforms source audio into an emergent granular soundscape using Cellular Automata (CA) simulations.
+The core philosophy of the project is extremely important:
+The audio must NOT be controlled by the Cellular Automata. The audio IS the Cellular Automata.
+This is not a granular synthesizer being modulated by visuals, nor is it a sonification of pixels. Both the visuals and audio are simply two sensory representations of the same underlying mathematical system.
+The visual output and the audio output should be mathematically inseparable.
+
+Core Design Philosophy
+We are NOT building:
+Visuals -> control audio
+Cellular Automata -> modulate granular synthesis
+Sonification of colour values
+Artistic mappings between image and sound
+We ARE building:
+One Cellular Automata universe
+One shared mathematical state
+Two renderers:
+Visual Renderer
+Audio Renderer
+Every sonic event must be directly derived from the underlying CA mathematics.
+No audio-specific behaviour should be invented that is not already implicit in the simulation itself.
+If the visual simulation was removed, the audio engine should still make sense mathematically. Likewise, if the audio engine was removed, the visual simulation should still behave identically.
+
+Visual Engine
+The visual simulation should use the existing open-source Utomata project (https://utomata.net/) as the underlying Cellular Automata engine. Specifically in the https://utomata.net/lab/ there are a selection of presets called ‘Type U’, the format of this series of algorithms is: ’U(sub(add(V24.b,V24.b),mlt(V24.r,V4.b)’.
+The CA engine provides:
+RGB values for every cell
+Neighbour relationships
+Temporal evolution
+Global simulation state
+editable CA equations
+The audio engine should simply observe the state of the simulation every frame.
+
+Audio Philosophy
+Granular synthesis is simply the chosen method of listening to the Cellular Automata.
+Audio grains are NOT independent entities with their own behaviour.
+All grain properties are derived from:
+Cell state
+Spatial relationships
+Temporal relationships
+Global simulation state
+No grain property may exist unless it can be mathematically derived from the CA simulation.
+
+AUDIO ARCHITECTURE
+The audio engine is divided into four layers.
+
+Layer 1 - Cell State
+These are the direct RGB values of each cell.
+These values define the TIMBRE of the grain only.
+
+Spectral Position
+R determines where within the source audio's spectral content the grain should be focused.
+Potential implementations:
+Frequency band selection
+Spectral masking
+FFT bin selection
+Harmonic emphasis
+The implementation is flexible, but R should always control spectral colour rather than utility parameters.
+
+Sample Position
+G determines the playback position within the source audio.
+For example:
+0 = start of sample
+1 = end of sample
+This provides direct granular sampling behaviour.
+
+Spectral Texture
+B determines the texture of the grain.
+Possible implementations include:
+Window shape
+Spectral blur
+Harmonicity
+Spectral smoothness
+Grain texture characteristics
+B should never control:
+Volume
+Grain length
+Voice allocation
+The RGB values should exclusively determine the sonic character of the audio grain.
+
+Layer 2 - Spatial Relationships
+Spatial relationships are derived from neighbouring cells.
+Potential measurements include:
+Neighbour similarity
+Neighbour variance
+Neighbour energy
+These define:
+
+
+Grain Length
+Large coherent areas of the simulation should naturally produce longer grains.
+Highly differentiated areas should naturally produce shorter grains.
+The grain length should emerge from the local relationships between cells rather than from an RGB value.
+
+Grain Overlap
+Neighbour variance should determine how grains blend together.
+Examples:
+Stable regions:
+Higher overlap
+More continuous textures
+Rapidly evolving regions:
+Less overlap
+More granular textures
+
+Voice Sharing
+Large coherent regions should share voices.
+The system should not allocate one voice per cell.
+Instead:
+Large areas of similar cells should be represented efficiently.
+Stable structures should sound large and coherent.
+Voice allocation should be proportional to information density rather than cell count.
+This is NOT shape detection.
+Voice allocation must only use local mathematical relationships already present within the simulation.
+
+Layer 3 - Temporal Relationships
+Temporal relationships are derived from previous cell states.
+Potential measurements:
+How long has the cell existed in its current state?
+How rapidly is the cell changing?
+How stable has the cell been over time?
+These define:
+
+
+Voice Persistence
+Stable cells should not continuously retrigger audio unnecessarily.
+A temporally stable region should gradually become:
+More sustained
+Less retriggered
+Longer in duration
+
+Retrigger Rate
+Rapidly changing areas should naturally produce:
+Faster retrigger rates
+More active granular behaviour
+Again, this is not intended to prioritise chaos over stability. It is simply a mathematically faithful representation of how information evolves through time.
+
+Information Density
+Information density is a key concept.
+How much unique computational information exists in a particular region of the simulation?
+Factors may include:
+Spatial variance
+Temporal variance
+Energy distribution
+Information density will ultimately inform voice allocation.
+
+Layer 4 - Global Relationships
+Global relationships are derived from the entire simulation.
+Potential measurements include:
+Total simulation energy
+Total information density
+Number of active regions
+These define:
+
+
+Master Gain
+The audio engine should normalise itself against the total energy of the simulation.
+This ensures:
+Consistent output levels
+No clipping
+Dynamic redistribution of energy as the simulation evolves
+The simulation should effectively contain a finite amount of sonic energy that is constantly being redistributed.
+
+Maximum Simultaneous Voices
+The audio engine should dynamically manage voice allocation.
+Rather than:
+
+One cell = One voice
+
+The engine should attempt to allocate voices based on:
+Information density
+Temporal behaviour
+Spatial coherence
+The goal is to faithfully represent the simulation while remaining computationally practical.
+
+Voice Allocation Philosophy
+The audio engine should never ask:
+What sound should this cell make?
+Instead it should ask:
+What information is present in this part of the simulation and how can it be faithfully represented sonically?
+Large coherent regions should not produce thousands of simultaneous grains.
+Likewise, chaotic regions should not automatically become louder or more prominent.
+The system should remain neutral and mathematically faithful to the simulation.
+
+Source Audio
+The user should be able to load:
+WAV
+MP3
+AIFF
+The source audio is atomised into a granular source buffer.
+The Cellular Automata simulation continuously explores and redistributes this source material.
+No traditional DSP effects are required in Version 1.
+
+Implementation Requirements
+Version 1 should be implemented as a browser-based web application.
+Suggested technologies:
+Utomata (Cellular Automata visual engine)
+WebGL / Canvas for rendering
+Web Audio API
+AudioWorklet for granular synthesis
+JavaScript / TypeScript
+Vite or similar development environment
+The visual engine should remain fully interactive and allow users to:
+Move through variations of CA equations
+Restart/reset the simulation
+Load source audio
+Observe the evolving audiovisual output in real time
+
+Final Creative Goal
+The goal of this project is to create an audiovisual instrument that behaves as a miniature computational universe.
+The beauty of the visuals should emerge from simple local relationships between cells.
+The beauty of the sound should emerge from those exact same relationships.
+The audio is not a musical interpretation of the visuals.
+It is simply another way of listening to the mathematics of emergence.
