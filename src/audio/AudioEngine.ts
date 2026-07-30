@@ -136,9 +136,12 @@ export class AudioEngine {
   sendPlan(plan: VoicePlan): void {
     this.lastPlan = plan;
     if (!this.node || !this.bank) return;
+    // V2: x/y → topology in worklet; r/g/b → density/complexity/coherence material.
     this.node.port.postMessage({
       type: "plan",
       masterGain: plan.masterGain,
+      gridWidth: plan.gridWidth,
+      gridHeight: plan.gridHeight,
       voices: plan.voices.map((v) => ({
         r: v.r,
         g: v.g,

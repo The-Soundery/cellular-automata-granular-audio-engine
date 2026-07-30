@@ -1,9 +1,9 @@
-/** Offline spectral bin bank for Layer 1 (R selects bin; B adds blur in the worklet). */
+/** Offline spectral bin bank — V2 worklet selects by Y; RGB organises material around that center. */
 
 export const SPECTRAL_BIN_COUNT = 48;
 export const BIN_FREQ_LOW = 80;
 export const BIN_FREQ_HIGH = 15000;
-/** Design Q for offline bandpass centers — higher = narrower, clearer R motion. */
+/** Design Q for offline bandpass centers — higher = narrower, clearer Y spectral motion. */
 export const BIN_DESIGN_Q = 4.5;
 
 export interface SpectralBank {

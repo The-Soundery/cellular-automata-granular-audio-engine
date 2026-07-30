@@ -1,10 +1,14 @@
 /**
- * AudioWorklet grain executor — no realtime FFT.
+ * AudioWorklet grain executor — V2 topological sonification.
  *
- * Performance rules (stutter fixes):
- * - Iterate only active voices (not the full pool every sample)
+ * Layer 1 — Topology: X → sample position, Y → spectral position
+ * Layer 2 — Timbral material: R density, G complexity, B coherence
+ * Layers 3–4 — overlap / persistence drive cloud density & retrigger
+ *
+ * Performance rules:
+ * - Iterate only active voices
  * - Precompute spectral bin weights once per grain trigger
- * - Single pass to fill the grain (no double energy scan)
+ * - Single pass to fill the grain
  * - Hard caps on polyphony and triggers per quantum
  */
 
@@ -12,7 +16,6 @@ const MAX_VOICES = 32;
 const GRAIN_CAP = 12288;
 const MAX_TRIGGERS_PER_BLOCK = 12;
 const GAIN_SMOOTH = 0.04;
-const BLUR_RADIUS = 3;
 const STATS_EVERY_BLOCKS = 8;
 
 class GrainVoice {
@@ -49,6 +52,8 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.pcm = null;
     this.length = 0;
     this.binCount = 0;
+    this.gridWidth = 128;
+    this.gridHeight = 128;
     this.sampleRate_ = sampleRate;
     this.masterGainTarget = 0;
     this.masterGain = 0;
@@ -95,6 +100,12 @@ class GrainProcessor extends AudioWorkletProcessor {
   applyPlan(msg) {
     this.masterGainTarget =
       typeof msg.masterGain === "number" ? msg.masterGain : 0;
+    if (typeof msg.gridWidth === "number" && msg.gridWidth > 1) {
+      this.gridWidth = msg.gridWidth | 0;
+    }
+    if (typeof msg.gridHeight === "number" && msg.gridHeight > 1) {
+      this.gridHeight = msg.gridHeight | 0;
+    }
     const list = msg.voices || [];
     this.activeCount = Math.min(list.length, MAX_VOICES);
     const n = this.activeCount || 1;
@@ -135,59 +146,94 @@ class GrainProcessor extends AudioWorkletProcessor {
     );
   }
 
+  /**
+   * Layer 3–4: overlap drives cloud density; persistence slows retrigger
+   * in temporally stable regions without collapsing wash stacking.
+   */
   triggerInterval(v, grainSamples) {
     const sr = this.sampleRate_;
-    // Layer 2: overlap drives grain-cloud density.
-    // High overlap (stable wash) → interval ≪ grain length → continuous cloud.
-    // Low overlap (edges) → sparser, more audible as discrete grains.
-    // Layer 3 persistence keeps voice identity sticky in FieldMetrics; it must NOT
-    // force gaps here (that made 140ms wash sound robotic).
     let advance;
     if (v.overlap >= 0.65) {
-      // Wash: target ~55–75% of each grain still sounding when the next fires.
       advance = 0.5 + 0.3 * v.overlap;
     } else {
       advance = 0.12 + 0.45 * v.overlap;
     }
-    // Mild persistence temper only — never drop wash below ~45% stacking.
-    advance *= 1 - 0.12 * v.persistence;
-    if (v.overlap >= 0.65) advance = Math.max(0.45, advance);
+    // Stable cells retrigger less often; wash stays continuous.
+    advance *= 1 - 0.22 * v.persistence;
+    if (v.overlap >= 0.65) advance = Math.max(0.42, advance);
 
     let interval = Math.floor(grainSamples * (1 - advance));
     interval = Math.min(interval, grainSamples);
     const minInterval = Math.max(64, Math.floor(sr / 100));
-    const maxInterval = Math.floor(sr * 0.5);
+    const maxInterval = Math.floor(sr * 0.55);
     return Math.max(minInterval, Math.min(maxInterval, interval));
   }
 
-  /** Build bin weight table once per grain (not per sample). */
-  buildBinWeights(r, b) {
+  /** Image Y=0 is top → high spectrum; bottom → low (V2 Layer 1). */
+  spectralNormFromY(y) {
+    const h = Math.max(2, this.gridHeight);
+    const yClamped = Math.max(0, Math.min(h - 1, y | 0));
+    return 1 - yClamped / (h - 1);
+  }
+
+  /** Image X=0 is left → start of source (V2 Layer 1). */
+  sampleNormFromX(x) {
+    const w = Math.max(2, this.gridWidth);
+    const xClamped = Math.max(0, Math.min(w - 1, x | 0));
+    return xClamped / (w - 1);
+  }
+
+  /**
+   * V2 Layer 2 — continuous timbral material around a Y spectral center.
+   * R density: focused / crystal → narrow energy
+   * G complexity: organic / intricate → wider uneven multi-bin mix
+   * B coherence: smooth / liquid → soft falloff
+   */
+  buildMaterialWeights(yNorm, density, complexity, coherence) {
     const binCount = this.binCount;
-    const scaled = r * Math.max(1, binCount - 1);
-    const blur = clamp01(b) * BLUR_RADIUS;
+    const scaled = clamp01(yNorm) * Math.max(1, binCount - 1);
     /** @type {{ bin: number, w: number }[]} */
     const weights = [];
 
-    if (blur < 1e-3) {
-      const bin0 = Math.max(0, Math.min(binCount - 1, Math.floor(scaled)));
-      const bin1 = Math.max(0, Math.min(binCount - 1, bin0 + 1));
-      const frac = scaled - Math.floor(scaled);
-      weights.push({ bin: bin0, w: 1 - frac });
-      if (bin1 !== bin0) weights.push({ bin: bin1, w: frac });
-      return weights;
-    }
-
-    const lo = Math.max(0, Math.floor(scaled - blur));
-    const hi = Math.min(binCount - 1, Math.ceil(scaled + blur));
-    const sigma = Math.max(0.35, blur * 0.65);
+    // Spread in bins: density collapses, complexity expands.
+    const spread = Math.max(
+      0.2,
+      (1.15 - density * 0.95) * (0.55 + complexity * 2.4),
+    );
+    // Coherence softens the Gaussian (liquid) vs harder edges (brittle).
+    const sigma = Math.max(0.28, spread * (0.4 + coherence * 0.75));
+    const radius = Math.max(1, Math.ceil(sigma * 3.2));
+    const lo = Math.max(0, Math.floor(scaled - radius));
+    const hi = Math.min(binCount - 1, Math.ceil(scaled + radius));
     const twoSig2 = 2 * sigma * sigma;
+
     let wSum = 0;
     for (let bin = lo; bin <= hi; bin++) {
       const d = bin - scaled;
-      const w = Math.exp((-d * d) / twoSig2);
+      let w = Math.exp((-d * d) / twoSig2);
+      // Complexity adds uneven spectral detail without leaving the bank.
+      if (complexity > 0.05) {
+        const ripple =
+          1 +
+          complexity *
+            0.55 *
+            Math.sin(bin * 1.7 + density * 4.1 + coherence * 2.3);
+        w *= Math.max(0.15, ripple);
+      }
       if (w < 1e-5) continue;
+      // Density concentrates: raise center relative to skirts.
+      if (density > 0.05) {
+        const centerBoost = 1 + density * 1.4 * Math.exp((-d * d) / (sigma * sigma + 0.01));
+        w *= centerBoost;
+      }
       weights.push({ bin, w });
       wSum += w;
+    }
+
+    if (weights.length === 0) {
+      const bin0 = Math.max(0, Math.min(binCount - 1, Math.round(scaled)));
+      weights.push({ bin: bin0, w: 1 });
+      return weights;
     }
     if (wSum > 0) {
       for (const row of weights) row.w /= wSum;
@@ -219,7 +265,6 @@ class GrainProcessor extends AudioWorkletProcessor {
     let triggersLeft = MAX_TRIGGERS_PER_BLOCK;
     let sounding = 0;
 
-    // Only walk active voice slots; rotate start for fairness
     const startIdx = this.rrCursor % Math.max(1, active);
     this.rrCursor = (this.rrCursor + 1) % Math.max(1, active);
 
@@ -325,18 +370,28 @@ class GrainProcessor extends AudioWorkletProcessor {
   triggerGrain(v) {
     const grainSamples = this.grainSampleCount(v);
     const len = this.length;
-    const start = Math.floor(v.g * Math.max(0, len - grainSamples));
+    const xNorm = this.sampleNormFromX(v.x);
+    const yNorm = this.spectralNormFromY(v.y);
+    const start = Math.floor(xNorm * Math.max(0, len - grainSamples));
     const pcm = this.pcm;
     if (!this.bins.length) return;
 
-    const env = this.getWindow(grainSamples, v.b);
-    const grain = v.grain;
-    const weights = this.buildBinWeights(v.r, v.b);
+    const density = clamp01(v.r);
+    const complexity = clamp01(v.g);
+    const coherence = clamp01(v.b);
 
-    // Single pass: spectral mix (+ tiny PCM rescue if band is empty)
+    const env = this.getMaterialWindow(grainSamples, density, complexity, coherence);
+    const grain = v.grain;
+    const weights = this.buildMaterialWeights(
+      yNorm,
+      density,
+      complexity,
+      coherence,
+    );
+
     let binEnergy = 0;
     let pcmEnergy = 0;
-    const stride = Math.max(1, (grainSamples / 32) | 0); // subsample for dry decision
+    const stride = Math.max(1, (grainSamples / 32) | 0);
     for (let i = 0; i < grainSamples; i += stride) {
       const idx = start + i;
       if (idx >= len) break;
@@ -353,10 +408,14 @@ class GrainProcessor extends AudioWorkletProcessor {
     const pcmRms = pcm
       ? Math.sqrt(pcmEnergy / Math.max(1, samplesChecked))
       : 0;
+
+    // Complexity invites a little dry richness; density keeps focus on the band.
     let dry = 0;
     if (pcm && pcmRms > 1e-5) {
       const ratio = binRms / pcmRms;
-      dry = ratio < 0.12 ? 0.18 : ratio < 0.3 ? 0.08 : 0;
+      const rescue =
+        ratio < 0.1 ? 0.16 : ratio < 0.25 ? 0.07 : ratio < 0.4 ? 0.03 : 0;
+      dry = rescue * (0.35 + complexity * 0.65) * (1 - density * 0.55);
     }
 
     for (let i = 0; i < grainSamples; i++) {
@@ -379,13 +438,28 @@ class GrainProcessor extends AudioWorkletProcessor {
     v.grainGain = v.amplitudeShare;
   }
 
-  getWindow(n, b) {
-    const morph = clamp01(b);
-    const key = n + ":" + morph.toFixed(2);
+  /**
+   * Material window: coherence → smooth Hann; density → cleaner focus;
+   * complexity → slightly harder / more Tukey character.
+   */
+  getMaterialWindow(n, density, complexity, coherence) {
+    const morph = clamp01(
+      complexity * 0.55 + (1 - coherence) * 0.35 + (1 - density) * 0.15,
+    );
+    const key =
+      n +
+      ":" +
+      morph.toFixed(2) +
+      ":" +
+      density.toFixed(2) +
+      ":" +
+      coherence.toFixed(2);
     let w = this.windowCache.get(key);
     if (w) return w;
     w = new Float32Array(n);
-    const taper = 0.5 * (1 - morph * 0.85);
+    // High coherence → longer smooth taper; high density → cleaner Hann dominance.
+    const taper = 0.5 * (1 - morph * 0.85) * (0.55 + coherence * 0.45);
+    const hannMix = clamp01(0.35 + coherence * 0.45 + density * 0.25);
     for (let i = 0; i < n; i++) {
       const x = n === 1 ? 0 : i / (n - 1);
       const hann = 0.5 * (1 - Math.cos(2 * Math.PI * x));
@@ -397,7 +471,7 @@ class GrainProcessor extends AudioWorkletProcessor {
           tukey = 0.5 * (1 + Math.cos(Math.PI * ((x - 1 + taper) / taper)));
         }
       }
-      w[i] = hann * (1 - morph) + tukey * morph;
+      w[i] = hann * hannMix + tukey * (1 - hannMix);
     }
     this.windowCache.set(key, w);
     return w;

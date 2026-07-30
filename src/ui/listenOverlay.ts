@@ -31,12 +31,15 @@ export class ListenOverlay {
       const x = (v.x + 0.5) * scale;
       const y = (v.y + 0.5) * scale;
       const radius = 1.2 + Math.sqrt(Math.max(0, v.amp)) * 5;
-      // Hue from spectral R (low→blue/cyan, high→yellow/red)
-      const hue = 200 - v.r * 200;
+      // V2: hue from vertical spectral position; saturation from material richness.
+      const yNorm = 1 - v.y / Math.max(1, gridSize - 1);
+      const material = (v.r + v.g + v.b) / 3;
+      const hue = 210 - yNorm * 200;
+      const sat = 55 + material * 35;
       const alpha = v.sounding ? 0.85 : 0.35;
       ctx.beginPath();
-      ctx.fillStyle = `hsla(${hue}, 85%, 60%, ${alpha})`;
-      ctx.strokeStyle = `hsla(${hue}, 90%, 75%, ${alpha})`;
+      ctx.fillStyle = `hsla(${hue}, ${sat}%, 60%, ${alpha})`;
+      ctx.strokeStyle = `hsla(${hue}, ${sat + 5}%, 75%, ${alpha})`;
       ctx.lineWidth = 0.35;
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();

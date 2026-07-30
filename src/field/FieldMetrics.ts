@@ -3,59 +3,66 @@ import type { RgbField } from "./FrameObserver.ts";
 export const VOICE_BUDGET = 32;
 
 /**
- * Layer 4 — finite sonic energy from visual brightness (mean RGB).
- * R/G/B stay Layer-1 texture; brightness is the energy scalar.
+ * V2 Layer 5 — finite sonic energy from visual brightness (mean RGB).
+ * R/G/B are Layer-2 timbral material only (density / complexity / coherence).
+ * Topology (sample + spectrum) comes from cell X/Y in the worklet.
  * Near-black → silent; mid fields ≈ unity gain.
  */
-export const ENERGY_TARGET = 0.28;
+export const ENERGY_TARGET = 0.26;
 const ENERGY_SILENCE = 0.03;
 export const MASTER_GAIN_MAX = 2.5;
 
 const LUMINANCE_GATE = 0.025;
 
-/** Active (border) density floor. */
-const DENSITY_GATE = 6e-4;
+/** Active (border) information-density floor. */
+const DENSITY_GATE = 5e-4;
 
 /** Sustain claim floor. */
-const SUSTAIN_GATE = 0.008;
-const SUSTAIN_COHERENCE_MIN = 0.32;
+const SUSTAIN_GATE = 0.007;
+const SUSTAIN_COHERENCE_MIN = 0.3;
 
 /**
  * Soft activity scale for busy/chaos.
  * Calm lit fields still get a listening floor from coherent coverage —
- * not 3 voices, and not a restless 32.
+ * large structures share voices; chaos claims more slots within the budget.
  */
-const CALM_LISTEN_MIN = 10;
-const CALM_LISTEN_MAX = 16;
+const CALM_LISTEN_MIN = 8;
+const CALM_LISTEN_MAX = 14;
 const BUSY_VOICE_CEILING = VOICE_BUDGET;
 
-const RGB_MERGE_EPS = 0.14;
-const MERGE_RADIUS_SUSTAIN = 8;
-const MERGE_RADIUS_ACTIVE = 4;
+const RGB_MERGE_EPS = 0.16;
+const MERGE_RADIUS_SUSTAIN = 11;
+const MERGE_RADIUS_ACTIVE = 5;
 
-/** Sustain stickiness — Layer 3 persistence. Stay put while still coherent. */
-const STICKY_RADIUS_SUSTAIN = 5;
-const STICKY_RADIUS_ACTIVE = 2;
+/** Layer 4 stickiness — stay with coherent structures through time. */
+const STICKY_RADIUS_SUSTAIN = 6;
+const STICKY_RADIUS_ACTIVE = 3;
 /** Previous sustain kept if score ≥ this × best fresh. */
-const STICKY_SCORE_RATIO_SUSTAIN = 0.35;
-const STICKY_SCORE_RATIO_ACTIVE = 0.6;
+const STICKY_SCORE_RATIO_SUSTAIN = 0.3;
+const STICKY_SCORE_RATIO_ACTIVE = 0.55;
 
-const MIN_DIST_SUSTAIN = 9;
-const MIN_DIST_ACTIVE = 7;
+const MIN_DIST_SUSTAIN = 11;
+const MIN_DIST_ACTIVE = 8;
 
-const STABILITY_EMA = 0.94;
-const INTERIOR_CLIMB_RADIUS = 6;
+const STABILITY_EMA = 0.95;
+const INTERIOR_CLIMB_RADIUS = 7;
 
-const GRAIN_LEN_MIN = 0.02;
-const GRAIN_LEN_MAX = 0.22;
+/** Layer 3 — coherent regions sustain longer grains. */
+const GRAIN_LEN_MIN = 0.025;
+const GRAIN_LEN_MAX = 0.28;
 
 export interface VoiceParams {
   id: number;
   cellIndex: number;
+  /** Cell column — worklet maps to sample position (V2 Layer 1). */
   x: number;
+  /** Cell row — worklet maps to spectral position (V2 Layer 1). */
   y: number;
+  /** Density — timbral material (V2 Layer 2). */
   r: number;
+  /** Complexity — timbral material (V2 Layer 2). */
   g: number;
+  /** Coherence — timbral material (V2 Layer 2). */
   b: number;
   grainLengthSec: number;
   overlap: number;
@@ -66,6 +73,8 @@ export interface VoiceParams {
 export interface VoicePlan {
   masterGain: number;
   energy: number;
+  gridWidth: number;
+  gridHeight: number;
   voices: VoiceParams[];
   activeVoiceCount: number;
 }
@@ -186,7 +195,7 @@ export class FieldMetrics {
         this.infoDensity[i] =
           (vari + 0.04) * Math.pow(d + 0.025, 1.6) * (L + 0.04);
 
-        // Flat² prefers interiors. No exploration term — restless hopping fought Layer 3.
+        // Flat² prefers interiors. Stickiness (Layer 4) keeps large structures sounding.
         this.sustainScore[i] =
           L * flat * flat * (coh + 0.08) * (stab + 0.1);
 
@@ -217,7 +226,7 @@ export class FieldMetrics {
       clamp01(1 - meanCohLit) * 0.1;
     const activity = Math.pow(structural, 1.35);
 
-    // Layer 2 listening floor: lit coherent coverage deserves shared wash voices.
+    // Layer 5 listening floor: lit coherent coverage deserves shared wash voices.
     // Near-black → floor collapses with energy/masterGain silence path.
     const coherentLit = litFraction * meanCohLit;
     const calmListen = Math.round(
@@ -243,13 +252,15 @@ export class FieldMetrics {
       return {
         masterGain: 0,
         energy,
+        gridWidth: w,
+        gridHeight: h,
         voices: [],
         activeVoiceCount: 0,
       };
     }
 
-    // Calm → mostly sustain wash. Busy → more active grain slots.
-    const sustainFrac = 0.88 - activity * 0.48;
+    // Calm → mostly sustain wash (large structures). Busy → more active grain slots.
+    const sustainFrac = 0.9 - activity * 0.5;
     const sustainSlots = Math.max(
       1,
       Math.min(voiceBudget, Math.round(voiceBudget * sustainFrac)),
@@ -323,6 +334,8 @@ export class FieldMetrics {
       return {
         masterGain: 0,
         energy,
+        gridWidth: w,
+        gridHeight: h,
         voices: [],
         activeVoiceCount: 0,
       };
@@ -342,17 +355,19 @@ export class FieldMetrics {
       const dlt = clamp01(this.delta[i]!);
       const isSustain = vi < selectedSustain.length;
 
-      const calm = 0.6 * stab + 0.4 * (1 - dlt);
-      let lengthBlend = 0.55 * coh + 0.45 * calm;
-      if (isSustain) lengthBlend = Math.max(lengthBlend, 0.85);
+      // Layer 3: spatial coherence → longer grains / more overlap for structures.
+      const calm = 0.55 * stab + 0.45 * (1 - dlt);
+      let lengthBlend = 0.65 * coh + 0.35 * calm;
+      if (isSustain) lengthBlend = Math.max(lengthBlend, 0.88);
       const grainLengthSec =
         GRAIN_LEN_MIN + lengthBlend * (GRAIN_LEN_MAX - GRAIN_LEN_MIN);
 
-      let overlap = clamp01(0.5 * (1 - vari) + 0.5 * stab);
-      if (isSustain) overlap = Math.max(overlap, 0.88);
+      let overlap = clamp01(0.45 * (1 - vari) + 0.55 * stab);
+      if (isSustain) overlap = Math.max(overlap, 0.9);
 
-      let persistence = stab;
-      if (isSustain) persistence = Math.max(persistence, 0.8);
+      // Layer 4: temporal stability → persistence / slower retrigger in worklet.
+      let persistence = 0.15 + 0.85 * stab;
+      if (isSustain) persistence = Math.max(persistence, 0.85);
 
       voices.push({
         id: vi,
@@ -380,6 +395,8 @@ export class FieldMetrics {
       return {
         masterGain: 0,
         energy,
+        gridWidth: w,
+        gridHeight: h,
         voices,
         activeVoiceCount: voices.length,
       };
@@ -391,6 +408,8 @@ export class FieldMetrics {
     return {
       masterGain,
       energy,
+      gridWidth: w,
+      gridHeight: h,
       voices,
       activeVoiceCount: voices.length,
     };
@@ -453,7 +472,7 @@ function pickPool(opts: PickOpts): number[] {
   }
   if (bestFresh <= 0) bestFresh = gate;
 
-  // Layer 3: keep previous voices while they remain competitive (especially sustain).
+  // Layer 4: keep previous voices while they remain competitive (especially sustain).
   for (const p of prev) {
     if (selected.length >= budget) break;
     if (p < 0 || p >= scores.length) continue;

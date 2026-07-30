@@ -6,15 +6,15 @@ const W = 64;
 const H = 64;
 const N = W * H;
 const LUMINANCE_GATE = 0.025;
-const SUSTAIN_COHERENCE_MIN = 0.32;
-const CALM_LISTEN_MIN = 10;
-const CALM_LISTEN_MAX = 16;
+const SUSTAIN_COHERENCE_MIN = 0.3;
+const CALM_LISTEN_MIN = 8;
+const CALM_LISTEN_MAX = 14;
 const BUSY_VOICE_CEILING = 32;
-const ENERGY_TARGET = 0.28;
+const ENERGY_TARGET = 0.26;
 const ENERGY_SILENCE = 0.03;
 const MASTER_GAIN_MAX = 2.5;
-const MIN_DIST_SUSTAIN = 9;
-const INTERIOR_CLIMB_RADIUS = 6;
+const MIN_DIST_SUSTAIN = 11;
+const INTERIOR_CLIMB_RADIUS = 7;
 
 function brightness(r, g, b) {
   return (r + g + b) / 3;
@@ -154,7 +154,7 @@ function analyze(current, previous) {
           ),
         );
 
-  const sustainFrac = 0.88 - activity * 0.48;
+  const sustainFrac = 0.9 - activity * 0.5;
   const sustainSlots = Math.max(
     1,
     Math.min(voiceBudget, Math.round(voiceBudget * sustainFrac)),
@@ -208,8 +208,8 @@ function analyze(current, previous) {
       sustain.push(i);
       const cx = i % W;
       const cy = (i / W) | 0;
-      for (let dy = -8; dy <= 8; dy++) {
-        for (let dx = -8; dx <= 8; dx++) {
+      for (let dy = -11; dy <= 11; dy++) {
+        for (let dx = -11; dx <= 11; dx++) {
           covered[(((cy + dy + H) % H) * W + ((cx + dx + W) % W))] = 1;
         }
       }
@@ -223,8 +223,8 @@ function washOverlapFrac(overlap, persistence) {
   let advance;
   if (overlap >= 0.65) advance = 0.5 + 0.3 * overlap;
   else advance = 0.12 + 0.45 * overlap;
-  advance *= 1 - 0.12 * persistence;
-  if (overlap >= 0.65) advance = Math.max(0.45, advance);
+  advance *= 1 - 0.22 * persistence;
+  if (overlap >= 0.65) advance = Math.max(0.42, advance);
   return advance;
 }
 
@@ -236,13 +236,13 @@ function assert(name, cond, detail = "") {
 const calm = makeField(() => [0.15, 0.7, 0.12]);
 const rCalm = analyze(calm, calm);
 assert(
-  "calm lit → listening floor ≥10",
-  rCalm.voiceBudget >= 10 && rCalm.voiceBudget <= 18,
+  "calm lit → listening floor ≥8",
+  rCalm.voiceBudget >= 8 && rCalm.voiceBudget <= 16,
   `budget=${rCalm.voiceBudget} calmListen=${rCalm.calmListen}`,
 );
 assert(
   "calm → many sustain washes",
-  rCalm.sustain.length >= 8,
+  rCalm.sustain.length >= 6,
   `n=${rCalm.sustain.length}`,
 );
 
@@ -259,15 +259,15 @@ const black = makeField(() => [0, 0, 0]);
 const rBlack = analyze(black, black);
 assert("black → budget 0", rBlack.voiceBudget === 0);
 
-const ov = washOverlapFrac(0.88, 0.8);
+const ov = washOverlapFrac(0.9, 0.85);
 assert(
-  "wash stacks ≥45% into prior grain",
-  ov >= 0.45,
+  "wash stacks ≥42% into prior grain",
+  ov >= 0.42,
   `advance/overlapFrac=${ov.toFixed(3)}`,
 );
 assert(
   "wash stacks substantially (continuous cloud)",
-  ov >= 0.55,
+  ov >= 0.5,
   `advance=${ov.toFixed(3)}`,
 );
 
