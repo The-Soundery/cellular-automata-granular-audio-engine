@@ -11,6 +11,9 @@ import { mountControls, type AudioMeterStats } from "./ui/controls.ts";
 import { ListenOverlay } from "./ui/listenOverlay.ts";
 import "./style.css";
 
+/** Bundled fuller-spectrum default source (trimmed Modular Pad). */
+const DEFAULT_SOURCE_URL = "/default-source.wav";
+
 /** Listening meters refresh ~5 Hz so Trig/s is readable. */
 const METER_UI_HZ = 5;
 const METER_EMA = 0.35;
@@ -34,15 +37,32 @@ const observer = new FrameObserver(GRID_SIZE, GRID_SIZE);
 const metrics = new FieldMetrics(GRID_SIZE, GRID_SIZE);
 const audio = new AudioEngine();
 
+(window as unknown as { __v2Metrics: FieldMetrics }).__v2Metrics = metrics;
+
 let variationIndex = 0;
 let lastEnergy = 0;
 let lastObservedStep = -1;
 let audioStatus = "idle";
 let lastMeterUiAt = 0;
 let smoothMeter: AudioMeterStats | null = null;
+let overlayVisible = true;
+let defaultSourcePromise: Promise<void> | null = null;
 
 function ema(prev: number, next: number, a = METER_EMA): number {
   return prev + (next - prev) * a;
+}
+
+async function ensureDefaultSource(): Promise<void> {
+  if (audio.hasSource) return;
+  if (!defaultSourcePromise) {
+    defaultSourcePromise = (async () => {
+      await audio.loadUrl(DEFAULT_SOURCE_URL);
+    })().catch((err) => {
+      defaultSourcePromise = null;
+      throw err;
+    });
+  }
+  await defaultSourcePromise;
 }
 
 const controls = mountControls(controlsMount, {
@@ -51,6 +71,12 @@ const controls = mountControls(controlsMount, {
   },
   onReset() {
     host.reset();
+    observer.reset();
+    metrics.reset();
+    audio.clearVoices();
+    lastObservedStep = -1;
+    lastEnergy = 0;
+    overlay.clear();
   },
   onTogglePause() {
     return host.togglePause();
@@ -73,28 +99,59 @@ const controls = mountControls(controlsMount, {
     controls.setEquation(eq);
     return eq;
   },
-  async onStartAudio() {
+  async onToggleAudio() {
     try {
+      if (audio.isEnabled) {
+        await audio.stop();
+        audioStatus = audio.hasSource ? "stopped" : "idle";
+        smoothMeter = null;
+        controls.setAudioEnabled(false);
+        pushStats(true);
+        return false;
+      }
+
+      audioStatus = "starting…";
+      pushStats(true);
       await audio.ensureRunning();
+      if (!audio.hasSource) {
+        audioStatus = "loading default source…";
+        pushStats(true);
+        await ensureDefaultSource();
+      } else if (audio.contextState === "suspended") {
+        await audio.ensureRunning();
+      }
+
       audioStatus = audio.isReady
-        ? audio.hasSource
-          ? "running"
-          : "awaiting source"
+        ? "running"
         : `blocked (${audio.contextState}) — click Enable again`;
+      controls.setAudioEnabled(audio.isEnabled);
+      pushStats(true);
+      return audio.isEnabled;
     } catch (err) {
       console.error(err);
       audioStatus = "audio init failed";
+      controls.setAudioEnabled(false);
+      pushStats(true);
+      return false;
     }
-    pushStats(true);
+  },
+  onToggleOverlay() {
+    overlayVisible = !overlayVisible;
+    overlay.setVisible(overlayVisible);
+    controls.setOverlayVisible(overlayVisible);
+    if (!overlayVisible) overlay.clear();
+    return overlayVisible;
   },
   async onLoadAudio(file) {
     audioStatus = "decoding…";
     pushStats(true);
     try {
       await audio.loadFile(file);
+      defaultSourcePromise = Promise.resolve();
       audioStatus = audio.isReady
         ? `loaded · ${file.name}`
-        : `loaded · ${file.name} · ctx ${audio.contextState} — click Enable`;
+        : `loaded · ${file.name} · ctx ${audio.contextState}`;
+      controls.setAudioEnabled(audio.isEnabled);
     } catch (err) {
       console.error(err);
       audioStatus = "load failed";
@@ -104,6 +161,8 @@ const controls = mountControls(controlsMount, {
 });
 
 controls.setEquation(TYPE_U_SEED);
+controls.setOverlayVisible(true);
+controls.setAudioEnabled(false);
 
 const ro = new ResizeObserver(() => host.fitZoom(caWrap));
 ro.observe(caWrap);

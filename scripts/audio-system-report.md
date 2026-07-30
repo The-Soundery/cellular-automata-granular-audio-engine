@@ -1,24 +1,26 @@
-# Audio system report — V2 topological sonification
+# Audio system report — V2 structure-centric sonification
+
+## Musical objects
+
+Coherent regions (structures) derived from neighbour RGB similarity — not individual cells.
 
 ## Contract
 
 | Axis | Role |
 |------|------|
-| X | Sample position in source |
-| Y | Spectral position in bandpass bank (top = high) |
-| R | Timbral density |
-| G | Timbral complexity |
-| B | Timbral coherence |
-| Neighbour coherence / variance | Grain length & overlap |
-| Temporal stability | Persistence / retrigger |
-| Mean field energy | Master gain + voice budget |
+| Structure probe X | Sample position |
+| Structure probe Y | Spectral position |
+| Region colour | Grain envelope material only |
+| Structure area/mass | Voice mass / amplitude share |
+| Structure stability/speed | Grain length, overlap, motion refresh |
+| Mean field energy | Master gain |
 
 ## Pipeline
 
-Utomata → FrameObserver → FieldMetrics → AudioEngine → grain-processor
+Utomata → FrameObserver → RegionExtractor → StructureTracker → StructureAllocator → AudioEngine → grain-processor
 
 ## Performance
 
 - Max 32 voices, 12 triggers/block
-- Spectral bank built offline (48 bins)
-- Material weights computed once per grain trigger
+- Region extract capped at 48 regions/frame
+- Spectral bank offline (48 bins), Y-only at trigger

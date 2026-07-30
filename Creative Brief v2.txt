@@ -5,17 +5,23 @@ Version 2 of this project is an evolution of the original Cellular Automata gran
 
 The audio is NOT controlled by the Cellular Automata. The audio IS the Cellular Automata.
 
-However, Version 1 revealed an important limitation. Whilst the audio was mathematically faithful to the simulation, it failed to preserve one of the most beautiful aspects of Cellular Automata - the emergence of spatial structures.
+Version 1 sonified cell state faithfully but failed to preserve one of the most beautiful aspects of Cellular Automata: the emergence of spatial structures.
 
-Version 2 introduces the concept of Topological Sonification.
+Version 2 introduces Topological Sonification with a revised axiom:
 
-The goal is no longer simply to sonify the state of the Cellular Automata, but to sonify:
+Patterns and coherent structures are the fundamental musical objects of the instrument.
 
-State
-Topology
-Spatial relationships
-Temporal relationships
-Global relationships
+The Cellular Automata is not a collection of interesting pixels that happen to form patterns. The patterns themselves are what the audio engine must listen to.
+
+The goal is to sonify:
+
+Structures and pattern formation
+Topology and geometry
+Pattern movement
+Pattern evolution
+Spatial relationships between structures
+Colour as regional material
+Global energy distribution
 
 The geometry of the simulation should become audible.
 
@@ -25,8 +31,9 @@ We are NOT building:
 
 A granular synthesiser controlled by visuals
 An audiovisual music visualiser
-A sonification of RGB values
+A sonification of individual pixel colours
 A collection of DSP effects mapped to Cellular Automata
+An instrument with an aesthetic preference for wash, stability, or chaos
 
 We ARE building:
 
@@ -36,15 +43,17 @@ Two renderers:
 Visual Renderer
 Audio Renderer
 
-Both renderers are simply different ways of observing the same underlying computational universe.
+Both renderers observe the same underlying computational universe.
 
 Every sonic event must be directly derived from properties that already exist within the Cellular Automata simulation.
 
 No arbitrary audio systems should be introduced unless they correspond to a fundamental property of the simulation.
 
+The audio engine must not impose beauty. Its responsibility is to faithfully reveal the behaviour of the simulation. The simulation itself determines geometry, behaviour, colour, movement, temporal evolution, and energy distribution.
+
 Visual Engine
 
-The visual simulation should continue to use the existing Utomata Cellular Automata engine.
+The visual simulation continues to use the existing Utomata Cellular Automata engine.
 
 The Cellular Automata provides:
 
@@ -54,28 +63,20 @@ Neighbour relationships
 Temporal evolution
 Global simulation state
 Editable CA equations
+A continuous toroidal spatial topology
 
-The audio engine should observe and interpret these properties in real time.
+The audio engine observes these properties in real time and groups them into coherent structures.
 
-V2 AUDIO PHILOSOPHY
+Fundamental Musical Objects
 
-Version 1 focused primarily on cell state and neighbour relationships.
+V2 prioritises listening to structures, not cells.
 
-Version 2 introduces a new principle:
+A structure is a coherent region derived from neighbour relationships already present in the simulation (lit cells grown by local colour similarity). Structures are not invented by computer-vision classifiers; they are explicit readings of local CA relationships.
 
-Spatial topology is a fundamental property of Cellular Automata and should therefore be sonically meaningful.
+Large structures should sound large.
+Small structures should sound small.
 
-The visual movement of structures should create corresponding sonic movement.
-
-Examples:
-
-Vertical structures should create spectral movement.
-Horizontal structures should create sample movement.
-Stable structures should create sustained textures.
-Chaotic structures should create more intricate granular behaviour.
-Colour evolution should create timbral evolution.
-
-The listener should be able to hear the emergence of large-scale computational structures.
+The audio engine must represent the geometry of the simulation rather than collapsing coherent regions into single listening points.
 
 AUDIO ARCHITECTURE
 
@@ -83,279 +84,113 @@ The audio engine is divided into five layers.
 
 Layer 1 - Spatial Topology
 
-The X and Y axes of the Cellular Automata are now fundamental audio parameters.
+Structure probe positions on the X and Y axes are fundamental audio parameters.
 
-X Axis
-Sample Position
+X Axis — Sample Position
 
-The horizontal axis determines where within the source audio the grain is extracted.
-
-Examples:
+The horizontal position of a structure probe determines where within the source audio the grain is extracted.
 
 Left side of the simulation = beginning of the source audio.
 Right side of the simulation = end of the source audio.
 
-Horizontal movement through the simulation becomes movement through the source material.
+Horizontal movement of structures becomes movement through the source material.
 
-Y Axis
-Frequency / Spectral Position
+Y Axis — Frequency / Spectral Position
 
-The vertical axis determines where within the frequency spectrum the grain exists.
-
-Examples:
+The vertical position of a structure probe determines where within the frequency spectrum the grain exists.
 
 Bottom of the simulation = lower frequencies.
 Top of the simulation = higher frequencies.
 
-Vertical movement becomes spectral movement.
+Vertical movement of structures becomes spectral movement.
 
-This creates a direct audiovisual relationship between:
+Topology Continuity
 
-Shape
-Position
-Movement
-Sonic evolution
+If a structure moves across the simulation, the listener must be able to follow that movement.
 
-The topology of the simulation should now be audible.
+Stable structures must not freeze sonically simply because they use longer grains.
 
-Layer 2 - Timbral Space
+Voice identity, voice persistence, and X/Y updates must preserve continuous topological movement. The listener should hear structures travelling through the simulation, not a sequence of disconnected grain triggers.
 
-RGB values no longer control sample position or frequency.
+Large structures receive multiple probes along their extent so their geometry remains audible.
 
-RGB values define the material properties of the grain.
+Layer 2 - Colour as Regional Material
 
-The goal is NOT to implement traditional DSP effects.
+Colour is an emergent property of neighbouring cells and must be treated as an emergent property of coloured regions and structures.
 
-Examples of what should NOT be implemented:
+The visual system does not perceive individual pixel colours in isolation. It perceives coherent colour regions and gradients. The audio system must behave similarly.
 
-Reverb
-Distortion
-Filters
-FM synthesis
-Conventional effect chains
+Colour must ONLY influence the temporal material properties of grains emitted by a coloured structure or region.
 
-Instead, RGB exists within a continuous timbral space.
+Examples of allowed parameters:
 
-Current proposal:
+Attack characteristics
+Release characteristics
+Window curvature
+Temporal energy distribution within the grain
 
-R = Spectral Density
+Colour must NOT affect:
 
-G = Spectral Complexity
+Sample position
+Frequency position
+Spectral brightness
+Spectral filtering
+Voice allocation
+Retrigger behaviour
+Global gain
 
-B = Spectral Coherence
+Colour must not be treated as three independent audio parameters, a spectral processor, additional filtering, a collection of DSP effects, or a per-grain timbral engine.
 
-These properties determine how the existing information within a grain is organised.
-
-Spectral Density
-
-Produces timbral characteristics such as:
-
-Dense
-Focused
-Tonal
-Crystal-like
-Solid
-
-Density describes how tightly organised the grain's information is.
-
-Spectral Complexity
-
-Produces timbral characteristics such as:
-
-Organic
-Detailed
-Intricate
-Airy
-Rich
-
-Complexity describes how much detail exists within the grain.
-
-Spectral Coherence
-
-Produces timbral characteristics such as:
-
-Smooth
-Liquid
-Stable
-Fluid
-Continuous
-
-Coherence describes how smoothly the grain's information is organised.
-
-Timbral Materials
-
-The RGB values should not behave like three independent parameters.
-
-Instead, they should define coordinates within a continuous timbral material space.
-
-Examples:
-
-255,0,0
-
-↓
-
-Dense and focused.
-
-
-0,255,0
-
-↓
-
-Intricate and organic.
-
-
-0,0,255
-
-↓
-
-Smooth and fluid.
-
-
-120,180,220
-
-↓
-
-A unique material existing between all three properties.
-
-The resulting timbre should emerge from the balance between these three properties rather than from the blending of independent audio effects.
-
-The intention is for Cellular Automata colour gradients to naturally become timbral gradients.
+The resulting material changes should be subtle and musical. The listener should perceive that structures have different material characteristics rather than hearing obvious DSP processing.
 
 Layer 3 - Spatial Relationships
 
-Spatial relationships are derived from neighbouring cells.
-
-Examples include:
-
-Neighbour similarity
-Neighbour variance
-Neighbour energy
+Spatial relationships are derived from structure geometry and relationships between structures.
 
 These determine:
 
-Grain Length
+Voice mass (large structures claim more sonic presence)
+Probe layout along structure extent
+Grain length and overlap from internal coherence and differentiation within a structure
 
-Grain Overlap
+Voice allocation must provide a representative sonic snapshot of the simulation. It must not prioritise ambient wash, stability, or chaos as aesthetic goals.
 
-Voice Sharing
-Grain Length
-
-Large coherent regions should naturally produce:
-
-Longer grains
-More sustained textures
-
-Highly differentiated regions should naturally produce:
-
-Shorter grains
-More granular textures
-Grain Overlap
-
-Neighbour relationships determine how grains blur together.
-
-Examples:
-
-Stable regions:
-
-Greater overlap
-More continuous sonic textures
-
-Chaotic regions:
-
-Less overlap
-Greater detail and motion
-Voice Sharing
-
-Large coherent regions should not consume excessive voices.
-
-Voice allocation should represent:
-
-Information density
-Spatial coherence
-Temporal behaviour
-
-The system should efficiently represent large structures whilst preserving their sonic identity.
+Large stable structures sound beautiful because they exist within the simulation, not because the audio engine is biased towards them. Chaotic behaviour may emerge naturally without becoming overwhelming or underrepresented.
 
 Layer 4 - Temporal Relationships
 
-Temporal relationships are derived from previous cell states.
-
-Examples include:
-
-How long has the cell existed?
-
-How rapidly is it changing?
-
-How stable is it over time?
+Temporal relationships are derived from structure persistence, velocity, and evolution.
 
 These determine:
 
-Retrigger Rate
+Grain length
+Overlap
+Motion-driven topology refresh
+Voice persistence and identity continuity
 
-Voice Persistence
-
-Information Density
-Retrigger Rate
-
-Rapidly evolving areas should naturally become more active.
-
-Stable regions should become more sustained and less frequently retriggered.
-
-Voice Persistence
-
-Temporal stability should influence:
-
-Sustained grains
-Continuous textures
-Grain persistence
-
-The audio should faithfully represent the temporal evolution of the Cellular Automata.
-
-Information Density
-
-Information density should describe:
-
-How much unique computational information exists within a particular region of the simulation?
-
-Factors may include:
-
-Spatial variance
-Temporal variance
-Energy distribution
-
-Information density should inform voice allocation throughout the audio engine.
+Rapidly evolving or moving structures must refresh their topological (X/Y) sounding locus so movement remains audible. Temporally stable structures may sustain without unnecessary retrigger chatter, while still updating topology when they translate.
 
 Layer 5 - Global Relationships
 
 Global simulation properties determine:
 
 Master Gain
-
 Maximum Simultaneous Voices
-
 Energy Distribution
 
 Potential measurements include:
 
-Total simulation energy
-Total information density
-Number of active regions
-Master Gain
+Total structure mass
+Total presence / information across structures
+Number of active structures
 
-The audio engine should normalise itself against the total energy of the simulation.
+The audio engine should normalise itself against the total energy of the simulation so the universe contains a finite amount of sonic energy that is continuously redistributed as structures emerge and evolve.
 
-The simulation should behave as though it contains a finite amount of sonic energy that is continuously redistributed as structures emerge and evolve.
+Toroidal Topology
 
-Maximum Simultaneous Voices
+The Cellular Automata exists within a continuous toroidal space.
 
-Voice allocation should be dynamically managed according to:
-
-Information density
-Spatial relationships
-Temporal relationships
-Global energy distribution
-
-Large structures should sound large and coherent without unnecessarily increasing CPU usage.
+If structures wrap around the simulation boundaries, they should remain sonically continuous wherever possible. The audio engine must preserve topological continuity rather than introducing artificial discontinuities at the seams.
 
 Source Audio
 
@@ -365,18 +200,19 @@ WAV
 MP3
 AIFF
 
-The source audio should continue to function as the raw material from which all grains are derived.
+The source audio continues to function as the raw material from which all grains are derived.
 
 The Cellular Automata simulation continuously explores and redistributes this material across:
 
-Sample position
-Frequency position
-Timbral material space
-Spatial relationships
-Temporal relationships
+Sample position (structure X)
+Frequency position (structure Y)
+Regional grain material (structure colour envelopes)
+Spatial relationships between structures
+Temporal evolution of structures
+
 Implementation Requirements
 
-Version 2 should continue to be implemented as a browser-based web application.
+Version 2 continues as a browser-based web application.
 
 Suggested technologies:
 
@@ -387,26 +223,27 @@ AudioWorklet
 JavaScript / TypeScript
 Vite
 
-The visual simulation should remain fully interactive and allow users to:
+The visual simulation remains fully interactive and allows users to:
 
 Move through variations of CA equations
 Restart and reset simulations
 Load source audio
 Observe audiovisual evolution in real time
+
 Final Creative Goal
 
 The goal of Version 2 is to create an audiovisual instrument that allows users to listen to the topology of emergence.
 
 The listener should be able to hear:
 
-The geometry of the simulation.
-The movement of computational structures.
-The evolution of timbral materials.
-The redistribution of sonic energy.
-The emergence and collapse of patterns through time.
+The geometry of computational structures.
+The movement of those structures through sample and frequency space.
+The material character of coloured regions.
+The redistribution of sonic energy as patterns form and collapse.
+The equal validity of stable and chaotic regimes as determined by the simulation.
 
-The beauty of the visuals should emerge from simple local relationships between cells.
+The beauty of the visuals emerges from simple local relationships between cells.
 
-The beauty of the sound should emerge from those exact same relationships.
+The beauty of the sound emerges from those exact same relationships, heard as structures rather than as isolated cells.
 
-Version 2 is not intended to sound like granular synthesis being processed with effects. Instead, it should feel like listening to the material properties and geometry of a living computational universe as it evolves in real time.
+Version 2 is not intended to sound like granular synthesis processed with effects. It should feel like listening to the geometry and material of a living computational universe as it evolves in real time.

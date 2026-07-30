@@ -8,7 +8,10 @@ export interface ControlsHandlers {
   onNextVariation: () => string;
   onRandomVariation: () => string;
   onLoadAudio: (file: File) => Promise<void>;
-  onStartAudio: () => Promise<void>;
+  /** Toggle audio engine on/off. Returns whether audio is now enabled. */
+  onToggleAudio: () => Promise<boolean>;
+  /** Toggle listen overlay. Returns whether overlay is now visible. */
+  onToggleOverlay: () => boolean;
 }
 
 export interface AudioMeterStats {
@@ -27,6 +30,8 @@ export interface AudioMeterStats {
 export interface ControlsApi {
   setEquation: (eq: string) => void;
   setPaused: (paused: boolean) => void;
+  setAudioEnabled: (enabled: boolean) => void;
+  setOverlayVisible: (visible: boolean) => void;
   setStats: (s: {
     step: number;
     fps: number;
@@ -62,11 +67,14 @@ export function mountControls(
       <button type="button" id="next">Var →</button>
     </div>
     <div class="row">
-      <button type="button" id="audio-start">Enable Audio</button>
+      <button type="button" id="audio-toggle">Enable Audio</button>
       <label class="file-btn">
         Load Audio
         <input id="file" type="file" accept="audio/*,.wav,.mp3,.aiff,.aif,.ogg" hidden />
       </label>
+    </div>
+    <div class="row">
+      <button type="button" id="overlay-toggle">Hide Overlay</button>
     </div>
     <dl class="stats">
       <div><dt>Step</dt><dd id="st-step">0</dd></div>
@@ -90,13 +98,15 @@ export function mountControls(
         <div><dt>Mean G</dt><dd id="st-mean-g">—</dd></div>
         <div><dt>Mean len</dt><dd id="st-mean-len">—</dd></div>
       </dl>
-      <p class="meter-hint">Overlay: dots = listened cells · calm → few sticky wash voices · busy → more grain</p>
+      <p class="meter-hint">Overlay: live structure probes · X/Y = sample/spectrum · colour = grain envelope</p>
     </div>
   `;
   parent.appendChild(root);
 
   const eqEl = root.querySelector("#eq") as HTMLTextAreaElement;
   const pauseBtn = root.querySelector("#pause") as HTMLButtonElement;
+  const audioBtn = root.querySelector("#audio-toggle") as HTMLButtonElement;
+  const overlayBtn = root.querySelector("#overlay-toggle") as HTMLButtonElement;
   eqEl.value = TYPE_U_SEED;
 
   root.querySelector("#apply")!.addEventListener("click", () => {
@@ -121,8 +131,14 @@ export function mountControls(
     eqEl.value = handlers.onRandomVariation();
     handlers.onApplyEquation(eqEl.value);
   });
-  root.querySelector("#audio-start")!.addEventListener("click", () => {
-    void handlers.onStartAudio();
+  audioBtn.addEventListener("click", () => {
+    void handlers.onToggleAudio().then((enabled) => {
+      audioBtn.textContent = enabled ? "Stop Audio" : "Enable Audio";
+    });
+  });
+  overlayBtn.addEventListener("click", () => {
+    const visible = handlers.onToggleOverlay();
+    overlayBtn.textContent = visible ? "Hide Overlay" : "Show Overlay";
   });
   root.querySelector("#file")!.addEventListener("change", (e) => {
     const input = e.target as HTMLInputElement;
@@ -143,6 +159,12 @@ export function mountControls(
     },
     setPaused(paused: boolean) {
       pauseBtn.textContent = paused ? "Play" : "Pause";
+    },
+    setAudioEnabled(enabled: boolean) {
+      audioBtn.textContent = enabled ? "Stop Audio" : "Enable Audio";
+    },
+    setOverlayVisible(visible: boolean) {
+      overlayBtn.textContent = visible ? "Hide Overlay" : "Show Overlay";
     },
     setStats(s) {
       (root.querySelector("#st-step") as HTMLElement).textContent = String(s.step);

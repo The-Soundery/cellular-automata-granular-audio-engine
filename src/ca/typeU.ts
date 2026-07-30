@@ -1,6 +1,5 @@
-/** Type U seed from the Utomata Lab series (parens balanced for a valid program). */
-export const TYPE_U_SEED =
-  "sub(add(V24.b,V24.b),mlt(V24.r,V4.b))";
+/** Default Type U equation (Utomata Lab style). */
+export const TYPE_U_SEED = "U(add(V.b,V8.b),sub(V4.b,V8.b))";
 
 export const TYPE_U_SETUP = "rand(1.0, 2.0, 3.0)";
 

@@ -51,6 +51,17 @@ export class FrameObserver {
     }
     return true;
   }
+
+  /** Drop frame history so the next ingest does not compare against a stale CA. */
+  reset(): void {
+    this.lastStep = -1;
+    this.current.r.fill(0);
+    this.current.g.fill(0);
+    this.current.b.fill(0);
+    this.previous.r.fill(0);
+    this.previous.g.fill(0);
+    this.previous.b.fill(0);
+  }
 }
 
 function createField(width: number, height: number): RgbField {
