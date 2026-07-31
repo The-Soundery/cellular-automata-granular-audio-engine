@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "node scripts/verify-field-reducer.mjs && node scripts/verify-v3-contract.mjs"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

@@ -1,37 +1,31 @@
-import type { VoicePlan } from "../field/FieldMetrics.ts";
+import type { GrainPlan } from "../field/FieldReducer.ts";
 import { buildSpectralBank, type SpectralBank } from "./spectral.ts";
 
-export interface ListenVoice {
-  structureId: number;
-  probeIndex: number;
-  /** Display locus (live probe); overlay prefers this over baked. */
+export interface ListenGrain {
+  latticeIndex: number;
   x: number;
   y: number;
-  liveX?: number;
-  liveY?: number;
-  /** Last grain-trigger locus — what the ear last scrubbed. */
-  bakedX?: number;
-  bakedY?: number;
   r: number;
   g: number;
   b: number;
   amp: number;
   len: number;
+  localDelta?: number;
   sounding: boolean;
   gain: number;
-  extentW?: number;
-  extentH?: number;
 }
 
 export interface AudioStats {
   rms: number;
   peak: number;
   masterGain: number;
+  activeGrains: number;
+  /** Alias for meters that still say "voices". */
   activeVoices: number;
   sounding: number;
   triggersPerSec: number;
   deferredPerSec: number;
-  listen: ListenVoice[];
+  listen: ListenGrain[];
   updatedAt: number;
 }
 
@@ -40,7 +34,7 @@ export class AudioEngine {
   private node: AudioWorkletNode | null = null;
   private bank: SpectralBank | null = null;
   private started = false;
-  private lastPlan: VoicePlan | null = null;
+  private lastPlan: GrainPlan | null = null;
   private stats: AudioStats | null = null;
 
   get isReady(): boolean {
@@ -78,17 +72,15 @@ export class AudioEngine {
     return this.stats;
   }
 
-  /** Suspend output without destroying the worklet or loaded source. */
   async stop(): Promise<void> {
     this.started = false;
     if (this.node) {
-      // Silence voices but keep the spectral bank resident in the worklet.
       this.node.port.postMessage({
         type: "plan",
         masterGain: 0,
         gridWidth: 128,
         gridHeight: 128,
-        voices: [],
+        grains: [],
       });
     }
     if (this.ctx && this.ctx.state === "running") {
@@ -96,23 +88,24 @@ export class AudioEngine {
     }
   }
 
-  /**
-   * Hard-reset sounding voices while keeping the loaded spectral bank.
-   * Used with CA Reset so identity/coast state cannot bleed into the new run.
-   */
-  clearVoices(): void {
+  /** Hard-reset grain slots while keeping the spectral bank. */
+  clearGrains(): void {
     this.lastPlan = null;
     this.stats = null;
     if (!this.node) return;
-    this.node.port.postMessage({ type: "resetVoices" });
-    // Also empty the plan so older worklets without resetVoices still silence.
+    this.node.port.postMessage({ type: "resetGrains" });
     this.node.port.postMessage({
       type: "plan",
       masterGain: 0,
       gridWidth: 128,
       gridHeight: 128,
-      voices: [],
+      grains: [],
     });
+  }
+
+  /** @deprecated use clearGrains */
+  clearVoices(): void {
+    this.clearGrains();
   }
 
   async ensureRunning(): Promise<void> {
@@ -133,11 +126,13 @@ export class AudioEngine {
         this.node.port.onmessage = (ev) => {
           const msg = ev.data;
           if (msg?.type === "stats") {
+            const active = msg.activeGrains ?? msg.activeVoices ?? 0;
             this.stats = {
               rms: msg.rms,
               peak: msg.peak,
               masterGain: msg.masterGain,
-              activeVoices: msg.activeVoices,
+              activeGrains: active,
+              activeVoices: active,
               sounding: msg.sounding,
               triggersPerSec: msg.triggersPerSec,
               deferredPerSec: msg.deferredPerSec,
@@ -189,7 +184,6 @@ export class AudioEngine {
     return this.bank;
   }
 
-  /** Load and decode a URL (e.g. bundled default source). */
   async loadUrl(url: string): Promise<SpectralBank> {
     await this.ensureRunning();
     if (!this.ctx) throw new Error("AudioContext unavailable");
@@ -208,29 +202,24 @@ export class AudioEngine {
     return this.bank;
   }
 
-  sendPlan(plan: VoicePlan): void {
+  sendPlan(plan: GrainPlan): void {
     this.lastPlan = plan;
     if (!this.node || !this.bank) return;
-    // Structure identity + topology; colour is envelope material only.
     this.node.port.postMessage({
       type: "plan",
       masterGain: plan.masterGain,
       gridWidth: plan.gridWidth,
       gridHeight: plan.gridHeight,
-      voices: plan.voices.map((v) => ({
-        structureId: v.structureId,
-        probeIndex: v.probeIndex,
-        r: v.r,
-        g: v.g,
-        b: v.b,
-        colourCoherence: v.colourCoherence,
-        x: v.x,
-        y: v.y,
-        grainLengthSec: v.grainLengthSec,
-        overlap: v.overlap,
-        persistence: v.persistence,
-        amplitudeShare: v.amplitudeShare,
-        motion: v.motion,
+      grains: plan.grains.map((g) => ({
+        latticeIndex: g.latticeIndex,
+        r: g.r,
+        g: g.g,
+        b: g.b,
+        x: g.x,
+        y: g.y,
+        grainLengthSec: g.grainLengthSec,
+        amplitudeShare: g.amplitudeShare,
+        localDelta: g.localDelta,
       })),
     });
   }

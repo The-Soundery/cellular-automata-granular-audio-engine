@@ -1,26 +1,29 @@
-# Audio system report — V2 structure-centric sonification
+# Audio system report — V3 equal-share field renderer
 
 ## Musical objects
 
-Coherent regions (structures) derived from neighbour RGB similarity — not individual cells.
+None curated. The ear hears redistribution of sonic energy through a finite
+equal-share lattice. Structures may emerge psychoacoustically; they are never
+selected or scored.
 
 ## Contract
 
 | Axis | Role |
 |------|------|
-| Structure probe X | Sample position |
-| Structure probe Y | Spectral position |
-| Region colour | Grain envelope material only |
-| Structure area/mass | Voice mass / amplitude share |
-| Structure stability/speed | Grain length, overlap, motion refresh |
-| Mean field energy | Master gain |
+| Lattice X | Sample position |
+| Lattice Y | Spectral position |
+| RGB | Grain envelope material only |
+| Amplitude | Always `1/N` (luminance ≠ volume) |
+| localDelta | Refresh rate only |
+| Master gain | Global energy ceiling |
 
 ## Pipeline
 
-Utomata → FrameObserver → RegionExtractor → StructureTracker → StructureAllocator → AudioEngine → grain-processor
+Utomata → FrameObserver → FieldReducer → AudioEngine → grain-processor
 
-## Performance
+## Performance (v3.0)
 
-- Max 32 voices, 12 triggers/block
-- Region extract capped at 48 regions/frame
+- Grain budget: 64 (8×8 lattice on 128²)
+- Max worklet slots: 128
+- Max triggers/block: 24
 - Spectral bank offline (48 bins), Y-only at trigger

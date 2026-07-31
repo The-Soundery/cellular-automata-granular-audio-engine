@@ -1,7 +1,7 @@
 Cellular Automata Granular Audio Engine — Implementation Filter (V3)
-Status: Planning filter only. No code changes in this document’s scope.
+Status: v3.0 engine pass started on branch `v3` (FieldReducer + worklet live).
 North star: Creative Brief v3.txt
-Compared against: current V2 structure-centric codebase on branch v2.
+Compared against: former V2 structure-centric codebase.
 
 How to use
 ----------

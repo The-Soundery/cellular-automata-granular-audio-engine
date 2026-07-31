@@ -18,6 +18,7 @@ export interface AudioMeterStats {
   rms: number;
   peak: number;
   masterGain: number;
+  /** Active equal-share lattice grains. */
   activeVoices: number | string;
   sounding: number | string;
   triggersPerSec: number;
@@ -25,6 +26,7 @@ export interface AudioMeterStats {
   meanR: number;
   meanG: number;
   meanLen: number;
+  meanDelta?: number;
 }
 
 export interface ControlsApi {
@@ -79,7 +81,7 @@ export function mountControls(
     <dl class="stats">
       <div><dt>Step</dt><dd id="st-step">0</dd></div>
       <div><dt>FPS</dt><dd id="st-fps">0</dd></div>
-      <div><dt>Energy</dt><dd id="st-energy">0</dd></div>
+      <div><dt>Δ field</dt><dd id="st-energy">0</dd></div>
       <div><dt>Audio</dt><dd id="st-audio">idle</dd></div>
     </dl>
     <div class="meter-block">
@@ -90,15 +92,16 @@ export function mountControls(
         <div class="meter-row"><span>Gain</span><div class="bar"><i id="bar-gain"></i></div><em id="st-gain">—</em></div>
       </div>
       <dl class="stats stats-audio">
-        <div><dt>Voices</dt><dd id="st-voices">—</dd></div>
+        <div><dt>Grains</dt><dd id="st-voices">—</dd></div>
         <div><dt>Sounding</dt><dd id="st-sounding">—</dd></div>
         <div><dt>Trig/s</dt><dd id="st-trigs">—</dd></div>
         <div><dt>Defer/s</dt><dd id="st-defer">—</dd></div>
         <div><dt>Mean R</dt><dd id="st-mean-r">—</dd></div>
         <div><dt>Mean G</dt><dd id="st-mean-g">—</dd></div>
         <div><dt>Mean len</dt><dd id="st-mean-len">—</dd></div>
+        <div><dt>Mean Δ</dt><dd id="st-mean-delta">—</dd></div>
       </dl>
-      <p class="meter-hint">Overlay: live structure probes · X/Y = sample/spectrum · colour = grain envelope</p>
+      <p class="meter-hint">Overlay: equal-share lattice · X/Y = sample/spectrum · colour = grain material · luminance ≠ volume</p>
     </div>
   `;
   parent.appendChild(root);
@@ -186,6 +189,7 @@ export function mountControls(
         (root.querySelector("#st-mean-r") as HTMLElement).textContent = "—";
         (root.querySelector("#st-mean-g") as HTMLElement).textContent = "—";
         (root.querySelector("#st-mean-len") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-mean-delta") as HTMLElement).textContent = "—";
         setBar("#bar-rms", 0, 1);
         setBar("#bar-peak", 0, 1);
         setBar("#bar-gain", 0, 1);
@@ -214,10 +218,12 @@ export function mountControls(
         m.meanG.toFixed(2);
       (root.querySelector("#st-mean-len") as HTMLElement).textContent =
         `${(m.meanLen * 1000).toFixed(0)}ms`;
+      (root.querySelector("#st-mean-delta") as HTMLElement).textContent =
+        (m.meanDelta ?? 0).toFixed(3);
 
       setBar("#bar-rms", m.rms, 0.5);
       setBar("#bar-peak", m.peak, 1);
-      setBar("#bar-gain", m.masterGain, s.gainBarMax ?? 2.5);
+      setBar("#bar-gain", m.masterGain, s.gainBarMax ?? 1);
     },
   };
 }

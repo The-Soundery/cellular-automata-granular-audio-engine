@@ -1,23 +1,22 @@
 /**
- * AudioWorklet — V2 structure-centric topological sonification.
+ * AudioWorklet — V3 equal-share field renderer.
  *
- * Layer 1: structure probe X/Y → sample / spectral position (motion-continuous)
- * Layer 2: region colour → grain envelope material ONLY
- * Layers 3–4: overlap / persistence / motion from structure behaviour
- *
- * Voices remapped by structureId+probeIndex (never list order).
+ * Lattice slots (not curated voices):
+ *   X → sample position, Y → spectral position
+ *   RGB → grain envelope material ONLY (never amplitude / spectrum)
+ *   localDelta → refresh rate only
+ *   amplitudeShare is always equal (1/N); masterGain is a global ceiling
  */
 
-const MAX_VOICES = 32;
+const MAX_GRAINS = 128;
 const GRAIN_CAP = 12288;
-const MAX_TRIGGERS_PER_BLOCK = 12;
+const MAX_TRIGGERS_PER_BLOCK = 24;
 const GAIN_SMOOTH = 0.04;
 const STATS_EVERY_BLOCKS = 8;
-const MOTION_REFRESH_CELLS = 1.6;
-const SEAM_CROSSFADE_SEC = 0.045;
-const FADE_OUT_SEC = 0.08;
+const SEAM_CROSSFADE_SEC = 0.035;
+const PLAN_FADE_SEC = 0.02;
 
-class GrainVoice {
+class GrainSlot {
   constructor() {
     this.grain = new Float32Array(GRAIN_CAP);
     this.grainB = new Float32Array(GRAIN_CAP);
@@ -26,31 +25,25 @@ class GrainVoice {
 
   reset() {
     this.active = false;
-    this.structureId = -1;
-    this.probeIndex = 0;
+    this.latticeIndex = -1;
     this.r = 0;
     this.g = 0;
     this.b = 0;
-    this.colourCoherence = 0.5;
     this.x = 0;
     this.y = 0;
     this.bakedX = 0;
     this.bakedY = 0;
-    this.grainLengthSec = 0.06;
-    this.overlap = 0.5;
-    this.persistence = 0.5;
+    this.grainLengthSec = 0.09;
     this.amplitudeShare = 0;
-    this.motion = 0;
+    this.localDelta = 0;
     this.samplesUntilTrigger = 0;
     this.grainLen = 0;
     this.grainPos = 0;
     this.grainGain = 0;
+    this.gainTarget = 0;
     this.sounding = false;
-    this.fadeSamples = 0;
-    this.fadePos = 0;
     this.crossLen = 0;
     this.crossPos = 0;
-    this.crossGainFrom = 0;
     this.crossFromIsB = false;
     this.usingB = false;
   }
@@ -72,7 +65,7 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.masterGain = 0;
     this.activeCount = 0;
     this.rrCursor = 0;
-    this.voices = Array.from({ length: MAX_VOICES }, () => new GrainVoice());
+    this.slots = Array.from({ length: MAX_GRAINS }, () => new GrainSlot());
     this.windowCache = new Map();
     this.blockCounter = 0;
     this.statsTriggers = 0;
@@ -98,11 +91,10 @@ class GrainProcessor extends AudioWorkletProcessor {
         if (!this.length && this.bins[0]) this.length = this.bins[0].length;
       } else if (msg.type === "plan") {
         this.applyPlan(msg);
-      } else if (msg.type === "resetVoices") {
-        // Keep spectral bank; wipe voice / gain state for CA Reset.
+      } else if (msg.type === "resetGrains" || msg.type === "resetVoices") {
         this.masterGainTarget = 0;
         this.masterGain = 0;
-        for (const v of this.voices) v.reset();
+        for (const s of this.slots) s.reset();
         this.activeCount = 0;
         this.statsTriggers = 0;
         this.statsDeferred = 0;
@@ -113,14 +105,10 @@ class GrainProcessor extends AudioWorkletProcessor {
         this.binCount = 0;
         this.masterGainTarget = 0;
         this.masterGain = 0;
-        for (const v of this.voices) v.reset();
+        for (const s of this.slots) s.reset();
         this.activeCount = 0;
       }
     };
-  }
-
-  voiceKey(structureId, probeIndex) {
-    return structureId + ":" + probeIndex;
   }
 
   applyPlan(msg) {
@@ -133,152 +121,86 @@ class GrainProcessor extends AudioWorkletProcessor {
       this.gridHeight = msg.gridHeight | 0;
     }
 
-    const list = msg.voices || [];
-    const byKey = new Map();
+    const list = msg.grains || msg.voices || [];
+    const byIndex = new Map();
     for (const p of list) {
-      byKey.set(this.voiceKey(p.structureId | 0, p.probeIndex | 0), p);
+      const idx =
+        typeof p.latticeIndex === "number" ? p.latticeIndex | 0 : -1;
+      if (idx >= 0 && idx < MAX_GRAINS) byIndex.set(idx, p);
     }
 
-    const assigned = new Uint8Array(MAX_VOICES);
-    const claimedKeys = new Set();
-
-    // Remap existing voices by identity.
-    for (let i = 0; i < MAX_VOICES; i++) {
-      const v = this.voices[i];
-      if (!v.active || v.structureId < 0) continue;
-      const key = this.voiceKey(v.structureId, v.probeIndex);
-      const p = byKey.get(key);
+    for (let i = 0; i < MAX_GRAINS; i++) {
+      const slot = this.slots[i];
+      const p = byIndex.get(i);
       if (!p) {
-        // Structure gone — fade out once (do not restart fade every plan).
-        v.amplitudeShare = 0;
-        if (v.fadeSamples <= 0) {
-          v.fadeSamples = Math.floor(FADE_OUT_SEC * this.sampleRate_);
-          v.fadePos = 0;
+        slot.gainTarget = 0;
+        if (slot.active && slot.amplitudeShare <= 0 && !slot.sounding) {
+          slot.active = false;
+          slot.latticeIndex = -1;
+        } else if (slot.active) {
+          slot.amplitudeShare = 0;
         }
         continue;
       }
-      this.writeParams(v, p, false);
-      assigned[i] = 1;
-      claimedKeys.add(key);
-    }
 
-    // Bind new identities to free slots.
-    for (const p of list) {
-      const key = this.voiceKey(p.structureId | 0, p.probeIndex | 0);
-      if (claimedKeys.has(key)) continue;
-      let slot = -1;
-      for (let i = 0; i < MAX_VOICES; i++) {
-        if (!assigned[i] && !this.voices[i].active) {
-          slot = i;
-          break;
-        }
+      const isNew = !slot.active || slot.latticeIndex !== i;
+      if (isNew) {
+        slot.reset();
+        slot.active = true;
+        slot.latticeIndex = i;
+        slot.samplesUntilTrigger = Math.floor(
+          (i * this.sampleRate_ * 0.09) / Math.max(1, list.length),
+        );
       }
-      if (slot < 0) {
-        for (let i = 0; i < MAX_VOICES; i++) {
-          if (!assigned[i]) {
-            slot = i;
-            break;
-          }
-        }
-      }
-      if (slot < 0) break;
-      const v = this.voices[slot];
-      v.reset();
-      v.active = true;
-      this.writeParams(v, p, true);
-      const grainSamples = this.grainSampleCount(v);
-      const interval = this.triggerInterval(v, grainSamples);
-      v.samplesUntilTrigger = Math.floor((slot * interval) / Math.max(1, list.length));
-      assigned[slot] = 1;
-      claimedKeys.add(key);
-    }
 
-    // Deactivate unassigned slots that finished fading.
-    for (let i = 0; i < MAX_VOICES; i++) {
-      if (assigned[i]) continue;
-      const v = this.voices[i];
-      if (v.active && v.amplitudeShare <= 0 && !v.sounding && v.fadeSamples <= 0) {
-        v.active = false;
-        v.structureId = -1;
-      } else if (v.active && !claimedKeys.has(this.voiceKey(v.structureId, v.probeIndex))) {
-        v.amplitudeShare = 0;
-        if (v.fadeSamples <= 0) {
-          v.fadeSamples = Math.floor(FADE_OUT_SEC * this.sampleRate_);
-          v.fadePos = 0;
-        }
+      slot.r = clamp01(p.r);
+      slot.g = clamp01(p.g);
+      slot.b = clamp01(p.b);
+      slot.x = typeof p.x === "number" ? p.x : 0;
+      slot.y = typeof p.y === "number" ? p.y : 0;
+      slot.grainLengthSec =
+        typeof p.grainLengthSec === "number" ? p.grainLengthSec : 0.09;
+      slot.localDelta = clamp01(p.localDelta ?? 0);
+      slot.amplitudeShare = Math.max(0, p.amplitudeShare || 0);
+      slot.gainTarget = slot.amplitudeShare;
+      slot.active = true;
+
+      // Faster refresh where the field is changing — not a chaos aesthetic pool.
+      if (!isNew && slot.localDelta > 0.08) {
+        const hurry = Math.floor(
+          this.sampleRate_ * (0.04 - 0.03 * slot.localDelta),
+        );
+        slot.samplesUntilTrigger = Math.min(
+          slot.samplesUntilTrigger,
+          Math.max(32, hurry),
+        );
       }
     }
 
     let active = 0;
-    for (let i = 0; i < MAX_VOICES; i++) {
-      if (this.voices[i].active) active++;
+    for (let i = 0; i < MAX_GRAINS; i++) {
+      if (this.slots[i].active) active++;
     }
     this.activeCount = active;
   }
 
-  writeParams(v, p, isNew) {
-    const prevX = v.x;
-    const prevY = v.y;
-    v.structureId = p.structureId | 0;
-    v.probeIndex = p.probeIndex | 0;
-    v.r = clamp01(p.r);
-    v.g = clamp01(p.g);
-    v.b = clamp01(p.b);
-    v.colourCoherence = clamp01(p.colourCoherence ?? 0.5);
-    v.x = typeof p.x === "number" ? p.x : 0;
-    v.y = typeof p.y === "number" ? p.y : 0;
-    v.grainLengthSec = p.grainLengthSec;
-    v.overlap = clamp01(p.overlap);
-    v.persistence = clamp01(p.persistence ?? 0.5);
-    v.amplitudeShare = Math.max(0, p.amplitudeShare || 0);
-    v.motion = Math.max(0, p.motion || 0);
-    v.active = true;
-
-    if (!isNew) {
-      const dx = Math.abs(shortestDelta(prevX, v.x, this.gridWidth));
-      const dy = Math.abs(shortestDelta(prevY, v.y, this.gridHeight));
-      const moved = Math.hypot(dx, dy);
-      // Only rebake early on genuine translation — not tip/allocation flicker.
-      if (v.motion >= MOTION_REFRESH_CELLS && moved >= MOTION_REFRESH_CELLS * 0.6) {
-        v.samplesUntilTrigger = Math.min(
-          v.samplesUntilTrigger,
-          Math.floor(this.sampleRate_ * 0.012),
-        );
-      }
-    }
-  }
-
-  grainSampleCount(v) {
+  grainSampleCount(slot) {
     const sr = this.sampleRate_;
     return Math.min(
       GRAIN_CAP,
-      Math.max(64, Math.floor(v.grainLengthSec * sr)),
+      Math.max(64, Math.floor(slot.grainLengthSec * sr)),
     );
   }
 
-  triggerInterval(v, grainSamples) {
+  /** Fixed medium overlap; localDelta shortens interval (field change). */
+  triggerInterval(slot, grainSamples) {
     const sr = this.sampleRate_;
-    let advance;
-    if (v.overlap >= 0.65) {
-      advance = 0.5 + 0.3 * v.overlap;
-    } else {
-      advance = 0.12 + 0.45 * v.overlap;
-    }
-    advance *= 1 - 0.18 * v.persistence;
-    // Moving structures retrigger denser for audible topology chase.
-    const motionBoost = clamp01(v.motion / 5);
-    advance *= 1 - 0.22 * motionBoost;
-    if (v.overlap >= 0.65 && motionBoost < 0.35) {
-      advance = Math.max(0.42, advance);
-    }
-
-    let interval = Math.floor(grainSamples * (1 - advance));
-    interval = Math.min(interval, grainSamples);
-    if (motionBoost > 0.55) {
-      interval = Math.min(interval, Math.floor(sr * 0.055));
-    }
-    const minInterval = Math.max(64, Math.floor(sr / 100));
-    const maxInterval = Math.floor(sr * 0.55);
+    // ~55% hop → continuous fusion when field is steady.
+    let advance = 0.55;
+    advance *= 1 + 0.35 * clamp01(slot.localDelta);
+    let interval = Math.floor(grainSamples * (1 - Math.min(0.85, advance)));
+    const minInterval = Math.max(64, Math.floor(sr / 80));
+    const maxInterval = Math.floor(sr * 0.2);
     return Math.max(minInterval, Math.min(maxInterval, interval));
   }
 
@@ -294,7 +216,6 @@ class GrainProcessor extends AudioWorkletProcessor {
     return xc / (w - 1);
   }
 
-  /** Y-only spectral focus — colour never enters here. */
   buildSpectralWeights(yNorm) {
     const binCount = this.binCount;
     const scaled = clamp01(yNorm) * Math.max(1, binCount - 1);
@@ -308,16 +229,11 @@ class GrainProcessor extends AudioWorkletProcessor {
     return weights;
   }
 
-  /**
-   * Colour → envelope material only.
-   * R → attack sharpness, G → release length, B → curvature / energy distribution.
-   * colourCoherence pulls toward smoother symmetric Hann.
-   */
-  getRegionEnvelope(n, r, g, b, coherence) {
+  /** Colour → envelope material only. Never amplitude. */
+  getRegionEnvelope(n, r, g, b) {
     const attack = 0.08 + clamp01(r) * 0.35;
     const release = 0.12 + clamp01(g) * 0.45;
     const curve = 0.4 + clamp01(b) * 0.9;
-    const coh = clamp01(coherence);
     const key =
       n +
       ":" +
@@ -325,14 +241,12 @@ class GrainProcessor extends AudioWorkletProcessor {
       ":" +
       release.toFixed(2) +
       ":" +
-      curve.toFixed(2) +
-      ":" +
-      coh.toFixed(2);
+      curve.toFixed(2);
     let w = this.windowCache.get(key);
     if (w) return w;
     w = new Float32Array(n);
-    const aN = Math.max(1, Math.floor(n * attack * (1.15 - coh * 0.4)));
-    const rN = Math.max(1, Math.floor(n * release * (1.15 - coh * 0.35)));
+    const aN = Math.max(1, Math.floor(n * attack));
+    const rN = Math.max(1, Math.floor(n * release));
     for (let i = 0; i < n; i++) {
       let env = 1;
       if (i < aN) {
@@ -344,8 +258,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       }
       const x = n === 1 ? 0 : i / (n - 1);
       const hann = 0.5 * (1 - Math.cos(2 * Math.PI * x));
-      // Coherent regions → more Hann; differentiated colour → more asymmetric ADS.
-      w[i] = env * (1 - coh * 0.55) + hann * (0.35 + coh * 0.65);
+      w[i] = env * 0.55 + hann * 0.45;
     }
     this.windowCache.set(key, w);
     return w;
@@ -371,68 +284,66 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.masterGain +=
       (this.masterGainTarget - this.masterGain) * GAIN_SMOOTH;
 
-    const active = this.activeCount;
     let triggersLeft = MAX_TRIGGERS_PER_BLOCK;
     let sounding = 0;
+    const fadeSamples = Math.max(1, Math.floor(PLAN_FADE_SEC * this.sampleRate_));
 
-    const startIdx = this.rrCursor % Math.max(1, MAX_VOICES);
-    this.rrCursor = (this.rrCursor + 1) % Math.max(1, MAX_VOICES);
+    const startIdx = this.rrCursor % Math.max(1, MAX_GRAINS);
+    this.rrCursor = (this.rrCursor + 1) % Math.max(1, MAX_GRAINS);
 
     for (let i = 0; i < n; i++) {
-      for (let k = 0; k < MAX_VOICES; k++) {
-        const v = this.voices[(startIdx + k) % MAX_VOICES];
-        if (!v || !v.active) continue;
+      for (let k = 0; k < MAX_GRAINS; k++) {
+        const slot = this.slots[(startIdx + k) % MAX_GRAINS];
+        if (!slot || !slot.active) continue;
 
-        if (v.samplesUntilTrigger <= 0) {
-          if (triggersLeft > 0) {
-            this.triggerGrain(v);
+        // Smooth gain toward equal-share target to avoid plan-swap clicks.
+        const gStep = (slot.gainTarget - slot.grainGain) / fadeSamples;
+        slot.grainGain += gStep;
+        if (Math.abs(slot.grainGain - slot.gainTarget) < 1e-5) {
+          slot.grainGain = slot.gainTarget;
+        }
+        if (slot.grainGain <= 1e-5 && slot.gainTarget <= 0 && !slot.sounding) {
+          slot.active = false;
+          slot.latticeIndex = -1;
+          continue;
+        }
+
+        if (slot.samplesUntilTrigger <= 0) {
+          if (triggersLeft > 0 && slot.gainTarget > 0) {
+            this.triggerGrain(slot);
             this.statsTriggers++;
             triggersLeft--;
-            const grainSamples = v.grainLen || this.grainSampleCount(v);
-            v.samplesUntilTrigger = this.triggerInterval(v, grainSamples);
-          } else {
+            const grainSamples = slot.grainLen || this.grainSampleCount(slot);
+            slot.samplesUntilTrigger = this.triggerInterval(slot, grainSamples);
+          } else if (slot.gainTarget > 0) {
             this.statsDeferred++;
-            v.samplesUntilTrigger = n - i;
+            slot.samplesUntilTrigger = n - i;
             continue;
+          } else {
+            slot.samplesUntilTrigger = Math.floor(this.sampleRate_ * 0.05);
           }
         }
-        v.samplesUntilTrigger--;
+        slot.samplesUntilTrigger--;
 
         let s = 0;
-        if (v.crossPos < v.crossLen) {
-          const t = v.crossPos / Math.max(1, v.crossLen - 1);
+        if (slot.crossPos < slot.crossLen) {
+          const t = slot.crossPos / Math.max(1, slot.crossLen - 1);
           const a = Math.cos(t * Math.PI * 0.5);
           const b = Math.sin(t * Math.PI * 0.5);
-          const fromBuf = v.crossFromIsB ? v.grainB : v.grain;
-          const toBuf = v.usingB ? v.grainB : v.grain;
-          const fromIdx = Math.min(v.crossPos, GRAIN_CAP - 1);
-          const toIdx = Math.min(v.grainPos, GRAIN_CAP - 1);
-          const from = fromBuf[fromIdx] || 0;
-          const to = toBuf[toIdx] || 0;
-          s = (from * a + to * b) * v.grainGain * this.masterGain;
-          v.crossPos++;
-          if (v.grainPos < v.grainLen) v.grainPos++;
-          v.sounding = true;
-        } else if (v.grainPos < v.grainLen) {
-          const buf = v.usingB ? v.grainB : v.grain;
-          s = buf[v.grainPos++] * v.grainGain * this.masterGain;
-          v.sounding = true;
+          const fromBuf = slot.crossFromIsB ? slot.grainB : slot.grain;
+          const toBuf = slot.usingB ? slot.grainB : slot.grain;
+          const from = fromBuf[Math.min(slot.crossPos, GRAIN_CAP - 1)] || 0;
+          const to = toBuf[Math.min(slot.grainPos, GRAIN_CAP - 1)] || 0;
+          s = (from * a + to * b) * slot.grainGain * this.masterGain;
+          slot.crossPos++;
+          if (slot.grainPos < slot.grainLen) slot.grainPos++;
+          slot.sounding = true;
+        } else if (slot.grainPos < slot.grainLen) {
+          const buf = slot.usingB ? slot.grainB : slot.grain;
+          s = buf[slot.grainPos++] * slot.grainGain * this.masterGain;
+          slot.sounding = true;
         } else {
-          v.sounding = false;
-        }
-
-        if (v.fadeSamples > 0) {
-          const f = 1 - v.fadePos / Math.max(1, v.fadeSamples);
-          s *= Math.max(0, f);
-          v.fadePos++;
-          if (v.fadePos >= v.fadeSamples) {
-            v.fadeSamples = 0;
-            if (v.amplitudeShare <= 0) {
-              v.active = false;
-              v.structureId = -1;
-              v.sounding = false;
-            }
-          }
+          slot.sounding = false;
         }
 
         outL[i] += s;
@@ -450,8 +361,8 @@ class GrainProcessor extends AudioWorkletProcessor {
       blockEnergy += outL[i] * outL[i];
     }
 
-    for (let i = 0; i < MAX_VOICES; i++) {
-      if (this.voices[i].sounding) sounding++;
+    for (let i = 0; i < MAX_GRAINS; i++) {
+      if (this.slots[i].sounding) sounding++;
     }
 
     this.statsPeak = Math.max(this.statsPeak, blockPeak);
@@ -459,7 +370,6 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.statsSamples += n;
     this.blockCounter++;
     this.emitStats(sounding);
-
     return true;
   }
 
@@ -473,28 +383,21 @@ class GrainProcessor extends AudioWorkletProcessor {
 
     /** @type {object[]} */
     const listen = [];
-    for (let i = 0; i < MAX_VOICES; i++) {
-      const v = this.voices[i];
-      if (!v.active) continue;
+    for (let i = 0; i < MAX_GRAINS; i++) {
+      const s = this.slots[i];
+      if (!s.active) continue;
       listen.push({
-        structureId: v.structureId,
-        probeIndex: v.probeIndex,
-        // Prefer live probe for overlay; baked is available for diagnostics.
-        x: v.x,
-        y: v.y,
-        liveX: v.x,
-        liveY: v.y,
-        bakedX: v.bakedX,
-        bakedY: v.bakedY,
-        r: v.r,
-        g: v.g,
-        b: v.b,
-        amp: v.amplitudeShare,
-        len: v.grainLengthSec,
-        sounding: v.sounding,
-        gain: v.grainGain * this.masterGain,
-        extentW: 0,
-        extentH: 0,
+        latticeIndex: s.latticeIndex,
+        x: s.x,
+        y: s.y,
+        r: s.r,
+        g: s.g,
+        b: s.b,
+        amp: s.amplitudeShare,
+        len: s.grainLengthSec,
+        localDelta: s.localDelta,
+        sounding: s.sounding,
+        gain: s.grainGain * this.masterGain,
       });
     }
 
@@ -504,6 +407,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       peak: this.statsPeak,
       masterGain: this.masterGain,
       activeVoices: this.activeCount,
+      activeGrains: this.activeCount,
       sounding: soundingNow,
       triggersPerSec: secs > 0 ? this.statsTriggers / secs : 0,
       deferredPerSec: secs > 0 ? this.statsDeferred / secs : 0,
@@ -517,40 +421,32 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.statsSamples = 0;
   }
 
-  triggerGrain(v) {
-    const grainSamples = this.grainSampleCount(v);
+  triggerGrain(slot) {
+    const grainSamples = this.grainSampleCount(slot);
     const len = this.length;
     if (!this.bins.length) return;
 
     const w = this.gridWidth;
     const h = this.gridHeight;
-    const xNorm = this.sampleNormFromX(v.x);
-    const yNorm = this.spectralNormFromY(v.y);
+    const xNorm = this.sampleNormFromX(slot.x);
+    const yNorm = this.spectralNormFromY(slot.y);
 
-    const dx = Math.abs(shortestDelta(v.bakedX, v.x, w));
-    const dy = Math.abs(shortestDelta(v.bakedY, v.y, h));
     const wrapJump =
-      v.grainLen > 0 &&
-      (Math.abs(v.bakedX - v.x) > w * 0.45 ||
-        Math.abs(v.bakedY - v.y) > h * 0.45);
-    const motionRefresh =
-      v.grainLen > 0 &&
-      v.grainPos < v.grainLen &&
-      dx + dy > MOTION_REFRESH_CELLS;
+      slot.grainLen > 0 &&
+      (Math.abs(slot.bakedX - slot.x) > w * 0.45 ||
+        Math.abs(slot.bakedY - slot.y) > h * 0.45);
 
     const start = Math.floor(xNorm * Math.max(0, len - grainSamples));
     const env = this.getRegionEnvelope(
       grainSamples,
-      v.r,
-      v.g,
-      v.b,
-      v.colourCoherence,
+      slot.r,
+      slot.g,
+      slot.b,
     );
     const weights = this.buildSpectralWeights(yNorm);
 
-    // Always write into the inactive buffer, then swap (optional crossfade).
-    const writeToB = !v.usingB;
-    const target = writeToB ? v.grainB : v.grain;
+    const writeToB = !slot.usingB;
+    const target = writeToB ? slot.grainB : slot.grain;
     const pcm = this.pcm;
 
     for (let i = 0; i < grainSamples; i++) {
@@ -571,32 +467,24 @@ class GrainProcessor extends AudioWorkletProcessor {
       target[i] = s * env[i];
     }
 
-    if (wrapJump || motionRefresh) {
-      v.crossLen = Math.min(
+    if (wrapJump || slot.localDelta > 0.2) {
+      slot.crossLen = Math.min(
         grainSamples,
         Math.floor(SEAM_CROSSFADE_SEC * this.sampleRate_),
       );
-      v.crossPos = 0;
-      v.crossFromIsB = v.usingB;
+      slot.crossPos = 0;
+      slot.crossFromIsB = slot.usingB;
     } else {
-      v.crossLen = 0;
-      v.crossPos = 0;
+      slot.crossLen = 0;
+      slot.crossPos = 0;
     }
 
-    v.usingB = writeToB;
-    v.grainLen = grainSamples;
-    v.grainPos = 0;
-    v.grainGain = v.amplitudeShare;
-    v.bakedX = v.x;
-    v.bakedY = v.y;
+    slot.usingB = writeToB;
+    slot.grainLen = grainSamples;
+    slot.grainPos = 0;
+    slot.bakedX = slot.x;
+    slot.bakedY = slot.y;
   }
-}
-
-function shortestDelta(from, to, period) {
-  let d = to - from;
-  if (d > period * 0.5) d -= period;
-  if (d < -period * 0.5) d += period;
-  return d;
 }
 
 function clamp01(v) {
