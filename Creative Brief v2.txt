@@ -1,4 +1,6 @@
 Cellular Automata Granular Audio Engine - Creative Brief (V2)
+*** SUPERSEDED by Creative Brief v3.txt (AUTHORITATIVE). Kept for historical context only. ***
+
 Project Overview
 
 Version 2 of this project is an evolution of the original Cellular Automata granular audio instrument. The fundamental philosophy remains unchanged:

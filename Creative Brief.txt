@@ -1,4 +1,6 @@
 Cellular Automata Granular Audio Engine - Creative Brief
+*** SUPERSEDED by Creative Brief v3.txt (AUTHORITATIVE). Kept for historical context only. ***
+
 Project Overview
 This project is an experimental web-based audiovisual instrument that transforms source audio into an emergent granular soundscape using Cellular Automata (CA) simulations.
 The core philosophy of the project is extremely important:
