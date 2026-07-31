@@ -29,5 +29,4 @@ Utomata
 ## Obsolete (do not extend)
 
 Equal-share fixed lattice + dumb paint. Archived under `public/_obsolete/`.
-V3 identity (X→sample / RGB→envelope): see `Creative Brief v3.txt` (superseded).
-See also superseded notes in `scripts/listening-gate-v3.md`.
+Prior V3 identity (X→sample / RGB→envelope) is superseded by V4; history is in git.

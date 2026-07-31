@@ -1,8 +1,8 @@
 Cellular Automata Granular Audio Engine — Creative Brief (V4)
 Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
-Supersedes Creative Brief v3.txt identity mapping (X→sample / RGB→envelope).
+Supersedes prior V3 identity mapping (X→sample / RGB→envelope).
 Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn architecture.
-Source: Creative Brief v3.txt; listening experiment test-X=Pan/RGB=SamplePos (2026-08-01).
+Source: Sonic Laws session (2026-07-31); V4 listening remap (2026-08-01).
 
 ------------------------------------------------------------------------------
 HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-01)
@@ -13,8 +13,8 @@ after the lattice path failed. A further identity remap was then validated by ea
 
   Hue(RGB) → sample position · X → stereo pan · Y → spectrum · fixed envelope
 
-Branch `v4` is the current mainline. Branch `v3` preserves the prior identity
-laws for reference. Lattice remains archived under public/_obsolete/.
+Branch `v4` is the current mainline. Prior briefs and lattice code live in git
+history / `public/_obsolete/` — do not revive them.
 
 DO NOT continue or refine:
 

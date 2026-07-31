@@ -1,7 +1,7 @@
 Cellular Automata Granular Audio Engine — Creative Interview Record
 Date: 2026-07-31
-Status: Completed from live interview answers (not synthesized).
-Purpose: Source material for Creative Brief V3.
+Status: Historical interview record (answers not synthesized).
+Purpose: Decision history. Current doctrine: Creative Brief v4.txt.
 
 
 Q1. Listening object
@@ -187,10 +187,7 @@ Tried: listening points as pixel-like sonic states + dumb granular paint of a
 fixed lattice. Listening tests failed (static repeating texture; sample/spectrum
 locked to fixed addresses). Also rejected: fixing motion via luminance→volume.
 
-Superseded by Sonic Laws in Creative Brief v3.txt (author session 2026-07-31):
-ephemeral grains from field coherence / change; area-weighted budget;
-freeze-at-spawn; neutral loudness. Implemented on branch `v3`; listening gate
-PASSED 2026-08-01 (`scripts/listening-gate-sonic-laws.md`).
-
-Identity remap (2026-08-01): Creative Brief v4.txt / branch `v4` —
-Hue→sample, X→pan, Y→spectrum, fixed envelope. V3 brief kept as history.
+Superseded by Sonic Laws (author session 2026-07-31): ephemeral grains from
+field coherence / change; area-weighted budget; freeze-at-spawn; neutral
+loudness. Later identity remap (2026-08-01) is Creative Brief v4.txt /
+branch `v4` — Hue→sample, X→pan, Y→spectrum, fixed envelope.

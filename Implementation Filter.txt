@@ -16,8 +16,7 @@ STOP — do not revive
 - Mid-grain sample/frequency/pan chase of moving regions
 - V3 identity (X→sample / RGB→envelope) without a new listening decision
 
-Archives (reference only): public/_obsolete/
-Prior doctrine: Creative Brief v3.txt (superseded)
+Archives (reference only): public/_obsolete/ (failed lattice path — do not revive)
 
 ------------------------------------------------------------------------------
 Live pipeline
