@@ -5,16 +5,18 @@ import {
   variationAt,
 } from "./ca/typeU.ts";
 import { FrameObserver } from "./field/FrameObserver.ts";
-import { FieldReducer, MASTER_GAIN } from "./field/FieldReducer.ts";
+import { FieldObserver, type FieldObservation } from "./field/FieldObserver.ts";
+import {
+  GrainScheduler,
+  MASTER_GAIN,
+  type GrainEventBatch,
+} from "./field/GrainScheduler.ts";
 import { AudioEngine } from "./audio/AudioEngine.ts";
 import { mountControls, type AudioMeterStats } from "./ui/controls.ts";
-import { ListenOverlay } from "./ui/listenOverlay.ts";
+import { RegionOverlay } from "./ui/RegionOverlay.ts";
 import "./style.css";
 
-/** Bundled fuller-spectrum default source (trimmed Modular Pad). */
 const DEFAULT_SOURCE_URL = "/default-source.wav";
-
-/** Listening meters refresh ~5 Hz so Trig/s is readable. */
 const METER_UI_HZ = 5;
 const METER_EMA = 0.35;
 
@@ -32,15 +34,23 @@ const caWrap = document.querySelector<HTMLElement>("#ca-wrap")!;
 const controlsMount = document.querySelector<HTMLElement>("#controls-mount")!;
 
 const host = new UtomataHost(caWrap);
-const overlay = new ListenOverlay(caWrap);
-const observer = new FrameObserver(GRID_SIZE, GRID_SIZE);
-const reducer = new FieldReducer();
+const overlay = new RegionOverlay(caWrap);
+const frameObserver = new FrameObserver(GRID_SIZE, GRID_SIZE);
+const fieldObserver = new FieldObserver(GRID_SIZE, GRID_SIZE);
+const scheduler = new GrainScheduler();
 const audio = new AudioEngine();
 
-(window as unknown as { __v3Reducer: FieldReducer }).__v3Reducer = reducer;
+(window as unknown as {
+  __fieldObserver: FieldObserver;
+  __grainScheduler: GrainScheduler;
+}).__fieldObserver = fieldObserver;
+(
+  window as unknown as { __grainScheduler: GrainScheduler }
+).__grainScheduler = scheduler;
 
 let variationIndex = 0;
-let lastMeanDelta = 0;
+let lastObs: FieldObservation | null = null;
+let lastBatch: GrainEventBatch | null = null;
 let lastObservedStep = -1;
 let audioStatus = "idle";
 let lastMeterUiAt = 0;
@@ -71,11 +81,13 @@ const controls = mountControls(controlsMount, {
   },
   onReset() {
     host.reset();
-    observer.reset();
-    reducer.reset();
+    frameObserver.reset();
+    fieldObserver.reset();
+    scheduler.reset();
     audio.clearGrains();
     lastObservedStep = -1;
-    lastMeanDelta = 0;
+    lastObs = null;
+    lastBatch = null;
     overlay.clear();
   },
   onTogglePause() {
@@ -170,7 +182,7 @@ window.addEventListener("resize", () => host.fitZoom(caWrap));
 
 function pushStats(forceMeter = false) {
   const stats = audio.getStats();
-  overlay.draw(audio.isReady ? stats : null);
+  overlay.draw(lastObs, audio.isReady ? stats : null);
 
   const now = performance.now();
   const due =
@@ -179,13 +191,6 @@ function pushStats(forceMeter = false) {
   let meter: AudioMeterStats | null = smoothMeter;
   if (audio.isReady && stats && due) {
     lastMeterUiAt = now;
-    const listen = stats.listen;
-    const n = listen.length || 1;
-    const meanR = listen.reduce((a, v) => a + v.r, 0) / n;
-    const meanG = listen.reduce((a, v) => a + v.g, 0) / n;
-    const meanLen = listen.reduce((a, v) => a + v.len, 0) / n;
-    const meanDelta =
-      listen.reduce((a, v) => a + (v.localDelta ?? 0), 0) / n;
     const raw: AudioMeterStats = {
       rms: stats.rms,
       peak: stats.peak,
@@ -193,11 +198,6 @@ function pushStats(forceMeter = false) {
       activeVoices: stats.activeGrains,
       sounding: stats.sounding,
       triggersPerSec: stats.triggersPerSec,
-      deferredPerSec: stats.deferredPerSec,
-      meanR,
-      meanG,
-      meanLen,
-      meanDelta,
     };
     if (!smoothMeter) {
       smoothMeter = { ...raw };
@@ -209,11 +209,6 @@ function pushStats(forceMeter = false) {
         activeVoices: raw.activeVoices,
         sounding: raw.sounding,
         triggersPerSec: ema(smoothMeter.triggersPerSec, raw.triggersPerSec),
-        deferredPerSec: ema(smoothMeter.deferredPerSec, raw.deferredPerSec),
-        meanR: ema(smoothMeter.meanR, raw.meanR),
-        meanG: ema(smoothMeter.meanG, raw.meanG),
-        meanLen: ema(smoothMeter.meanLen, raw.meanLen),
-        meanDelta: ema(smoothMeter.meanDelta ?? 0, raw.meanDelta ?? 0),
       };
     }
     meter = smoothMeter;
@@ -226,10 +221,22 @@ function pushStats(forceMeter = false) {
     controls.setStats({
       step: host.getStep(),
       fps: host.getFps(),
-      energy: lastMeanDelta,
+      energy: lastObs?.meanDelta ?? 0,
       audio: audioStatus,
       meter,
-      gainBarMax: MASTER_GAIN,
+      field: lastObs
+        ? {
+            regions: lastObs.coherent.length,
+            calmPct: lastObs.calmAreaFraction,
+            chaosPct: lastObs.chaosAreaFraction,
+            meanKappa: lastObs.meanCoherence,
+            calmGrains: lastBatch?.calmActive ?? 0,
+            chaosGrains: lastBatch?.chaosActive ?? 0,
+            budget: lastBatch?.budget ?? scheduler.budget,
+            predictedActive: lastBatch?.predictedActive ?? 0,
+          }
+        : null,
+      gainBarMax: MASTER_GAIN * 2,
     });
   }
 }
@@ -246,15 +253,20 @@ function tick() {
       return;
     }
 
-    const advanced = observer.ingest(img, step);
+    const advanced = frameObserver.ingest(img, step);
     if (advanced) {
       lastObservedStep = step;
-      const plan = reducer.reduce(observer.current, observer.previous);
-      lastMeanDelta =
-        plan.grains.reduce((a, g) => a + g.localDelta, 0) /
-        Math.max(1, plan.grains.length);
-      if (audio.isReady) {
-        audio.sendPlan(plan);
+      lastObs = fieldObserver.observe(
+        frameObserver.current,
+        frameObserver.previous,
+      );
+      lastBatch = scheduler.step(
+        lastObs,
+        frameObserver.current,
+        performance.now(),
+      );
+      if (audio.isReady && lastBatch.events.length) {
+        audio.sendEvents(lastBatch);
       }
     }
   }

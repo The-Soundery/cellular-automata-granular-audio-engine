@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "verify": "node scripts/verify-field-reducer.mjs && node scripts/verify-v3-contract.mjs"
+    "verify": "node scripts/verify-phase0.mjs && node scripts/verify-phase1.mjs && node scripts/verify-phase2.mjs && node scripts/verify-phase4.mjs"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

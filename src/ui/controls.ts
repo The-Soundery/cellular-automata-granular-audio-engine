@@ -8,9 +8,7 @@ export interface ControlsHandlers {
   onNextVariation: () => string;
   onRandomVariation: () => string;
   onLoadAudio: (file: File) => Promise<void>;
-  /** Toggle audio engine on/off. Returns whether audio is now enabled. */
   onToggleAudio: () => Promise<boolean>;
-  /** Toggle listen overlay. Returns whether overlay is now visible. */
   onToggleOverlay: () => boolean;
 }
 
@@ -18,15 +16,20 @@ export interface AudioMeterStats {
   rms: number;
   peak: number;
   masterGain: number;
-  /** Active equal-share lattice grains. */
   activeVoices: number | string;
   sounding: number | string;
   triggersPerSec: number;
-  deferredPerSec: number;
-  meanR: number;
-  meanG: number;
-  meanLen: number;
-  meanDelta?: number;
+}
+
+export interface FieldMeterStats {
+  regions: number;
+  calmPct: number;
+  chaosPct: number;
+  meanKappa: number;
+  calmGrains: number;
+  chaosGrains: number;
+  budget: number;
+  predictedActive: number;
 }
 
 export interface ControlsApi {
@@ -40,7 +43,7 @@ export interface ControlsApi {
     energy: number;
     audio: string;
     meter: AudioMeterStats | null;
-    /** Display scale for the Gain bar (defaults to 2.5). */
+    field: FieldMeterStats | null;
     gainBarMax?: number;
   }) => void;
   root: HTMLElement;
@@ -76,14 +79,26 @@ export function mountControls(
       </label>
     </div>
     <div class="row">
-      <button type="button" id="overlay-toggle">Hide Overlay</button>
+      <button type="button" id="overlay-toggle">Hide Regions</button>
     </div>
     <dl class="stats">
       <div><dt>Step</dt><dd id="st-step">0</dd></div>
       <div><dt>FPS</dt><dd id="st-fps">0</dd></div>
-      <div><dt>Δ field</dt><dd id="st-energy">0</dd></div>
+      <div><dt>Field Δ</dt><dd id="st-energy">0</dd></div>
       <div><dt>Audio</dt><dd id="st-audio">idle</dd></div>
     </dl>
+    <div class="meter-block">
+      <div class="meter-title">Field observation</div>
+      <dl class="stats stats-audio">
+        <div><dt>Regions</dt><dd id="st-regions">—</dd></div>
+        <div><dt>Calm %</dt><dd id="st-calm">—</dd></div>
+        <div><dt>Chaos %</dt><dd id="st-chaos">—</dd></div>
+        <div><dt>Mean κ</dt><dd id="st-kappa">—</dd></div>
+        <div><dt>Budget</dt><dd id="st-budget">—</dd></div>
+        <div><dt>Calm g</dt><dd id="st-calm-g">—</dd></div>
+        <div><dt>Chaos g</dt><dd id="st-chaos-g">—</dd></div>
+      </dl>
+    </div>
     <div class="meter-block">
       <div class="meter-title">Listening</div>
       <div class="meter-bars">
@@ -94,14 +109,9 @@ export function mountControls(
       <dl class="stats stats-audio">
         <div><dt>Grains</dt><dd id="st-voices">—</dd></div>
         <div><dt>Sounding</dt><dd id="st-sounding">—</dd></div>
-        <div><dt>Trig/s</dt><dd id="st-trigs">—</dd></div>
-        <div><dt>Defer/s</dt><dd id="st-defer">—</dd></div>
-        <div><dt>Mean R</dt><dd id="st-mean-r">—</dd></div>
-        <div><dt>Mean G</dt><dd id="st-mean-g">—</dd></div>
-        <div><dt>Mean len</dt><dd id="st-mean-len">—</dd></div>
-        <div><dt>Mean Δ</dt><dd id="st-mean-delta">—</dd></div>
+        <div><dt>Events/s</dt><dd id="st-trigs">—</dd></div>
       </dl>
-      <p class="meter-hint">Overlay: equal-share lattice · X/Y = sample/spectrum · colour = grain material · luminance ≠ volume</p>
+      <p class="meter-hint">Sonic Laws — ephemeral grains · area budget · freeze-at-spawn · neutral loudness</p>
     </div>
   `;
   parent.appendChild(root);
@@ -141,7 +151,7 @@ export function mountControls(
   });
   overlayBtn.addEventListener("click", () => {
     const visible = handlers.onToggleOverlay();
-    overlayBtn.textContent = visible ? "Hide Overlay" : "Show Overlay";
+    overlayBtn.textContent = visible ? "Hide Regions" : "Show Regions";
   });
   root.querySelector("#file")!.addEventListener("change", (e) => {
     const input = e.target as HTMLInputElement;
@@ -167,7 +177,7 @@ export function mountControls(
       audioBtn.textContent = enabled ? "Stop Audio" : "Enable Audio";
     },
     setOverlayVisible(visible: boolean) {
-      overlayBtn.textContent = visible ? "Hide Overlay" : "Show Overlay";
+      overlayBtn.textContent = visible ? "Hide Regions" : "Show Regions";
     },
     setStats(s) {
       (root.querySelector("#st-step") as HTMLElement).textContent = String(s.step);
@@ -177,6 +187,35 @@ export function mountControls(
         s.energy.toFixed(3);
       (root.querySelector("#st-audio") as HTMLElement).textContent = s.audio;
 
+      const f = s.field;
+      if (!f) {
+        (root.querySelector("#st-regions") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-calm") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-chaos") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-kappa") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-budget") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-calm-g") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-chaos-g") as HTMLElement).textContent = "—";
+      } else {
+        (root.querySelector("#st-regions") as HTMLElement).textContent = String(
+          f.regions,
+        );
+        (root.querySelector("#st-calm") as HTMLElement).textContent =
+          `${(f.calmPct * 100).toFixed(0)}%`;
+        (root.querySelector("#st-chaos") as HTMLElement).textContent =
+          `${(f.chaosPct * 100).toFixed(0)}%`;
+        (root.querySelector("#st-kappa") as HTMLElement).textContent =
+          f.meanKappa.toFixed(3);
+        (root.querySelector("#st-budget") as HTMLElement).textContent =
+          `${f.predictedActive}/${f.budget}`;
+        (root.querySelector("#st-calm-g") as HTMLElement).textContent = String(
+          f.calmGrains,
+        );
+        (root.querySelector("#st-chaos-g") as HTMLElement).textContent = String(
+          f.chaosGrains,
+        );
+      }
+
       const m = s.meter;
       if (!m) {
         (root.querySelector("#st-rms") as HTMLElement).textContent = "—";
@@ -185,11 +224,6 @@ export function mountControls(
         (root.querySelector("#st-voices") as HTMLElement).textContent = "—";
         (root.querySelector("#st-sounding") as HTMLElement).textContent = "—";
         (root.querySelector("#st-trigs") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-defer") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-mean-r") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-mean-g") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-mean-len") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-mean-delta") as HTMLElement).textContent = "—";
         setBar("#bar-rms", 0, 1);
         setBar("#bar-peak", 0, 1);
         setBar("#bar-gain", 0, 1);
@@ -210,16 +244,6 @@ export function mountControls(
       );
       (root.querySelector("#st-trigs") as HTMLElement).textContent =
         m.triggersPerSec.toFixed(0);
-      (root.querySelector("#st-defer") as HTMLElement).textContent =
-        m.deferredPerSec.toFixed(0);
-      (root.querySelector("#st-mean-r") as HTMLElement).textContent =
-        m.meanR.toFixed(2);
-      (root.querySelector("#st-mean-g") as HTMLElement).textContent =
-        m.meanG.toFixed(2);
-      (root.querySelector("#st-mean-len") as HTMLElement).textContent =
-        `${(m.meanLen * 1000).toFixed(0)}ms`;
-      (root.querySelector("#st-mean-delta") as HTMLElement).textContent =
-        (m.meanDelta ?? 0).toFixed(3);
 
       setBar("#bar-rms", m.rms, 0.5);
       setBar("#bar-peak", m.peak, 1);

@@ -1,8 +1,9 @@
-import type { GrainPlan } from "../field/FieldReducer.ts";
 import { buildSpectralBank, type SpectralBank } from "./spectral.ts";
+import type { GrainEventBatch } from "../field/GrainScheduler.ts";
+
+export { MASTER_GAIN } from "../field/GrainScheduler.ts";
 
 export interface ListenGrain {
-  latticeIndex: number;
   x: number;
   y: number;
   r: number;
@@ -13,6 +14,7 @@ export interface ListenGrain {
   localDelta?: number;
   sounding: boolean;
   gain: number;
+  regime?: string;
 }
 
 export interface AudioStats {
@@ -20,7 +22,6 @@ export interface AudioStats {
   peak: number;
   masterGain: number;
   activeGrains: number;
-  /** Alias for meters that still say "voices". */
   activeVoices: number;
   sounding: number;
   triggersPerSec: number;
@@ -29,12 +30,14 @@ export interface AudioStats {
   updatedAt: number;
 }
 
+/**
+ * AudioContext + worklet lifecycle. Sends ephemeral GrainEventBatch messages.
+ */
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private bank: SpectralBank | null = null;
   private started = false;
-  private lastPlan: GrainPlan | null = null;
   private stats: AudioStats | null = null;
 
   get isReady(): boolean {
@@ -75,32 +78,17 @@ export class AudioEngine {
   async stop(): Promise<void> {
     this.started = false;
     if (this.node) {
-      this.node.port.postMessage({
-        type: "plan",
-        masterGain: 0,
-        gridWidth: 128,
-        gridHeight: 128,
-        grains: [],
-      });
+      this.node.port.postMessage({ type: "resetGrains" });
     }
     if (this.ctx && this.ctx.state === "running") {
       await this.ctx.suspend().catch(() => undefined);
     }
   }
 
-  /** Hard-reset grain slots while keeping the spectral bank. */
   clearGrains(): void {
-    this.lastPlan = null;
     this.stats = null;
     if (!this.node) return;
     this.node.port.postMessage({ type: "resetGrains" });
-    this.node.port.postMessage({
-      type: "plan",
-      masterGain: 0,
-      gridWidth: 128,
-      gridHeight: 128,
-      grains: [],
-    });
   }
 
   /** @deprecated use clearGrains */
@@ -135,7 +123,7 @@ export class AudioEngine {
               activeVoices: active,
               sounding: msg.sounding,
               triggersPerSec: msg.triggersPerSec,
-              deferredPerSec: msg.deferredPerSec,
+              deferredPerSec: msg.deferredPerSec ?? 0,
               listen: msg.listen || [],
               updatedAt: performance.now(),
             };
@@ -155,7 +143,6 @@ export class AudioEngine {
 
       if (this.bank && this.node) {
         this.sendSource(this.bank);
-        if (this.lastPlan) this.sendPlan(this.lastPlan);
       }
     } catch (err) {
       this.started = false;
@@ -180,7 +167,6 @@ export class AudioEngine {
       await ctx.resume();
     }
     this.started = ctx.state === "running";
-    if (this.lastPlan) this.sendPlan(this.lastPlan);
     return this.bank;
   }
 
@@ -198,28 +184,22 @@ export class AudioEngine {
       await ctx.resume();
     }
     this.started = ctx.state === "running";
-    if (this.lastPlan) this.sendPlan(this.lastPlan);
     return this.bank;
   }
 
-  sendPlan(plan: GrainPlan): void {
-    this.lastPlan = plan;
+  /** Push frozen spawn events to the worklet. */
+  sendEvents(batch: GrainEventBatch): void {
     if (!this.node || !this.bank) return;
+    if (!batch.events.length) return;
     this.node.port.postMessage({
-      type: "plan",
-      masterGain: plan.masterGain,
-      gridWidth: plan.gridWidth,
-      gridHeight: plan.gridHeight,
-      grains: plan.grains.map((g) => ({
-        latticeIndex: g.latticeIndex,
-        r: g.r,
-        g: g.g,
-        b: g.b,
-        x: g.x,
-        y: g.y,
-        grainLengthSec: g.grainLengthSec,
-        amplitudeShare: g.amplitudeShare,
-        localDelta: g.localDelta,
+      type: "events",
+      masterGain: batch.masterGain,
+      gridWidth: batch.gridWidth,
+      gridHeight: batch.gridHeight,
+      events: batch.events.map((e) => ({
+        ...e,
+        gridWidth: batch.gridWidth,
+        gridHeight: batch.gridHeight,
       })),
     });
   }

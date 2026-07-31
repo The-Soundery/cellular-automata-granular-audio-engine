@@ -172,3 +172,17 @@ information into a finite grain budget while preserving relationships.
 Follow-up D — X / Y mapping
 ---------------------------
 Confirmed: horizontal position → sample position; vertical position → spectrum.
+
+
+Follow-up E — Sonic state + dumb granular renderer (2026-07-31)
+----------------------------------------------------------------
+*** SUPERSEDED / DEAD END — do not implement further. ***
+
+Tried: listening points as pixel-like sonic states + dumb granular paint of a
+fixed lattice. Listening tests failed (static repeating texture; sample/spectrum
+locked to fixed addresses). Also rejected: fixing motion via luminance→volume.
+
+Superseded by Sonic Laws in Creative Brief v3.txt (author session 2026-07-31):
+ephemeral grains from field coherence / change; area-weighted budget;
+freeze-at-spawn; neutral loudness. Implemented on branch `v3`; listening gate
+PASSED 2026-08-01 (`scripts/listening-gate-sonic-laws.md`).

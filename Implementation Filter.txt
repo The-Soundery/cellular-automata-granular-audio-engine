@@ -1,253 +1,38 @@
 Cellular Automata Granular Audio Engine — Implementation Filter (V3)
-Status: v3.0 engine pass started on branch `v3` (FieldReducer + worklet live).
-North star: Creative Brief v3.txt
-Compared against: former V2 structure-centric codebase.
-
-How to use
-----------
-Each subsystem is marked KEEP / SIMPLIFY / REMOVE / REWRITE.
-This is the map for a future implementation pass after you approve Brief V3.
-Do not treat this as a commit plan until V3 is explicitly locked by you.
-
+Status: Sonic Laws LIVE. Listening gate PASSED (2026-08-01).
+North star: Creative Brief v3.txt (Sonic Laws + Rebuild Plan).
+Branch: `v3` — ephemeral grain pipeline.
+Verify: `npm run verify` + `scripts/listening-gate-sonic-laws.md` (re-run after big audio changes).
+Next: fine-tune negotiable constants — not architectural rewrites.
 
 ------------------------------------------------------------------------------
-Executive verdict
+STOP — do not revive
 ------------------------------------------------------------------------------
 
-The current pipeline implements Creative Brief V2 (structures → tracked IDs →
-scored voice allocation → ~32 identity-owned grains). V3 rejects that ontology.
+- Fixed listening points / lattice “pixels”
+- Equal-share or presence/luminance amplitude on fixed addresses
+- Voice ownership / structure tracking / fieldOrder scoring
+- Rebake-on-change or “dumb paint of frozen scrub positions”
+- Mid-grain sample/frequency chase of moving regions
 
-V3 requires a renderer / information-compression model:
-CA field → finite equal-share grain lattice → preserve local/relational
-information → emergent psychoacoustic structures.
-
-Luminance is NOT volume. Do not gate or weight amplitude by brightness.
-
-Largest required shift: replace StructureTracker + StructureAllocator “composer”
-logic with a neutral field renderer, and harden the AudioWorklet against pops/
-clicks under high grain counts and varying simulations.
-
+Archives (reference only): public/_obsolete/
 
 ------------------------------------------------------------------------------
-Target architecture (V3)
+Live pipeline
 ------------------------------------------------------------------------------
 
-  Utomata (visual CA)
-      ↓
-  FrameObserver (field snapshot)
-      ↓
-  FieldReducer / GrainPlan builder  ← NEW: compression, not voice allocation
-      ↓
-  AudioEngine (main thread bridge)
-      ↓
-  grain-processor (robust finite-grain renderer)
-      ↓
-  speakers
+Utomata → FrameObserver → FieldObserver → GrainScheduler → AudioEngine.sendEvents
+  → grain-processor (ephemeral voices, ping-pong in locked window, energy norm)
 
-Structures may emerge in the ear. They must not be selected, scored, or owned
-by the engine.
+Key modules:
+- src/field/FieldObserver.ts — δ, s, κ, ℓ, coherent regions, chaotic remainder
+- src/field/GrainScheduler.ts — area-weighted budget, freeze-at-spawn events
+- public/grain-processor.js — ephemeral playback + energy normalisation
+- src/ui/RegionOverlay.ts — region bounds + active grain dots (debug, not ears)
 
+Keep: src/ca/*, FrameObserver, spectral.ts, AudioEngine lifecycle, controls shell.
 
-------------------------------------------------------------------------------
-Subsystem filter
-------------------------------------------------------------------------------
-
-1) src/ca/UtomataHost.ts, src/ca/typeU.ts
-   Verdict: KEEP
-   Why: Visual CA universe; equation interaction; shared state source.
-   Notes: Grid size may stay 128² short-term (negotiable). Brief’s 512² example
-   is philosophical scale, not an immediate requirement.
-
-2) src/field/FrameObserver.ts
-   Verdict: KEEP
-   Why: Neutral frame ingest of RGB fields; no aesthetic decisions.
-
-3) src/field/RegionExtractor.ts
-   Verdict: REMOVE (as a musical-object stage)
-   Why: V3 forbids explicit structure detection that feeds allocation.
-   Optional later: local similarity could appear inside a compression codec as
-   a lossless-ish collapse of near-identical neighbours — only if framed as
-   information reduction with no presence/interestingness scoring. Do not keep
-   today’s “regions → structures → voices” path.
-
-4) src/field/StructureTracker.ts
-   Verdict: REMOVE
-   Why: Persistent structure IDs, coasting, stability EMAs, and identity matching
-   are voice-ownership / curation machinery. V3: no voice ownership.
-
-5) src/field/StructureAllocator.ts
-   Verdict: REMOVE / REWRITE into FieldReducer
-   Why: Scores presence, calmBonus, infoWeight, fieldOrder-biased budget,
-   probe ownership, POS_EMA identity glide — classic “which parts deserve
-   voices?” composer. Replace with grain-budget compression that samples or
-   collapses the field without interestingness/stability priority.
-
-6) src/field/FieldMetrics.ts
-   Verdict: REWRITE (thin orchestrator) + REMOVE fieldOrder aesthetic path
-   Why: fieldOrder shrinks budgets, softens gain, lengthens grains, dampens
-   motion, and prefers mass/age/calm when settled — explicit V3 FORBIDDEN.
-   Diagnostics (__v2Metrics / getDiag) are temporary thrash tools for the old
-   model; remove or replace with reducer metrics that measure information
-   preservation / CPU / energy, not structure churn.
-
-7) src/audio/spectral.ts
-   Verdict: KEEP (with contract check)
-   Why: Y → spectral locus, colour never enters — matches sacred X/Y and colour
-   fence. May need performance work if grain budget rises toward hundreds.
-
-8) src/audio/AudioEngine.ts
-   Verdict: SIMPLIFY / REWRITE bridge
-   Why: Keep load/source/worklet lifecycle. Replace VoicePlan-of-owned-structures
-   with a dense GrainPlan (many loci, no structureId ownership semantics).
-   Clear “composer” assumptions in messaging and stats.
-   Also: harden start/stop/reset paths contributing to clicks.
-
-9) public/grain-processor.js
-   Verdict: REWRITE (same medium, new contract) + reliability pass
-   KEEP conceptually: granular listening medium; X→sample; Y→spectrum;
-   colour→envelope material only.
-   REMOVE/REWRITE: identity remap by structureId:probeIndex as ownership model;
-   dual-pool / sustain-vs-active assumptions if present; trigger logic that
-   encodes stability aesthetics.
-   SACRED practical: eliminate pops/clicks; respect max grain count, energy,
-   and CPU; behave under chaotic and stable regimes without brittle paths.
-
-10) src/ui/controls.ts
-    Verdict: KEEP / SIMPLIFY copy
-    Why: Equation, variations, reset, pause, load, enable audio remain the
-    creative surface. Update meter labels away from “voices/structures chosen”
-    toward render load (grains active, energy, CPU pressure).
-
-11) src/ui/listenOverlay.ts
-    Verdict: SIMPLIFY or REWRITE
-    Why: Overlay that visualises curated structure probes teaches the wrong
-    mental model. If kept, show the grain render lattice / energy field, not
-    “selected structures.”
-
-12) src/main.ts
-    Verdict: REWRITE wiring only
-    Why: Keep rAF observe loop. Swap metrics.analyze → new reducer; remove
-    __v2Metrics structure diagnostics exposure (or replace).
-
-13) scripts/audio-system-report.md
-    Verdict: REWRITE after implementation
-    Why: Documents V2 structure-centric contract (and already drifts: 48 vs 32
-    regions). Replace with V3 reducer contract when code lands.
-
-14) scripts/audio-diagnostics*.mjs / verify-*.mjs
-    Verdict: REWRITE tests to V3 philosophy
-    Why: Current “philosophy cases” encode stable-vs-chaotic trigger aesthetics
-    and dual-pool ideas V3 removes. New checks should guard:
-    - colour never enters spectral weights
-    - X/Y topology mapping
-    - no interestingness / fieldOrder prioritisation in reducer
-    - energy budget / grain cap invariants
-    - click-free buffer transitions (as far as automation allows)
-
-15) Creative Brief.txt / Creative Brief v2.txt
-    Verdict: KEEP as history (already marked SUPERSEDED)
-    Creative Brief v3.txt = AUTHORITATIVE
-    Creative Interview Record.txt = KEEP (source of V3)
-
-
-------------------------------------------------------------------------------
-Concrete REMOVE list (V2 composer machinery)
-------------------------------------------------------------------------------
-
-Delete or stop calling (future pass):
-
-- Structure identity matching, coasting, tip/axis ownership
-- presence / calmBonus / infoWeight scoring
-- VOICE_BUDGET_ORDERED and fieldOrder-scaled budgets
-- masterGain softened by fieldOrder
-- grain length / overlap / persistence / motion shaped by global order
-- stable vs chaotic allocation pools
-- “structure deserves probes” hysteresis as curation
-- Interestingness-driven deferral that prefers some loci over others for taste
-
-Allowed replacements must answer only:
-“How do we fit the field into N grains and energy E without inventing taste?”
-
-Grain length / overlap (Brief V3 addition):
-- Continuity must come from field presence/self-similarity over time; activity
-  from field change — not from stability→pad or chaos→glitch scoring.
-- Allowed: uniform physically constrained aperture, and/or local refresh/aperture
-  from measured local temporal change.
-- Worklet + reducer must update with the field so coherent regions can fuse and
-  changing regions can redistribute; owned frozen voices are a V3 failure.
-
-
-------------------------------------------------------------------------------
-Concrete KEEP list (still valid under V3)
-------------------------------------------------------------------------------
-
-- Utomata visual CA + Type U equation interaction
-- Frame observation of RGB fields
-- X → sample position, Y → spectral position
-- Colour → grain envelope / internal micro-energy only
-- Finite total sonic energy normalisation (neutral, not preferential)
-- Toroidal spatial continuity in listening loci
-- Source audio load path
-- Soft-clip / safety limiting as physical constraint (not aesthetics)
-
-
-------------------------------------------------------------------------------
-REWRITE sketch: FieldReducer (replacement for tracker+allocator)
-------------------------------------------------------------------------------
-
-Inputs: current (and maybe previous) RGB field, grid size, grain budget N,
-        energy budget E, CPU budget signal if available.
-
-Outputs: GrainPlan = list of up to N grains, each with:
-  - x, y (grid locus)
-  - amplitude share from local / relational energy (sum-normalised to E)
-  - r, g, b for micro-material only
-  - no structureId ownership; no stability score; no interestingness rank
-
-v3.0 compression (locked):
-
-Uniform lattice over the full grid; always emit all lattice points; equal
-amplitude share 1/N; RGB = micro-material only; localDelta → refresh only.
-
-Later (not v3.0): hierarchical collapse of near-identical neighbours if needed.
-
-Success test: a river occupying ~40% of grid cells should contain ~40% of
-lattice grains (spatial occupation), each still at equal 1/N — never labeled
-a structure, never louder because brighter.
-
-
-------------------------------------------------------------------------------
-Reliability / glitch work (practical sacred)
-------------------------------------------------------------------------------
-
-Independent of philosophy, V3 requires clean audio:
-
-- Audit grain starts/stops, buffer swaps, plan replacement, and wrap crossfades
-- Ensure plan updates cannot click (equal-power or zero-crossing strategies)
-- Cap work per audio block hard (CPU budget as a real limiter, not a wish)
-- Stress test: empty field, full field, rapid chaos, long stable bands, reset,
-  source reload, enable/disable audio
-- Prefer fewer fragile special cases over stacked continuity EMAs that hide bugs
-
-
-------------------------------------------------------------------------------
-Suggested implementation order (future; not started here)
-------------------------------------------------------------------------------
-
-1. Lock Brief V3 with you (amend if needed).
-2. Prototype FieldReducer offline (no UI) that maps a frame → N grains with
-   energy-proportional amplitudes; verify river/chaos occupation ratios.
-3. Replace AudioEngine plan schema; rip out StructureTracker/Allocator path.
-4. Rewrite worklet for dense grain field + click-free updates.
-5. Update UI copy/overlay + verification scripts.
-6. Listening pass against V3 success/failure checklists.
-
-
-------------------------------------------------------------------------------
-Out of scope for this filter document
-------------------------------------------------------------------------------
-
-- No production code changes yet
-- No choice among compression algorithms A/B/C without a later prototype
-- No commitment to 500–1000 grains until CPU measurements exist
-  (budget is negotiable; the absence of curation is not)
+Negotiable tuneables (not doctrine):
+- FIELD_OBS in FieldObserver.ts
+- SCHED / GRAIN_BUDGET in GrainScheduler.ts
+- TARGET_RMS / NORM_SMOOTH / MAX_GRAINS in grain-processor.js

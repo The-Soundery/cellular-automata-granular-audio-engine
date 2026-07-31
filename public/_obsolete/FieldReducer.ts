@@ -1,14 +1,17 @@
 import type { RgbField } from "./FrameObserver.ts";
 
-/** Initial grain budget — raise only after listening gate + CPU check. */
+/** Initial state lattice size — raise only after listening gate + CPU check. */
 export const GRAIN_BUDGET = 64;
 /** Global render ceiling — not per-cell volume. */
 export const MASTER_GAIN = 1.0;
-/** Fixed physical grain aperture (listening medium). */
-export const GRAIN_LENGTH_SEC = 0.09;
+/**
+ * Uniform physical grain aperture (listening medium).
+ * Not varied by stability/chaos — renderer is dumb.
+ */
+export const GRAIN_LENGTH_SEC = 0.25;
 
 export interface GrainParams {
-  /** Stable lattice slot index (0..N-1). Not a curated identity. */
+  /** Stable lattice slot index (0..N-1). State address, not grain ownership. */
   latticeIndex: number;
   x: number;
   y: number;
@@ -17,7 +20,7 @@ export interface GrainParams {
   b: number;
   /** Always 1/N — equal share, never luminance-weighted. */
   amplitudeShare: number;
-  /** Frame-to-frame local change in [0,1] — refresh coupling only. */
+  /** Observable field change at locus — diagnostics only, not a scheduler. */
   localDelta: number;
   grainLengthSec: number;
 }
@@ -31,8 +34,8 @@ export interface GrainPlan {
 }
 
 /**
- * Neutral field compressor: full-grid lattice → equal-share grains.
- * No structure detection, scores, brightness gates, or voice ownership.
+ * Sonic-state lattice builder: full-grid equal-share pixels.
+ * No structure detection, scores, brightness gates, or update scheduling.
  */
 export class FieldReducer {
   readonly grainBudget: number;

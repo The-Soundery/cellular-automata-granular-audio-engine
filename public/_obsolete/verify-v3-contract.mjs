@@ -28,8 +28,12 @@ assert("uses FieldReducer", /FieldReducer/.test(main));
 assert("worklet colour envelope only comment", /envelope material ONLY/i.test(worklet));
 assert("worklet no structureId ownership", !/structureId/.test(worklet));
 assert("worklet latticeIndex", /latticeIndex/.test(worklet));
+assert("worklet dumb paintGrain", /paintGrain/.test(worklet));
+assert("no needsRebake scheduler", !/needsRebake/.test(worklet));
+assert("uniform hop medium", /HOP_FRAC/.test(worklet));
 assert("AudioEngine sends grains", /grains:/.test(engine));
 assert("spectral Y-only in worklet", /buildSpectralWeights\(yNorm\)/.test(worklet));
+assert("fixed grain aperture in reducer", /GRAIN_LENGTH_SEC = 0\.25/.test(reducer));
 
 if (process.exitCode) {
   console.error("verify-v3-contract FAILED");

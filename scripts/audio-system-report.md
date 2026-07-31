@@ -1,29 +1,30 @@
-# Audio system report — V3 equal-share field renderer
+# Audio system report — V3 Sonic Laws pipeline
 
-## Musical objects
+**Status:** Current (2026-08-01). Listening gate passed.
+North star: `Creative Brief v3.txt`.
 
-None curated. The ear hears redistribution of sonic energy through a finite
-equal-share lattice. Structures may emerge psychoacoustically; they are never
-selected or scored.
+## Live pipeline
 
-## Contract
+```
+Utomata
+  → FrameObserver          (RGB fields + previous frame)
+  → FieldObserver          (δ, s, κ, ℓ → coherent regions + chaotic area)
+  → GrainScheduler         (area-weighted budget; freeze-at-spawn events)
+  → AudioEngine.sendEvents
+  → grain-processor.js     (ephemeral voices; ping-pong in locked window;
+                            global energy normalisation)
+```
 
-| Axis | Role |
-|------|------|
-| Lattice X | Sample position |
-| Lattice Y | Spectral position |
-| RGB | Grain envelope material only |
-| Amplitude | Always `1/N` (luminance ≠ volume) |
-| localDelta | Refresh rate only |
-| Master gain | Global energy ceiling |
+## Grain identity (locked at spawn)
 
-## Pipeline
+| Source | Maps to |
+|--------|---------|
+| X | Sample position / scrub start inside locked window |
+| Y | Spectral bin blend |
+| RGB | Envelope material only (not loudness) |
+| Region geometry / velocity | Direction, Y spread, sample window + ping-pong |
 
-Utomata → FrameObserver → FieldReducer → AudioEngine → grain-processor
+## Obsolete (do not extend)
 
-## Performance (v3.0)
-
-- Grain budget: 64 (8×8 lattice on 128²)
-- Max worklet slots: 128
-- Max triggers/block: 24
-- Spectral bank offline (48 bins), Y-only at trigger
+Equal-share fixed lattice + dumb paint. Archived under `public/_obsolete/`.
+See also superseded notes in `scripts/listening-gate-v3.md`.

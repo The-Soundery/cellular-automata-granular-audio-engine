@@ -60,7 +60,7 @@ body,
   image-rendering: crisp-edges;
 }
 
-.listen-overlay {
+.region-overlay {
   position: absolute !important;
   inset: 0;
   width: 100% !important;
