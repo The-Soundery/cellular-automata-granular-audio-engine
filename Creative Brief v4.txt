@@ -1,17 +1,20 @@
-Cellular Automata Granular Audio Engine — Creative Brief (V3)
-Status: SUPERSEDED by Creative Brief v4.txt (2026-08-01).
-Kept for history: V3 identity was X→sample / Y→spectrum / RGB→envelope.
-Current doctrine: Creative Brief v4.txt (hue→sample / X→pan / Y→spectrum).
-Source: Creative Interview Record.txt (2026-07-31) and Sonic Laws session (2026-07-31).
+Cellular Automata Granular Audio Engine — Creative Brief (V4)
+Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
+Supersedes Creative Brief v3.txt identity mapping (X→sample / RGB→envelope).
+Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn architecture.
+Source: Creative Brief v3.txt; listening experiment test-X=Pan/RGB=SamplePos (2026-08-01).
 
 ------------------------------------------------------------------------------
-HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-07-31)
+HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-01)
 ------------------------------------------------------------------------------
 
-The fixed-listening-point / lattice / “pixel sonic state + dumb paint” approach
-was implemented on branch `v3` and FAILED listening tests. It produces a constant
-repeating texture because sample/spectrum stay locked to fixed grid addresses
-while the CA only weakly modulates grain envelopes.
+V3 ephemeral grains (FieldObserver → GrainScheduler → worklet) passed listening
+after the lattice path failed. A further identity remap was then validated by ear:
+
+  Hue(RGB) → sample position · X → stereo pan · Y → spectrum · fixed envelope
+
+Branch `v4` is the current mainline. Branch `v3` preserves the prior identity
+laws for reference. Lattice remains archived under public/_obsolete/.
 
 DO NOT continue or refine:
 
@@ -20,16 +23,11 @@ DO NOT continue or refine:
 - Voice ownership or structure-tracking allocation
 - Luminance → volume / presence-as-loudness as the fix for motion
 - Plans that ask “what should this point in space sound like?”
-- Mid-grain modulation of sample/frequency position to “chase” a region
+- Mid-grain modulation of sample/frequency/pan to “chase” a region
   (causes audio glitches; forbidden)
+- Reviving X→sample / RGB→envelope without a new listening decision
 
-That path is an architectural dead end for this project’s philosophy.
-
-Code on branch `v3`: Phases 0–4 of the Rebuild Plan are implemented
-(FieldObserver → GrainScheduler → ephemeral worklet). Lattice path archived
-under public/_obsolete/. Automated verify + manual Sonic Laws listening gate
-PASSED (2026-08-01). Next work is fine-tuning negotiable constants — not
-reviving lattice / voice-ownership architectures.
+Next work is fine-tuning negotiable constants — not architectural rewrites.
 
 
 ------------------------------------------------------------------------------
@@ -95,8 +93,9 @@ One-sentence axiom:
 
   The CA field is observed as coherence regions and chaotic areas; each area’s
   share of a finite grain pool is proportional to its size; within that share,
-  change and coherence set rate, length, and overlap; grain identity is X / Y /
-  RGB at spawn; parameters freeze at spawn; loudness is globally neutral.
+  change and coherence set rate, length, and overlap; grain identity at spawn
+  is hue→sample, X→pan, Y→spectrum; parameters freeze at spawn; loudness is
+  globally neutral.
 
 
 1. Grains are ephemeral carriers of identity
@@ -110,13 +109,15 @@ One-sentence axiom:
 
    Locked at spawn from the spawn cell (or calm spawn site):
 
-   - X        → sample position in the source
+   - Hue(RGB) → sample position / locked scrub window in the source
+                (similar colours scrub similar sample areas)
+   - X        → stereo pan (−1 left … +1 right)
    - Y        → frequency / spectral position
-   - RGB      → material character only (e.g. envelope shape / internal energy
-                distribution) — never loudness, allocation, or topology
+   - Envelope → fixed material shape (not driven by RGB)
 
-   Colour describes material, not behaviour of the universe. Luminance is not
-   volume.
+   Colour chooses where in the source the grain listens. Spatial X places the
+   grain in the stereo field. Colour must never set loudness, allocation, or
+   topology. Luminance is not volume.
 
 
 3. Field observation (how we see regimes)
@@ -157,38 +158,40 @@ One-sentence axiom:
                   inside the chaotic area
 
    The surrounding relationships determine the laws. The grain spawn location
-   supplies X, Y, RGB. The trigger and behaviour come from region observation.
+   supplies hue, X, and Y. The trigger and behaviour come from region
+   observation.
 
 
 5. Freeze at spawn (anti-glitch law)
 
-   Sample position, frequency, playback direction, ping-pong bounds, and
-   material parameters are FIXED when the grain is born.
+   Sample window, pan, frequency, playback direction, ping-pong bounds, and
+   envelope are FIXED when the grain is born.
 
-   Forbidden: modulating sample or frequency during playback to chase a
-   moving region (causes undesirable glitches / pitch tears).
+   Forbidden: modulating sample, frequency, or pan during playback to chase
+   a moving region or cell (causes undesirable glitches / pitch tears /
+   stereo zipper).
 
    How calm texture follows motion: new grains spawn from the region’s
-   updated position / COM as it moves; old grains finish with their locked
+   updated position / colour as it moves; old grains finish with their locked
    settings; overlap crossfades create continuous evolution.
 
 
-6. Geometry laws at spawn (region shape and motion → grain setup)
+6. Geometry and colour laws at spawn (setup for each grain)
 
-   Decided only at spawn, from a snapshot of the region:
+   Decided only at spawn:
 
-   - Motion → direction: if the region’s COM is moving left/right (or along
-     the sample axis), playback direction may be forward or reverse to match
-     that motion.
+   - Hue → sample window + ping-pong: spawn-cell hue maps to a sample range
+     locked at spawn (calm wider than chaos). If the read head reaches either
+     edge before the grain ends, it reverses and continues (ping-pong) until
+     the grain’s defined length completes.
+   - X → pan: spawn cell horizontal position maps to equal-power stereo pan.
+   - Motion → direction: if the region’s COM is moving left/right, playback
+     direction may be forward or reverse to match that motion.
    - Height → Y spread: tall coherent regions bias the few calm grains toward
      varied Y spawn heights (fuller harmonic spread). Thin/short regions keep
      a narrower Y spread.
-   - Width → sample window + ping-pong: the region’s width maps to a sample
-     range locked at spawn. If the read head reaches either edge of that
-     range before the grain ends, it reverses and continues (ping-pong) until
-     the grain’s defined length completes.
 
-   These are physics of region geometry and motion — not aesthetic effects.
+   These are physics of colour, geometry, and motion — not aesthetic effects.
 
 
 7. Finite grain budget (area spends capacity; activity does not buy priority)
@@ -321,7 +324,8 @@ FORBIDDEN
 - Fixed listening-point / lattice-pixel listening architectures
 - Voice ownership / structure prioritisation / interestingness scores
 - Using luminance→volume as the primary way to “hear the CA”
-- Mid-grain sample/frequency chase of moving regions
+- Mid-grain sample/frequency/pan chase of moving regions
+- Colour → loudness, allocation, or macro schedule
 - Treating the CA as a modulation source for an unrelated granular synth
 - Optimising for ambient beauty, glitch excitement, or “musicality”
 - Letting high activity increase loudness or steal budget beyond area share
@@ -343,10 +347,11 @@ more; or “granular synth controlled by CA.”
 
 
 ------------------------------------------------------------------------------
-Rebuild Plan (align current project with Sonic Laws) — COMPLETE
+Rebuild / identity remap — COMPLETE
 ------------------------------------------------------------------------------
 
-Status (2026-08-01): Phases 0–4 done. Manual Sonic Laws listening gate PASSED.
+Status (2026-08-01): V3 Phases 0–4 complete; V4 identity remap (hue→sample,
+X→pan, fixed envelope, stereo energy norm) listening-validated on branch `v4`.
 Lattice path archived under public/_obsolete/. Do not revive it.
 
 KEEP (infrastructure) — retained
@@ -359,21 +364,22 @@ KEEP (infrastructure) — retained
 
 REMOVED / REPLACED
 - src/field/FieldReducer.ts → FieldObserver.ts + GrainScheduler.ts
-- public/grain-processor.js → ephemeral event worklet
+- public/grain-processor.js → ephemeral event worklet (stereo pan + hue windows)
 - src/ui/listenOverlay.ts → RegionOverlay.ts (observation debug, not ears)
 - Lattice verify scripts → verify-phase0/1/2/4.mjs
+- V3 identity (X→sample / RGB→envelope) → V4 (hue→sample / X→pan)
 
 LIVE PIPELINE
 
   Utomata → FrameObserver
     → FieldObserver (δ, s, κ, ℓ + region extract: A, COM, velocity, bounds)
-    → GrainScheduler (area-weighted budget; spawn from region laws;
+    → GrainScheduler (area-weighted budget; hue→sample window; X→pan;
                       freeze params at spawn; geometry laws)
     → AudioEngine.sendEvents
-    → grain-processor (ephemeral grains: play locked params, ping-pong in
-                       locked window, die; global energy normalisation)
+    → grain-processor (ephemeral grains: locked sample/pan/spectrum, ping-pong,
+                       equal-power stereo, die; global energy normalisation)
 
-Phases 0–4: complete. Listening gate: scripts/listening-gate-sonic-laws.md (PASSED).
+Listening gate: scripts/listening-gate-sonic-laws.md.
 Next: fine-tune negotiable constants only.
 
 Do not revive V2 StructureTracker / allocator / interestingness scoring.

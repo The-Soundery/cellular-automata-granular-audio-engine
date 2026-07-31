@@ -1,7 +1,7 @@
-Cellular Automata Granular Audio Engine — Implementation Filter (V3)
-Status: Sonic Laws LIVE. Listening gate PASSED (2026-08-01).
-North star: Creative Brief v3.txt (Sonic Laws + Rebuild Plan).
-Branch: `v3` — ephemeral grain pipeline.
+Cellular Automata Granular Audio Engine — Implementation Filter (V4)
+Status: Sonic Laws LIVE (V4 identity). Author listening validated 2026-08-01.
+North star: Creative Brief v4.txt (Sonic Laws + remap notes).
+Branch: `v4` — ephemeral grains; hue→sample; X→pan; Y→spectrum.
 Verify: `npm run verify` + `scripts/listening-gate-sonic-laws.md` (re-run after big audio changes).
 Next: fine-tune negotiable constants — not architectural rewrites.
 
@@ -13,26 +13,28 @@ STOP — do not revive
 - Equal-share or presence/luminance amplitude on fixed addresses
 - Voice ownership / structure tracking / fieldOrder scoring
 - Rebake-on-change or “dumb paint of frozen scrub positions”
-- Mid-grain sample/frequency chase of moving regions
+- Mid-grain sample/frequency/pan chase of moving regions
+- V3 identity (X→sample / RGB→envelope) without a new listening decision
 
 Archives (reference only): public/_obsolete/
+Prior doctrine: Creative Brief v3.txt (superseded)
 
 ------------------------------------------------------------------------------
 Live pipeline
 ------------------------------------------------------------------------------
 
 Utomata → FrameObserver → FieldObserver → GrainScheduler → AudioEngine.sendEvents
-  → grain-processor (ephemeral voices, ping-pong in locked window, energy norm)
+  → grain-processor (ephemeral voices, hue-locked window, X pan, energy norm)
 
 Key modules:
 - src/field/FieldObserver.ts — δ, s, κ, ℓ, coherent regions, chaotic remainder
-- src/field/GrainScheduler.ts — area-weighted budget, freeze-at-spawn events
-- public/grain-processor.js — ephemeral playback + energy normalisation
+- src/field/GrainScheduler.ts — area-weighted budget, hue→sample, X→pan, freeze-at-spawn
+- public/grain-processor.js — ephemeral stereo playback + energy normalisation
 - src/ui/RegionOverlay.ts — region bounds + active grain dots (debug, not ears)
 
 Keep: src/ca/*, FrameObserver, spectral.ts, AudioEngine lifecycle, controls shell.
 
 Negotiable tuneables (not doctrine):
 - FIELD_OBS in FieldObserver.ts
-- SCHED / GRAIN_BUDGET in GrainScheduler.ts
-- TARGET_RMS / NORM_SMOOTH / MAX_GRAINS in grain-processor.js
+- SCHED / GRAIN_BUDGET in GrainScheduler.ts (incl. calmSampleHalf / chaosSampleHalf)
+- TARGET_RMS / NORM_SMOOTH / MAX_GRAINS / ENV_* in grain-processor.js

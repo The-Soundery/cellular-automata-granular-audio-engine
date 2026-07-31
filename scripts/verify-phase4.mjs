@@ -18,7 +18,7 @@ function assert(label, ok) {
   }
 }
 
-const brief = readFileSync(join(root, "Creative Brief v3.txt"), "utf8");
+const brief = readFileSync(join(root, "Creative Brief v4.txt"), "utf8");
 const worklet = readFileSync(join(root, "public/grain-processor.js"), "utf8");
 const sched = readFileSync(join(root, "src/field/GrainScheduler.ts"), "utf8");
 const main = readFileSync(join(root, "src/main.ts"), "utf8");

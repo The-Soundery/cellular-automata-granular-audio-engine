@@ -24,11 +24,15 @@ export const SCHED = {
   ySpreadFrac: 0.85,
   velDirEps: 0.08,
   stepsPerSec: 30,
+  /** Half-width of hue→sample window (calm). */
+  calmSampleHalf: 0.04,
+  /** Half-width of hue→sample window (chaos). */
+  chaosSampleHalf: 0.012,
 } as const;
 
 export type GrainRegime = "calm" | "chaos";
 
-/** Frozen-at-spawn ephemeral grain descriptor (Sonic Laws). */
+/** Frozen-at-spawn ephemeral grain descriptor (V4: hue→sample, X→pan). */
 export interface GrainSpawnEvent {
   x: number;
   y: number;
@@ -39,11 +43,13 @@ export interface GrainSpawnEvent {
   amplitude: number;
   /** +1 forward / -1 reverse along sample axis. */
   direction: number;
-  /** Locked sample window [0,1] for ping-pong. */
+  /** Locked sample window [0,1] for ping-pong (from hue). */
   sampleLo: number;
   sampleHi: number;
   /** Locked spectral position [0,1], 1 = high frequency. */
   yNorm: number;
+  /** Stereo pan [-1,1] from spawn X (frozen). */
+  pan: number;
   regime: GrainRegime;
   regionId: number;
 }
@@ -275,27 +281,29 @@ function spawnCalm(
   const cx = ci % w;
   const cy = (ci / w) | 0;
 
-  const halfW = Math.max(1, region.width * 0.5);
-  let sampleLo = clamp01((region.comX - halfW) / Math.max(1, w - 1));
-  let sampleHi = clamp01((region.comX + halfW) / Math.max(1, w - 1));
-  if (sampleHi - sampleLo < 0.02) {
-    const c = clamp01(region.comX / Math.max(1, w - 1));
-    sampleLo = Math.max(0, c - 0.04);
-    sampleHi = Math.min(1, c + 0.04);
-  }
+  const r = rgb.r[ci] ?? region.meanR;
+  const g = rgb.g[ci] ?? region.meanG;
+  const b = rgb.b[ci] ?? region.meanB;
+  const { sampleLo, sampleHi } = sampleWindowFromHue(
+    r,
+    g,
+    b,
+    SCHED.calmSampleHalf,
+  );
 
   return {
     x: cx,
     y: cy,
-    r: rgb.r[ci] ?? region.meanR,
-    g: rgb.g[ci] ?? region.meanG,
-    b: rgb.b[ci] ?? region.meanB,
+    r,
+    g,
+    b,
     durationSec: durationFromRegion(region),
     amplitude,
     direction: region.velX < -SCHED.velDirEps ? -1 : 1,
     sampleLo,
     sampleHi,
     yNorm: 1 - cy / Math.max(1, h - 1),
+    pan: panFromX(cx, w),
     regime: "calm",
     regionId: region.id,
   };
@@ -312,25 +320,69 @@ function spawnChaos(
   const ci = chaotic.cells[(Math.random() * chaotic.cells.length) | 0]!;
   const x = ci % w;
   const y = (ci / w) | 0;
-  const sampleC = x / Math.max(1, w - 1);
-  const sampleLo = clamp01(sampleC - 0.012);
-  const sampleHi = Math.max(sampleLo + 0.002, clamp01(sampleC + 0.012));
+  const r = rgb.r[ci] ?? 0.5;
+  const g = rgb.g[ci] ?? 0.5;
+  const b = rgb.b[ci] ?? 0.5;
+  const { sampleLo, sampleHi } = sampleWindowFromHue(
+    r,
+    g,
+    b,
+    SCHED.chaosSampleHalf,
+  );
 
   return {
     x,
     y,
-    r: rgb.r[ci] ?? 0.5,
-    g: rgb.g[ci] ?? 0.5,
-    b: rgb.b[ci] ?? 0.5,
+    r,
+    g,
+    b,
     durationSec: durationChaos(chaotic),
     amplitude,
     direction: 1,
     sampleLo,
     sampleHi,
     yNorm: 1 - y / Math.max(1, h - 1),
+    pan: panFromX(x, w),
     regime: "chaos",
     regionId: -1,
   };
+}
+
+/** Hue [0,1] from RGB; undefined hue (grey) → 0.5. */
+export function rgbToHueNorm(r: number, g: number, b: number): number {
+  const rr = clamp01(r);
+  const gg = clamp01(g);
+  const bb = clamp01(b);
+  const max = Math.max(rr, gg, bb);
+  const min = Math.min(rr, gg, bb);
+  const d = max - min;
+  if (d < 1e-6) return 0.5;
+  let h = 0;
+  if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
+  else if (max === gg) h = ((bb - rr) / d + 2) / 6;
+  else h = ((rr - gg) / d + 4) / 6;
+  return clamp01(h);
+}
+
+function sampleWindowFromHue(
+  r: number,
+  g: number,
+  b: number,
+  half: number,
+): { sampleLo: number; sampleHi: number } {
+  const sampleC = rgbToHueNorm(r, g, b);
+  let sampleLo = clamp01(sampleC - half);
+  let sampleHi = clamp01(sampleC + half);
+  if (sampleHi - sampleLo < 0.002) {
+    sampleLo = Math.max(0, sampleC - 0.001);
+    sampleHi = Math.min(1, sampleLo + 0.002);
+  }
+  return { sampleLo, sampleHi };
+}
+
+function panFromX(x: number, width: number): number {
+  const t = x / Math.max(1, width - 1);
+  return Math.max(-1, Math.min(1, t * 2 - 1));
 }
 
 function pickNearestCell(

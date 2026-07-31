@@ -111,7 +111,7 @@ export function mountControls(
         <div><dt>Sounding</dt><dd id="st-sounding">—</dd></div>
         <div><dt>Events/s</dt><dd id="st-trigs">—</dd></div>
       </dl>
-      <p class="meter-hint">Sonic Laws — ephemeral grains · area budget · freeze-at-spawn · neutral loudness</p>
+      <p class="meter-hint">Sonic Laws V4 — hue→sample · X→pan · Y→spectrum · freeze-at-spawn · neutral loudness</p>
     </div>
   `;
   parent.appendChild(root);

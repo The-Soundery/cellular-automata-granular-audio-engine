@@ -1,10 +1,10 @@
 /**
- * AudioWorklet — ephemeral grains (Sonic Laws).
+ * AudioWorklet — ephemeral grains (V4 Sonic Laws: hue→sample, X→pan).
  *
- * Receives frozen-at-spawn events. Plays with locked sample window,
- * direction, and spectral position. Ping-pongs inside the window.
- * No mid-grain chase of moving regions. Global energy normalisation
- * keeps loudness roughly neutral.
+ * Receives frozen-at-spawn events. Plays with locked sample window
+ * (from colour hue), direction, spectral position, and stereo pan.
+ * Ping-pongs inside the window. No mid-grain chase. Global energy
+ * normalisation keeps loudness roughly neutral.
  */
 
 const MAX_GRAINS = 128;
@@ -14,6 +14,10 @@ const ENV_CACHE_MAX = 64;
 /** Target RMS before soft clip — negotiable. */
 const TARGET_RMS = 0.12;
 const NORM_SMOOTH = 0.05;
+/** Fixed envelope (V4: RGB drives sample position, not material). */
+const ENV_ATTACK = 0.16;
+const ENV_RELEASE = 0.205;
+const ENV_CURVE = 0.875;
 
 class GrainVoice {
   constructor() {
@@ -35,6 +39,9 @@ class GrainVoice {
     this.amp = 0;
     this.x = 0;
     this.y = 0;
+    this.pan = 0;
+    this.gainL = 1;
+    this.gainR = 1;
     this.regime = "chaos";
     this.regionId = -1;
     this.sounding = false;
@@ -124,6 +131,14 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.regime = e.regime === "calm" ? "calm" : "chaos";
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
 
+      const pan =
+        typeof e.pan === "number" ? Math.max(-1, Math.min(1, e.pan)) : 0;
+      voice.pan = pan;
+      // Equal-power pan, frozen at spawn.
+      const angle = ((pan + 1) * 0.5 * Math.PI) / 2;
+      voice.gainL = Math.cos(angle);
+      voice.gainR = Math.sin(angle);
+
       let lo = clamp01(e.sampleLo ?? 0);
       let hi = clamp01(e.sampleHi ?? 1);
       if (hi < lo) {
@@ -139,10 +154,8 @@ class GrainProcessor extends AudioWorkletProcessor {
         voice.boundHi = voice.boundLo + 2;
       }
 
-      // Start at spawn X mapped into the locked window (frozen; no later chase).
-      const spawnNorm = clamp01(voice.x / Math.max(1, (e.gridWidth || 128) - 1));
-      const t = clamp01((spawnNorm - lo) / Math.max(1e-6, hi - lo));
-      voice.readPos = voice.boundLo + (voice.boundHi - voice.boundLo) * t;
+      // Start at midpoint of hue-locked window (frozen; no later chase).
+      voice.readPos = (voice.boundLo + voice.boundHi) * 0.5;
 
       this.statsTriggers++;
     }
@@ -179,18 +192,11 @@ class GrainProcessor extends AudioWorkletProcessor {
     return weights;
   }
 
-  getEnvelope(n, r, g, b) {
-    const attack = 0.06 + clamp01(r) * 0.2;
-    const release = 0.08 + clamp01(g) * 0.25;
-    const curve = 0.45 + clamp01(b) * 0.85;
-    const key =
-      n +
-      ":" +
-      attack.toFixed(2) +
-      ":" +
-      release.toFixed(2) +
-      ":" +
-      curve.toFixed(2);
+  getEnvelope(n) {
+    const attack = ENV_ATTACK;
+    const release = ENV_RELEASE;
+    const curve = ENV_CURVE;
+    const key = String(n);
     let w = this.windowCache.get(key);
     if (w) return w;
     if (this.windowCache.size > ENV_CACHE_MAX) this.windowCache.clear();
@@ -254,8 +260,10 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (const voice of this.voices) {
       if (!voice.active) continue;
       active++;
-      const env = this.getEnvelope(voice.duration, voice.r, voice.g, voice.b);
+      const env = this.getEnvelope(voice.duration);
       const weights = this.buildSpectralWeights(voice.yNorm);
+      const gL = voice.gainL;
+      const gR = voice.gainR;
       let voiceSounded = false;
 
       for (let i = 0; i < n; i++) {
@@ -272,8 +280,8 @@ class GrainProcessor extends AudioWorkletProcessor {
           voice.amp *
           this.masterGain;
 
-        outL[i] += s;
-        if (outR !== outL) outR[i] += s;
+        outL[i] += s * gL;
+        if (outR !== outL) outR[i] += s * gR;
 
         voice.readPos += voice.dir;
         if (voice.readPos >= voice.boundHi) {
@@ -291,9 +299,12 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (voice.sounding) sounding++;
     }
 
-    // Measure dry mix, then apply smoothed norm gain for neutral loudness
+    // Measure mono mix so hard-panned grains don't skew RMS
     let blockEnergy = 0;
-    for (let i = 0; i < n; i++) blockEnergy += outL[i] * outL[i];
+    for (let i = 0; i < n; i++) {
+      const m = outR !== outL ? (outL[i] + outR[i]) * 0.5 : outL[i];
+      blockEnergy += m * m;
+    }
     const blockRms = Math.sqrt(blockEnergy / Math.max(1, n));
     if (blockRms > 1e-5) {
       const desired = TARGET_RMS / blockRms;
@@ -308,9 +319,12 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < n; i++) {
       outL[i] = softClip(outL[i] * this.normGain);
       if (outR !== outL) outR[i] = softClip(outR[i] * this.normGain);
-      const a = Math.abs(outL[i]);
-      if (a > blockPeak) blockPeak = a;
-      blockEnergy += outL[i] * outL[i];
+      const aL = Math.abs(outL[i]);
+      const aR = outR !== outL ? Math.abs(outR[i]) : aL;
+      if (aL > blockPeak) blockPeak = aL;
+      if (aR > blockPeak) blockPeak = aR;
+      const m = outR !== outL ? (outL[i] + outR[i]) * 0.5 : outL[i];
+      blockEnergy += m * m;
     }
 
     this.statsPeak = Math.max(this.statsPeak, blockPeak);

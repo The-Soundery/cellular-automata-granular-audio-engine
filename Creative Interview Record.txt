@@ -171,7 +171,12 @@ information into a finite grain budget while preserving relationships.
 
 Follow-up D — X / Y mapping
 ---------------------------
-Confirmed: horizontal position → sample position; vertical position → spectrum.
+Originally confirmed: horizontal position → sample position; vertical position → spectrum.
+
+*** UPDATED by V4 listening (2026-08-01) — see Creative Brief v4.txt ***
+Current: Hue(RGB) → sample position; X → stereo pan; Y → spectrum (unchanged).
+Q3 colour→envelope-only is also superseded for sample mapping; colour still must
+never set loudness, allocation, or macro schedule.
 
 
 Follow-up E — Sonic state + dumb granular renderer (2026-07-31)
@@ -186,3 +191,6 @@ Superseded by Sonic Laws in Creative Brief v3.txt (author session 2026-07-31):
 ephemeral grains from field coherence / change; area-weighted budget;
 freeze-at-spawn; neutral loudness. Implemented on branch `v3`; listening gate
 PASSED 2026-08-01 (`scripts/listening-gate-sonic-laws.md`).
+
+Identity remap (2026-08-01): Creative Brief v4.txt / branch `v4` —
+Hue→sample, X→pan, Y→spectrum, fixed envelope. V3 brief kept as history.
