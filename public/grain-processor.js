@@ -2,9 +2,10 @@
  * AudioWorklet — ephemeral grains (V4 Sonic Laws: hue→sample, X→pan).
  *
  * Receives frozen-at-spawn events. Plays with locked sample window
- * (from colour hue), direction, spectral position, and stereo pan.
- * Ping-pongs inside the window. No mid-grain chase. Global energy
- * normalisation keeps loudness roughly neutral.
+ * (from colour hue), direction, spectral position, stereo pan, and
+ * regime envelope (calm soft / chaos sharp). Ping-pongs inside the
+ * window. No mid-grain chase. Global energy normalisation keeps
+ * loudness roughly neutral.
  */
 
 const MAX_GRAINS = 128;
@@ -14,9 +15,9 @@ const ENV_CACHE_MAX = 64;
 /** Target RMS before soft clip — negotiable. */
 const TARGET_RMS = 0.12;
 const NORM_SMOOTH = 0.05;
-/** Fixed envelope (V4: RGB drives sample position, not material). */
-const ENV_ATTACK = 0.16;
-const ENV_RELEASE = 0.205;
+/** Chaos defaults when spawn omits attack/release (regime packing material). */
+const ENV_ATTACK_CHAOS = 0.06;
+const ENV_RELEASE_CHAOS = 0.15;
 const ENV_CURVE = 0.875;
 
 class GrainVoice {
@@ -44,6 +45,8 @@ class GrainVoice {
     this.gainR = 1;
     this.regime = "chaos";
     this.regionId = -1;
+    this.attackFrac = ENV_ATTACK_CHAOS;
+    this.releaseFrac = ENV_RELEASE_CHAOS;
     this.sounding = false;
   }
 }
@@ -130,6 +133,17 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.dir = e.direction < 0 ? -1 : 1;
       voice.regime = e.regime === "calm" ? "calm" : "chaos";
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
+      // Envelope shape frozen at spawn (calm soft / chaos sharp) — not RGB-driven.
+      const defA =
+        voice.regime === "calm" ? 0.5 : ENV_ATTACK_CHAOS;
+      const defR =
+        voice.regime === "calm" ? 0.5 : ENV_RELEASE_CHAOS;
+      voice.attackFrac = clamp01(
+        typeof e.attackFrac === "number" ? e.attackFrac : defA,
+      );
+      voice.releaseFrac = clamp01(
+        typeof e.releaseFrac === "number" ? e.releaseFrac : defR,
+      );
 
       const pan =
         typeof e.pan === "number" ? Math.max(-1, Math.min(1, e.pan)) : 0;
@@ -192,17 +206,26 @@ class GrainProcessor extends AudioWorkletProcessor {
     return weights;
   }
 
-  getEnvelope(n) {
-    const attack = ENV_ATTACK;
-    const release = ENV_RELEASE;
+  getEnvelope(n, attackFrac, releaseFrac) {
+    const attack = clamp01(
+      typeof attackFrac === "number" ? attackFrac : ENV_ATTACK_CHAOS,
+    );
+    const release = clamp01(
+      typeof releaseFrac === "number" ? releaseFrac : ENV_RELEASE_CHAOS,
+    );
     const curve = ENV_CURVE;
-    const key = String(n);
+    const key = `${n}|${attack.toFixed(3)}|${release.toFixed(3)}`;
     let w = this.windowCache.get(key);
     if (w) return w;
     if (this.windowCache.size > ENV_CACHE_MAX) this.windowCache.clear();
     w = new Float32Array(n);
-    const aN = Math.max(1, Math.floor(n * attack));
-    const rN = Math.max(1, Math.floor(n * release));
+    let aN = Math.max(1, Math.floor(n * attack));
+    let rN = Math.max(1, Math.floor(n * release));
+    if (aN + rN > n) {
+      const scale = n / (aN + rN);
+      aN = Math.max(1, Math.floor(aN * scale));
+      rN = Math.max(1, n - aN);
+    }
     for (let i = 0; i < n; i++) {
       let env = 1;
       if (i < aN) {
@@ -260,7 +283,11 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (const voice of this.voices) {
       if (!voice.active) continue;
       active++;
-      const env = this.getEnvelope(voice.duration);
+      const env = this.getEnvelope(
+        voice.duration,
+        voice.attackFrac,
+        voice.releaseFrac,
+      );
       const weights = this.buildSpectralWeights(voice.yNorm);
       const gL = voice.gainL;
       const gR = voice.gainR;

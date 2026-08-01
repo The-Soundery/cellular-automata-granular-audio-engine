@@ -3,7 +3,7 @@ import type { AudioStats } from "../audio/AudioEngine.ts";
 import { GRID_SIZE } from "../ca/UtomataHost.ts";
 
 /**
- * Debug visualisation: observational region bounds + active ephemeral grains.
+ * Debug visualisation: observational region cell masks + faint AABB + grains.
  * Not listening posts / lattice ears.
  */
 export class RegionOverlay {
@@ -41,18 +41,31 @@ export class RegionOverlay {
 
     const scaleX = GRID_SIZE / obs.width;
     const scaleY = GRID_SIZE / obs.height;
+    const cellW = Math.max(1, scaleX);
+    const cellH = Math.max(1, scaleY);
 
     for (const r of obs.coherent) {
       const hue = (r.id * 47) % 360;
-      ctx.strokeStyle = `hsla(${hue}, 70%, 62%, 0.75)`;
-      ctx.fillStyle = `hsla(${hue}, 65%, 55%, 0.1)`;
-      ctx.lineWidth = 1;
+      ctx.fillStyle = `hsla(${hue}, 65%, 55%, 0.28)`;
 
+      // Primary: true cell silhouette from membership mask.
+      const cells = r.cells;
+      if (cells && cells.length > 0) {
+        for (let i = 0; i < cells.length; i++) {
+          const ci = cells[i]!;
+          const cx = ci % obs.width;
+          const cy = (ci / obs.width) | 0;
+          ctx.fillRect(cx * scaleX, cy * scaleY, cellW, cellH);
+        }
+      }
+
+      // Secondary: faint AABB for extent reference only.
+      ctx.strokeStyle = `hsla(${hue}, 70%, 62%, 0.28)`;
+      ctx.lineWidth = 1;
       const x0 = r.minX * scaleX;
       const y0 = r.minY * scaleY;
       const bw = r.width * scaleX;
       const bh = r.height * scaleY;
-      ctx.fillRect(x0, y0, bw, bh);
       ctx.strokeRect(x0 + 0.5, y0 + 0.5, Math.max(1, bw - 1), Math.max(1, bh - 1));
 
       const cx = r.comX * scaleX;

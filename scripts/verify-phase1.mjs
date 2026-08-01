@@ -27,6 +27,9 @@ assert("FieldReducer still absent", !existsSync(join(root, "src/field/FieldReduc
 assert("main wires FieldObserver", /FieldObserver/.test(main));
 assert("main does not import FieldReducer", !/FieldReducer/.test(main));
 assert("observes δ / similarity / κ", /deltaEma/.test(fieldSrc) && /kappaThreshold/.test(fieldSrc));
+assert("soft colour gate", /regionColourEps/.test(fieldSrc));
+assert("κ hysteresis enter/exit", /kappaEnter/.test(fieldSrc) && /kappaExit/.test(fieldSrc));
+assert("fillRatio on regions", /fillRatio/.test(fieldSrc));
 assert("extracts coherent regions", /extractRegions/.test(fieldSrc));
 assert("builds chaotic remainder", /buildChaotic/.test(fieldSrc));
 assert("toroidal COM / velocity", /toroidalDelta/.test(fieldSrc) && /velX/.test(fieldSrc));
@@ -103,6 +106,65 @@ async function runtimeCheck() {
   assert("chaotic remainder non-empty", out.chaotic.area > 0);
   assert("fractions sum ~1", Math.abs(out.calmAreaFraction + out.chaosAreaFraction - 1) < 0.02);
   assert("region has COM and bounds", out.coherent[0].width >= 1 && out.coherent[0].height >= 1);
+  assert(
+    "region has fillRatio in (0,1]",
+    out.coherent.every((r) => r.fillRatio > 0 && r.fillRatio <= 1),
+  );
+
+  // Two adjacent different-hue calm blobs must not merge (soft colour gate).
+  const dual = field((r, g, b, i) => {
+    const x = i % w;
+    const y = (i / w) | 0;
+    const left = x >= 4 && x < 14 && y >= 8 && y < 22;
+    const right = x >= 14 && x < 24 && y >= 8 && y < 22;
+    if (left) {
+      r[i] = 0.15;
+      g[i] = 0.45;
+      b[i] = 0.9;
+    } else if (right) {
+      r[i] = 0.95;
+      g[i] = 0.35;
+      b[i] = 0.1;
+    } else {
+      r[i] = (i * 17) % 97 / 97;
+      g[i] = (i * 31) % 89 / 89;
+      b[i] = (i * 13) % 83 / 83;
+    }
+  });
+  const dualObs = new FieldObserver(w, h);
+  dualObs.observe(dual, prev);
+  for (let t = 0; t < 8; t++) dualObs.observe(dual, dual);
+  const dualOut = dualObs.observation;
+  assert(
+    "adjacent different-hue calm blobs stay separate",
+    dualOut.coherent.length >= 2,
+  );
+
+  // Similar (not exact) hues within eps should form one region.
+  const similar = field((r, g, b, i) => {
+    const x = i % w;
+    const y = (i / w) | 0;
+    const inBlob = x >= 8 && x < 22 && y >= 8 && y < 22;
+    if (inBlob) {
+      const jitter = ((x + y) % 3) * 0.02;
+      r[i] = 0.22 + jitter;
+      g[i] = 0.55;
+      b[i] = 0.82 - jitter * 0.5;
+    } else {
+      r[i] = (i * 17) % 97 / 97;
+      g[i] = (i * 31) % 89 / 89;
+      b[i] = (i * 13) % 83 / 83;
+    }
+  });
+  const simObs = new FieldObserver(w, h);
+  simObs.observe(similar, prev);
+  for (let t = 0; t < 8; t++) simObs.observe(similar, similar);
+  const simOut = simObs.observation;
+  const big = simOut.coherent.reduce((m, r) => Math.max(m, r.area), 0);
+  assert(
+    "similar-hue calm variance merges into one substantial region",
+    big >= FIELD_OBS.minRegionArea * 2,
+  );
 }
 
 await runtimeCheck();

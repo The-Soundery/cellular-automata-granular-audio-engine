@@ -1,6 +1,6 @@
 # Audio system report — V4 Sonic Laws pipeline
 
-**Status:** Current (2026-08-01). V4 identity remap listening-validated.
+**Status:** Current. V4 identity + region detection + calm packing wash / regime envelopes. Re-run `scripts/listening-gate-sonic-laws.md`.
 North star: `Creative Brief v4.txt`.
 
 ## Live pipeline
@@ -8,11 +8,13 @@ North star: `Creative Brief v4.txt`.
 ```
 Utomata
   → FrameObserver          (RGB fields + previous frame)
-  → FieldObserver          (δ, s, κ, ℓ → coherent regions + chaotic area)
-  → GrainScheduler         (area-weighted budget; hue→sample; X→pan; freeze-at-spawn)
+  → FieldObserver          (δ, s, κ, ℓ → soft-colour coherent regions + chaos bag;
+                            κ hysteresis; fillRatio; ID match via COM+colour+IoU)
+  → GrainScheduler         (area-weighted budget; spawn from cells; packing-driven calm
+                            rate for overlap wash; optional period phase; freeze-at-spawn)
   → AudioEngine.sendEvents
   → grain-processor.js     (ephemeral voices; ping-pong in locked window;
-                            equal-power stereo pan; global energy normalisation)
+                            regime envelope at spawn; equal-power pan; energy norm)
 ```
 
 ## Grain identity (locked at spawn)
@@ -23,8 +25,8 @@ Utomata
 | X | Stereo pan (−1…+1), equal-power |
 | Y | Spectral bin blend |
 | velX (calm) | Playback direction |
-| Region height | Y spawn spread |
-| Envelope | Fixed (not RGB-driven) |
+| Region cells (+ fillRatio) | Spawn location; Y spread only when fill is high |
+| Regime | Envelope: calm attack/release 0.5 / 0.5; chaos sharp (~0.06 / 0.15) — not RGB-driven |
 
 ## Obsolete (do not extend)
 

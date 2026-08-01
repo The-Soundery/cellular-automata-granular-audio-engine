@@ -1,6 +1,6 @@
 # Listening gate — Sonic Laws (manual)
 
-**Status: PASSED** (author listening, 2026-08-01) for V4 identity remap on branch `v4`.
+**Status: RE-RUN REQUIRED** after calm wash packing + regime envelopes (and prior region-detection roadmap) on branch `v4`.
 
 North star: `Creative Brief v4.txt`.
 Automated checks: `npm run verify` (phases 0–4).
@@ -10,46 +10,60 @@ Re-run after major scheduler / worklet / observation changes.
 
 ## Setup
 
-- [x] App boots; CA visible; Field observation meters move
-- [x] Enable Audio loads default source without errors
-- [x] Overlay shows region bounds (not a fixed lattice grid)
+- [ ] App boots; CA visible; Field observation meters move
+- [ ] Enable Audio loads default source without errors
+- [ ] Overlay shows **cell silhouettes** of regions (not a fixed lattice grid); AABB may appear faint
 
 ## Freeze-at-spawn
 
-- [x] No zipper / pitch-tear glitches when calm regions move
-- [x] Texture follows motion via *new* grains, not one grain being dragged
-- [x] Pan stays fixed for the life of a grain (no mid-grain stereo chase)
+- [ ] No zipper / pitch-tear glitches when calm regions move
+- [ ] Texture follows motion via *new* grains, not one grain being dragged
+- [ ] Pan stays fixed for the life of a grain (no mid-grain stereo chase)
 
 ## Calm vs chaos
 
-- [x] Large calm areas → fewer, longer, overlapping grains (wash of one texture)
-- [x] Chaotic areas → many short grains, little/no overlap
-- [x] If sim is mostly calm, budget meters show most grains on calm side (area share)
-- [x] If sim is mostly chaotic, audio texture is mostly short/dense
+- [ ] Large calm areas → longer overlapping grains (continuous wash; Budget/Calm g not stuck at 1)
+- [ ] **Solid single colour / 100% calm** → soft attack, audible overlap, sustained texture (not one lonely grain)
+- [ ] Chaotic areas → many short grains, sharp attack, little/no overlap
+- [ ] If sim is mostly calm, budget meters show most grains on calm side (area share)
+- [ ] If sim is mostly chaotic, audio texture is mostly short/dense
+
+## Region fidelity (shape + shared colour)
+
+- [ ] Adjacent **different-hue** calm masses stay separate regions (overlay + distinct sample scrub)
+- [ ] **Similar** (not exact) hues that are stable merge as one calm region
+- [ ] Irregular / non-rectangular calm shapes: grains follow the mask, not empty AABB corners
+- [ ] Sparse L / diagonal shapes do not sound like a full rectangle wash
+
+## Observed rhythm → rate
+
+- [ ] Pulsing / periodic calm areas can phase grain fires with visible change (still freeze-at-spawn)
+- [ ] No imposed musical BPM when the field has no period (falls back to packing rate)
+- [ ] Rhythm does not raise loudness or steal area budget
 
 ## Neutrality
 
-- [x] Switching between calm-heavy and chaos-heavy variations does not make one regime obviously “louder” as a policy
-- [x] RMS stays in a usable range (energy norm working); no constant clipping scream
-- [x] Hard-panned activity does not make the mix scream or collapse oddly
+- [ ] Switching between calm-heavy and chaos-heavy variations does not make one regime obviously “louder” as a policy
+- [ ] RMS stays in a usable range (energy norm working); no constant clipping scream
+- [ ] Hard-panned activity does not make the mix scream or collapse oddly
 
 ## Identity (V4)
 
-- [x] Distinct hues scrub distinct sample regions; similar hues feel related
-- [x] Left-side cells lean left in the stereo field; right-side lean right
-- [x] Motion left/right can reverse scrub direction on new calm grains (velX)
-- [x] Tall calm regions feel spectrally fuller (Y spread)
-- [x] Colour chooses sample area, not envelope shape or master volume
+- [ ] Distinct hues scrub distinct sample regions; similar hues feel related
+- [ ] Left-side cells lean left in the stereo field; right-side lean right
+- [ ] Motion left/right can reverse scrub direction on new calm grains (velX)
+- [ ] Tall **filled** calm regions feel spectrally fuller (Y spread); sparse tall AABBs do not fake fullness
+- [ ] Colour chooses sample area / scrub, not master volume (envelope follows regime packing, not RGB)
 
 ## Failure modes (must NOT hear)
 
-- [x] Constant repeating scrub locked to fixed posts (old lattice failure)
-- [x] Mid-grain sample jumps chasing COM or colour
-- [x] Mid-grain pan chasing cell X
-- [x] Chaos winning the mix only because it fires more (without area share)
+- [ ] Constant repeating scrub locked to fixed posts (old lattice failure)
+- [ ] Mid-grain sample jumps chasing COM or colour
+- [ ] Mid-grain pan chasing cell X
+- [ ] Chaos winning the mix only because it fires more (without area share)
 
 ## Pass
 
 All boxes checked → Sonic Laws listening gate passed for this build.
 
-**Next:** fine-tune negotiable constants (`FIELD_OBS`, `SCHED`, worklet `TARGET_RMS` / budget) — do not revive lattice / voice-ownership paths or V3 identity without a new listening decision.
+**Next:** fine-tune negotiable constants (`FIELD_OBS`, `SCHED` packing / envelope / rhythm knobs, worklet `TARGET_RMS` / budget) — do not revive lattice / voice-ownership paths or V3 identity without a new listening decision.

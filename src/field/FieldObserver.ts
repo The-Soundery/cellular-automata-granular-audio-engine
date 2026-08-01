@@ -6,8 +6,17 @@ export const FIELD_OBS = {
   deltaEma: 0.28,
   /** Scale that maps raw RGB delta into ~0..1 before stability. */
   deltaNorm: 0.35,
-  /** Cells with κ >= this may join coherent regions. */
+  /**
+   * Enter calm when κ >= this (also exported as kappaThreshold for verify).
+   * Soft similar-colour join uses regionColourEps against running mean RGB.
+   */
+  kappaEnter: 0.55,
+  /** Stay calm while previously calm and κ >= this (hysteresis). */
+  kappaExit: 0.42,
+  /** Alias of kappaEnter — kept for verify / older tune notes. */
   kappaThreshold: 0.55,
+  /** Max RGB distance from running region mean to join a calm component. */
+  regionColourEps: 0.12,
   /** Drop coherent coherent speckles below this area (cells). */
   minRegionArea: 24,
   /** Colour distance that ends a coherence-length ray. */
@@ -16,6 +25,10 @@ export const FIELD_OBS = {
   lengthMaxSteps: 24,
   /** Max COM match distance (cells) for velocity continuity. */
   comMatchDist: 18,
+  /** Max mean-RGB distance for ID continuity (same scale as regionColourEps). */
+  idColourEps: 0.22,
+  /** Minimum cell IoU to prefer an ID match when COM/colour are close. */
+  idMinIoU: 0.08,
   /** EMA for region COM velocity. */
   velocityEma: 0.35,
 } as const;
@@ -41,6 +54,8 @@ export interface CoherentRegion {
   maxY: number;
   width: number;
   height: number;
+  /** area / (width×height); sparse / L-shapes are low. */
+  fillRatio: number;
   /** Cell indices (row-major) belonging to this region. */
   cells: Uint32Array;
 }
@@ -71,12 +86,16 @@ export interface FieldObservation {
   chaosAreaFraction: number;
 }
 
-type PrevCom = {
+type PrevRegion = {
   id: number;
   comX: number;
   comY: number;
   velX: number;
   velY: number;
+  meanR: number;
+  meanG: number;
+  meanB: number;
+  cells: Uint32Array;
 };
 
 /**
@@ -91,9 +110,10 @@ export class FieldObserver {
   private readonly coherence: Float32Array;
   private readonly coherenceLength: Float32Array;
   private readonly calmMask: Uint8Array;
+  private readonly prevCalm: Uint8Array;
   private readonly labels: Int32Array;
   private readonly queue: Uint32Array;
-  private prevComs: PrevCom[] = [];
+  private prevRegions: PrevRegion[] = [];
   private nextRegionId = 1;
   private primed = false;
   private last: FieldObservation;
@@ -107,9 +127,17 @@ export class FieldObserver {
     this.coherence = new Float32Array(n);
     this.coherenceLength = new Float32Array(n);
     this.calmMask = new Uint8Array(n);
+    this.prevCalm = new Uint8Array(n);
     this.labels = new Int32Array(n);
     this.queue = new Uint32Array(n);
-    this.last = emptyObservation(width, height, this.delta, this.similarity, this.coherence, this.coherenceLength);
+    this.last = emptyObservation(
+      width,
+      height,
+      this.delta,
+      this.similarity,
+      this.coherence,
+      this.coherenceLength,
+    );
   }
 
   get observation(): FieldObservation {
@@ -122,8 +150,9 @@ export class FieldObserver {
     this.coherence.fill(0);
     this.coherenceLength.fill(0);
     this.calmMask.fill(0);
+    this.prevCalm.fill(0);
     this.labels.fill(-1);
-    this.prevComs = [];
+    this.prevRegions = [];
     this.nextRegionId = 1;
     this.primed = false;
     this.last = emptyObservation(
@@ -187,6 +216,7 @@ export class FieldObserver {
     const chaotic = this.buildChaotic(coherent);
     const calmCells = coherent.reduce((sum, r) => sum + r.area, 0);
 
+    this.prevCalm.set(this.calmMask);
     this.primed = true;
     this.last = {
       width: w,
@@ -208,11 +238,15 @@ export class FieldObserver {
   private extractRegions(current: RgbField): CoherentRegion[] {
     const { width: w, height: h } = this;
     const n = w * h;
-    const thr = FIELD_OBS.kappaThreshold;
+    const enter = FIELD_OBS.kappaEnter;
+    const exit = FIELD_OBS.kappaExit;
+    const colourEps = FIELD_OBS.regionColourEps;
     const minArea = FIELD_OBS.minRegionArea;
 
     for (let i = 0; i < n; i++) {
-      this.calmMask[i] = this.coherence[i]! >= thr ? 1 : 0;
+      const k = this.coherence[i]!;
+      const wasCalm = this.prevCalm[i] === 1;
+      this.calmMask[i] = wasCalm ? (k >= exit ? 1 : 0) : k >= enter ? 1 : 0;
       this.labels[i] = -1;
     }
 
@@ -255,7 +289,11 @@ export class FieldObserver {
         sumG += current.g[i]!;
         sumB += current.b[i]!;
 
-        // 4-connected, toroidal
+        const count = cellBuf.length;
+        const meanR = sumR / count;
+        const meanG = sumG / count;
+        const meanB = sumB / count;
+
         const nIdx = [
           y * w + ((x + 1) % w),
           y * w + ((x - 1 + w) % w),
@@ -263,10 +301,18 @@ export class FieldObserver {
           ((y - 1 + h) % h) * w + x,
         ];
         for (const j of nIdx) {
-          if (this.calmMask[j] && this.labels[j]! < 0) {
-            this.labels[j] = regions.length;
-            this.queue[qt++] = j;
-          }
+          if (!this.calmMask[j] || this.labels[j]! >= 0) continue;
+          const d = rgbDelta(
+            current.r[j]!,
+            current.g[j]!,
+            current.b[j]!,
+            meanR,
+            meanG,
+            meanB,
+          );
+          if (d > colourEps) continue;
+          this.labels[j] = regions.length;
+          this.queue[qt++] = j;
         }
       }
 
@@ -311,6 +357,7 @@ export class FieldObserver {
       const maxX = (comX + maxDx + w) % w;
       const minY = (comY + minDy + h) % h;
       const maxY = (comY + maxDy + h) % h;
+      const fillRatio = clamp01(area / (width * height));
 
       const cells = Uint32Array.from(cellBuf);
       regions.push({
@@ -331,6 +378,7 @@ export class FieldObserver {
         maxY,
         width,
         height,
+        fillRatio,
         cells,
       });
     }
@@ -341,28 +389,46 @@ export class FieldObserver {
 
   private assignIdsAndVelocity(regions: CoherentRegion[]): void {
     const { width: w, height: h } = this;
-    const maxDist: number = FIELD_OBS.comMatchDist;
-    const va: number = FIELD_OBS.velocityEma;
+    const maxDist = FIELD_OBS.comMatchDist;
+    const colourEps = FIELD_OBS.idColourEps;
+    const minIoU = FIELD_OBS.idMinIoU;
+    const va = FIELD_OBS.velocityEma;
     const usedPrev = new Set<number>();
 
     for (const region of regions) {
       let best = -1;
-      let bestD: number = maxDist;
-      for (let p = 0; p < this.prevComs.length; p++) {
+      let bestScore = Infinity;
+
+      for (let p = 0; p < this.prevRegions.length; p++) {
         if (usedPrev.has(p)) continue;
-        const prev = this.prevComs[p]!;
-        const d = Math.hypot(
+        const prev = this.prevRegions[p]!;
+        const comD = Math.hypot(
           toroidalDelta(region.comX, prev.comX, w),
           toroidalDelta(region.comY, prev.comY, h),
         );
-        if (d < bestD) {
-          bestD = d;
+        if (comD > maxDist) continue;
+
+        const colourD = rgbDelta(
+          region.meanR,
+          region.meanG,
+          region.meanB,
+          prev.meanR,
+          prev.meanG,
+          prev.meanB,
+        );
+        if (colourD > colourEps) continue;
+
+        const iou = cellIoU(region.cells, prev.cells);
+        // Lower is better: COM distance, colour distance, soft IoU penalty.
+        const score = comD + colourD * 8 + (1 - Math.max(iou, minIoU)) * 4;
+        if (score < bestScore) {
+          bestScore = score;
           best = p;
         }
       }
 
       if (best >= 0) {
-        const prev = this.prevComs[best]!;
+        const prev = this.prevRegions[best]!;
         usedPrev.add(best);
         region.id = prev.id;
         const rawVx = toroidalDelta(region.comX, prev.comX, w);
@@ -376,12 +442,16 @@ export class FieldObserver {
       }
     }
 
-    this.prevComs = regions.map((r) => ({
+    this.prevRegions = regions.map((r) => ({
       id: r.id,
       comX: r.comX,
       comY: r.comY,
       velX: r.velX,
       velY: r.velY,
+      meanR: r.meanR,
+      meanG: r.meanG,
+      meanB: r.meanB,
+      cells: r.cells,
     }));
   }
 
@@ -432,6 +502,18 @@ export function toroidalDelta(a: number, b: number, period: number): number {
   if (d > period * 0.5) d -= period;
   if (d < -period * 0.5) d += period;
   return d;
+}
+
+function cellIoU(a: Uint32Array, b: Uint32Array): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  const set = new Set<number>();
+  for (let i = 0; i < a.length; i++) set.add(a[i]!);
+  let inter = 0;
+  for (let i = 0; i < b.length; i++) {
+    if (set.has(b[i]!)) inter += 1;
+  }
+  const union = a.length + b.length - inter;
+  return union > 0 ? inter / union : 0;
 }
 
 function clamp01(v: number): number {
@@ -525,7 +607,12 @@ function emptyObservation(
     coherence,
     coherenceLength,
     coherent: [],
-    chaotic: { area: width * height, meanDelta: 0, meanCoherence: 0, cells: new Uint32Array(0) },
+    chaotic: {
+      area: width * height,
+      meanDelta: 0,
+      meanCoherence: 0,
+      cells: new Uint32Array(0),
+    },
     meanDelta: 0,
     meanCoherence: 0,
     calmAreaFraction: 0,

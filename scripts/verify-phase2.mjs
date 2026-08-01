@@ -31,9 +31,17 @@ assert("no sendPlan lattice path", !/sendPlan/.test(main) && !/sendPlan/.test(au
 assert("freeze-at-spawn sample window fields", /sampleLo/.test(schedSrc) && /sampleHi/.test(schedSrc));
 assert("direction from motion", /velDirEps/.test(schedSrc) && /direction/.test(schedSrc));
 assert("area-weighted budget", /allocateShares/.test(schedSrc) && /GRAIN_BUDGET/.test(schedSrc));
+assert("spawn from region.cells", /region\.cells\[/.test(schedSrc));
+assert("rhythm history / period", /rhythmHistory/.test(schedSrc) && /estimatePeriod/.test(schedSrc));
+assert("fillRatio used in duration", /fillRatio/.test(schedSrc));
+assert("calm packing rate", /calmPackRateHz|calmPackRateMin/.test(schedSrc));
+assert("maxCalmConcurrent raised", /maxCalmConcurrent:\s*8/.test(schedSrc));
+assert("regime envelope fracs on spawn", /attackFrac/.test(schedSrc) && /calmAttackFrac:\s*0\.5/.test(schedSrc));
+assert("overlay draws cell silhouette", /cells/.test(readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8")));
 assert("worklet handles events", /type === "events"/.test(worklet));
 assert("worklet ping-pong", /boundLo/.test(worklet) && /dir = -1/.test(worklet));
 assert("worklet energy normalisation", /TARGET_RMS/.test(worklet) && /normGain/.test(worklet));
+assert("worklet uses frozen attackFrac", /attackFrac/.test(worklet) && /getEnvelope\(/.test(worklet));
 assert("no latticeIndex in worklet", !/latticeIndex/.test(worklet));
 assert("no paintGrain lattice loop", !/paintGrain/.test(worklet));
 assert("UI budget meters", /st-budget/.test(controls) && /Calm g/.test(controls));
@@ -101,6 +109,7 @@ async function runtimeScheduler() {
   let ampOk = true;
   let dirOk = true;
   let budgetOk = true;
+  let envOk = true;
   let now = 1000;
   for (let t = 0; t < 60; t++) {
     now += 1000 / 30;
@@ -113,16 +122,19 @@ async function runtimeScheduler() {
       if (e.regime === "calm") {
         sawCalm = true;
         if (!(e.sampleHi > e.sampleLo && e.durationSec >= 0.3)) calmOk = false;
+        if (!(e.attackFrac === 0.5 && e.releaseFrac === 0.5)) envOk = false;
       }
       if (e.regime === "chaos") {
         sawChaos = true;
         if (!(e.durationSec <= 0.2)) chaosOk = false;
+        if (!(e.attackFrac < 0.12 && e.releaseFrac < 0.25)) envOk = false;
       }
     }
   }
   assert("never exceeds budget prediction", budgetOk);
   assert("calm events well-formed", !sawCalm || calmOk);
   assert("chaos events well-formed", !sawChaos || chaosOk);
+  assert("regime envelope fracs frozen on events", envOk);
   assert("amplitude finite", ampOk);
   assert("direction ±1", dirOk);
   assert("scheduler emitted events over time", totalEvents > 0);
@@ -130,6 +142,30 @@ async function runtimeScheduler() {
   if (obs.calmAreaFraction > 0.2) {
     assert("large calm area produced calm grains", sawCalm);
   }
+
+  // Static full-field calm: packing rate must sustain overlapping concurrent grains.
+  const solid = makeField((r, g, b, i) => {
+    r[i] = 0.9;
+    g[i] = 0.45;
+    b[i] = 0.1;
+  });
+  const calmFo = new FieldObserver(w, h);
+  calmFo.observe(solid, prev);
+  for (let t = 0; t < 12; t++) calmFo.observe(solid, solid);
+  const calmObs = calmFo.observation;
+  assert("static field is mostly calm", calmObs.calmAreaFraction > 0.9);
+  const calmSched = new GrainScheduler(GRAIN_BUDGET);
+  let peakCalm = 0;
+  let now2 = 5000;
+  for (let t = 0; t < 90; t++) {
+    now2 += 1000 / 30;
+    const batch = calmSched.step(calmObs, solid, now2);
+    if (batch.calmActive > peakCalm) peakCalm = batch.calmActive;
+  }
+  assert(
+    "static full-calm sustains overlapping grains (peak calmActive ≥ 3)",
+    peakCalm >= 3,
+  );
 }
 
 await runtimeScheduler();

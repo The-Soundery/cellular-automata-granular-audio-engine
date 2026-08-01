@@ -11,16 +11,28 @@ export const MASTER_GAIN = 1.0;
 
 /** Negotiable scheduler curves (Sonic Laws shape; numbers are tunable). */
 export const SCHED = {
-  maxCalmConcurrent: 3,
+  maxCalmConcurrent: 8,
   calmDurMin: 0.35,
   calmDurMax: 1.4,
   chaosDurMin: 0.045,
   chaosDurMax: 0.14,
+  /** Legacy calm Hz band — packing rate supersedes for calm wash. */
   calmRateMinHz: 0.8,
   calmRateMaxHz: 6,
   chaosRateMinHz: 8,
   chaosRateMaxHz: 48,
   deltaRateNorm: 0.25,
+  /**
+   * Floor multiplier on packing rate when δ̄→0.
+   * Keeps static calm fields at ~desired concurrent overlap.
+   */
+  calmPackRateMin: 0.85,
+  /** Soft envelope fractions frozen at spawn (calm wash). */
+  calmAttackFrac: 0.5,
+  calmReleaseFrac: 0.5,
+  /** Sharp envelope fractions frozen at spawn (chaos hits). */
+  chaosAttackFrac: 0.06,
+  chaosReleaseFrac: 0.15,
   ySpreadFrac: 0.85,
   velDirEps: 0.08,
   stepsPerSec: 30,
@@ -28,6 +40,14 @@ export const SCHED = {
   calmSampleHalf: 0.04,
   /** Half-width of hue→sample window (chaos). */
   chaosSampleHalf: 0.012,
+  /** Samples of meanDelta kept per calm region for period detection. */
+  rhythmHistory: 48,
+  /** Minimum accepted observed period (seconds). */
+  rhythmMinSec: 0.15,
+  /** Maximum accepted observed period (seconds). */
+  rhythmMaxSec: 2.0,
+  /** Autocorr peak ratio above lag-0 neighbourhood to trust a period. */
+  rhythmConfidence: 0.35,
 } as const;
 
 export type GrainRegime = "calm" | "chaos";
@@ -50,6 +70,10 @@ export interface GrainSpawnEvent {
   yNorm: number;
   /** Stereo pan [-1,1] from spawn X (frozen). */
   pan: number;
+  /** Envelope attack as fraction of duration (frozen at spawn). */
+  attackFrac: number;
+  /** Envelope release as fraction of duration (frozen at spawn). */
+  releaseFrac: number;
   regime: GrainRegime;
   regionId: number;
 }
@@ -73,7 +97,15 @@ type ActiveRecord = {
 
 type RegionClock = {
   id: number;
+  /** Poisson-style accumulator when no confident period. */
   acc: number;
+  /** Phase in [0,1) when period is trusted. */
+  phase: number;
+  history: Float32Array;
+  histLen: number;
+  histWrite: number;
+  periodSec: number;
+  confidence: number;
 };
 
 /**
@@ -133,28 +165,71 @@ export class GrainScheduler {
       const activeHere = this.active.filter((a) => a.regionId === region.id).length;
       let clock = this.calmClocks.get(region.id);
       if (!clock) {
-        clock = { id: region.id, acc: Math.random() };
+        clock = {
+          id: region.id,
+          acc: Math.random(),
+          phase: Math.random(),
+          history: new Float32Array(SCHED.rhythmHistory),
+          histLen: 0,
+          histWrite: 0,
+          periodSec: 0,
+          confidence: 0,
+        };
         this.calmClocks.set(region.id, clock);
       }
 
-      const rateHz = rateFromDelta(region.meanDelta, true);
-      clock.acc += rateHz * dtSec;
+      pushHistory(clock, region.meanDelta);
+      const rhythm = estimatePeriod(clock, dtSec);
+      clock.periodSec = rhythm.periodSec;
+      clock.confidence = rhythm.confidence;
 
-      while (
-        clock.acc >= 1 &&
+      const durationSec = durationFromRegion(region);
+      const packHz = desired / Math.max(0.05, durationSec);
+      const baseHz = calmPackRateHz(packHz, region.meanDelta);
+      // events are also recorded in this.active — budget check uses active only.
+      const room = () =>
         activeHere + countEventsForRegion(events, region.id) < desired &&
-        this.active.length + events.length < this.budget
+        this.active.length < this.budget;
+
+      if (
+        rhythm.confidence >= SCHED.rhythmConfidence &&
+        rhythm.periodSec > 0
       ) {
-        clock.acc -= 1;
-        const ev = spawnCalm(region, obs, rgb, amp);
-        events.push(ev);
-        this.active.push({
-          endMs: nowMs + ev.durationSec * 1000,
-          regime: "calm",
-          regionId: region.id,
-        });
+        // Phase fires on period wrap; keep packing density (do not under-fire).
+        clock.phase += dtSec / rhythm.periodSec;
+        const firesThisStep = Math.min(
+          desired,
+          Math.max(1, Math.round(baseHz * rhythm.periodSec)),
+        );
+        while (clock.phase >= 1 && room()) {
+          clock.phase -= 1;
+          let burst = 0;
+          while (burst < firesThisStep && room()) {
+            const ev = spawnCalm(region, obs, rgb, amp, durationSec);
+            events.push(ev);
+            this.active.push({
+              endMs: nowMs + ev.durationSec * 1000,
+              regime: "calm",
+              regionId: region.id,
+            });
+            burst += 1;
+          }
+        }
+        if (clock.phase > 2) clock.phase = clock.phase % 1;
+      } else {
+        clock.acc += baseHz * dtSec;
+        while (clock.acc >= 1 && room()) {
+          clock.acc -= 1;
+          const ev = spawnCalm(region, obs, rgb, amp, durationSec);
+          events.push(ev);
+          this.active.push({
+            endMs: nowMs + ev.durationSec * 1000,
+            regime: "calm",
+            regionId: region.id,
+          });
+        }
+        if (clock.acc > 2) clock.acc = 2;
       }
-      if (clock.acc > 2) clock.acc = 2;
     }
 
     const desiredChaos = shares.chaos;
@@ -167,7 +242,7 @@ export class GrainScheduler {
       countActiveRegime(this.active, "chaos") +
         countEventsRegime(events, "chaos") <
         desiredChaos &&
-      this.active.length + events.length < this.budget &&
+      this.active.length < this.budget &&
       obs.chaotic.cells.length > 0
     ) {
       this.chaosAcc -= 1;
@@ -196,6 +271,67 @@ export class GrainScheduler {
   private prune(nowMs: number): void {
     this.active = this.active.filter((a) => a.endMs > nowMs);
   }
+}
+
+function pushHistory(clock: RegionClock, value: number): void {
+  const n = clock.history.length;
+  clock.history[clock.histWrite] = value;
+  clock.histWrite = (clock.histWrite + 1) % n;
+  if (clock.histLen < n) clock.histLen += 1;
+}
+
+/**
+ * Autocorrelation peak on meanDelta history → period + confidence.
+ * Returns periodSec=0 when history is too short or no clear peak.
+ */
+function estimatePeriod(
+  clock: RegionClock,
+  dtSec: number,
+): { periodSec: number; confidence: number } {
+  const n = clock.histLen;
+  if (n < Math.min(24, SCHED.rhythmHistory) || dtSec <= 0) {
+    return { periodSec: 0, confidence: 0 };
+  }
+
+  const series = new Float32Array(n);
+  const start = (clock.histWrite - n + clock.history.length) % clock.history.length;
+  for (let i = 0; i < n; i++) {
+    series[i] = clock.history[(start + i) % clock.history.length]!;
+  }
+
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += series[i]!;
+  mean /= n;
+  let varSum = 0;
+  for (let i = 0; i < n; i++) {
+    const d = series[i]! - mean;
+    varSum += d * d;
+  }
+  if (varSum < 1e-8) return { periodSec: 0, confidence: 0 };
+
+  const minLag = Math.max(2, Math.floor(SCHED.rhythmMinSec / dtSec));
+  const maxLag = Math.min(n - 2, Math.ceil(SCHED.rhythmMaxSec / dtSec));
+  if (minLag >= maxLag) return { periodSec: 0, confidence: 0 };
+
+  let bestLag = 0;
+  let bestCorr = -Infinity;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let num = 0;
+    for (let i = 0; i < n - lag; i++) {
+      num += (series[i]! - mean) * (series[i + lag]! - mean);
+    }
+    const corr = num / varSum;
+    if (corr > bestCorr) {
+      bestCorr = corr;
+      bestLag = lag;
+    }
+  }
+
+  const confidence = clamp01(bestCorr);
+  if (confidence < SCHED.rhythmConfidence * 0.5) {
+    return { periodSec: 0, confidence: 0 };
+  }
+  return { periodSec: bestLag * dtSec, confidence };
 }
 
 function equalAmp(budget: number): number {
@@ -250,10 +386,19 @@ function rateFromDelta(meanDelta: number, calm: boolean): number {
   );
 }
 
+/** Packing-first calm rate: sustain overlap; δ̄ nudges within a band. */
+function calmPackRateHz(packHz: number, meanDelta: number): number {
+  const t = clamp01(meanDelta / SCHED.deltaRateNorm);
+  const scale = SCHED.calmPackRateMin + (1 - SCHED.calmPackRateMin) * t;
+  return Math.max(0.05, packHz * scale);
+}
+
 function durationFromRegion(region: CoherentRegion): number {
   const k = clamp01(region.meanCoherence);
   const areaT = clamp01(Math.log2(Math.max(2, region.area)) / 10);
-  const t = 0.55 * k + 0.45 * areaT;
+  const fill = clamp01(region.fillRatio ?? 1);
+  // Sparse shapes slightly shorter; κ + area still dominate.
+  const t = 0.5 * k + 0.4 * areaT + 0.1 * fill;
   return SCHED.calmDurMin + (SCHED.calmDurMax - SCHED.calmDurMin) * t;
 }
 
@@ -267,17 +412,49 @@ function spawnCalm(
   obs: FieldObservation,
   rgb: RgbField,
   amplitude: number,
+  durationSec: number,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
-  const jx = (Math.random() - 0.5) * Math.min(region.width, 6);
-  const ySpread =
-    region.height > h * 0.12
-      ? (Math.random() - 0.5) * region.height * SCHED.ySpreadFrac
-      : (Math.random() - 0.5) * Math.min(region.height, 4);
-  const x = wrap(region.comX + jx, w);
-  const y = wrap(region.comY + ySpread, h);
-  const ci = pickNearestCell(region.cells, x, y, w);
+  if (region.cells.length === 0) {
+    const cx = Math.floor(region.comX) % w;
+    const cy = Math.floor(region.comY) % h;
+    return spawnCalmAt(region, obs, rgb, amplitude, durationSec, cy * w + cx);
+  }
+
+  // Shape-true: uniform pick from membership mask (not AABB jitter).
+  const ci = region.cells[(Math.random() * region.cells.length) | 0]!;
+
+  // Optional mild Y diversity for tall filled regions only.
+  const fill = clamp01(region.fillRatio ?? 1);
+  if (
+    fill > 0.45 &&
+    region.height > h * 0.12 &&
+    Math.random() < fill * SCHED.ySpreadFrac
+  ) {
+    const cy0 = (ci / w) | 0;
+    const targetY = wrap(
+      cy0 + (Math.random() - 0.5) * region.height * fill * SCHED.ySpreadFrac,
+      h,
+    );
+    const cx = ci % w;
+    const alt = pickNearestCellInColumn(region.cells, cx, targetY, w);
+    return spawnCalmAt(region, obs, rgb, amplitude, durationSec, alt);
+  }
+
+  return spawnCalmAt(region, obs, rgb, amplitude, durationSec, ci);
+}
+
+function spawnCalmAt(
+  region: CoherentRegion,
+  obs: FieldObservation,
+  rgb: RgbField,
+  amplitude: number,
+  durationSec: number,
+  ci: number,
+): GrainSpawnEvent {
+  const w = obs.width;
+  const h = obs.height;
   const cx = ci % w;
   const cy = (ci / w) | 0;
 
@@ -297,13 +474,15 @@ function spawnCalm(
     r,
     g,
     b,
-    durationSec: durationFromRegion(region),
+    durationSec,
     amplitude,
     direction: region.velX < -SCHED.velDirEps ? -1 : 1,
     sampleLo,
     sampleHi,
     yNorm: 1 - cy / Math.max(1, h - 1),
     pan: panFromX(cx, w),
+    attackFrac: SCHED.calmAttackFrac,
+    releaseFrac: SCHED.calmReleaseFrac,
     regime: "calm",
     regionId: region.id,
   };
@@ -343,6 +522,8 @@ function spawnChaos(
     sampleHi,
     yNorm: 1 - y / Math.max(1, h - 1),
     pan: panFromX(x, w),
+    attackFrac: SCHED.chaosAttackFrac,
+    releaseFrac: SCHED.chaosReleaseFrac,
     regime: "chaos",
     regionId: -1,
   };
@@ -385,7 +566,7 @@ function panFromX(x: number, width: number): number {
   return Math.max(-1, Math.min(1, t * 2 - 1));
 }
 
-function pickNearestCell(
+function pickNearestCellInColumn(
   cells: Uint32Array,
   x: number,
   y: number,
@@ -394,12 +575,11 @@ function pickNearestCell(
   if (cells.length === 0) return (y | 0) * w + (x | 0);
   let best = cells[0]!;
   let bestD = Infinity;
-  const stride = Math.max(1, (cells.length / 64) | 0);
-  for (let i = 0; i < cells.length; i += stride) {
+  for (let i = 0; i < cells.length; i++) {
     const ci = cells[i]!;
     const cx = ci % w;
     const cy = (ci / w) | 0;
-    const d = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+    const d = (cx - x) * (cx - x) * 4 + (cy - y) * (cy - y);
     if (d < bestD) {
       bestD = d;
       best = ci;
