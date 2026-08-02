@@ -187,10 +187,11 @@ export class AudioEngine {
     return this.bank;
   }
 
-  /** Push frozen spawn events to the worklet. */
+  /** Push spawn events + region pan/Y tracks to the worklet. */
   sendEvents(batch: GrainEventBatch): void {
     if (!this.node || !this.bank) return;
-    if (!batch.events.length) return;
+    const tracks = batch.tracks ?? [];
+    if (!batch.events.length && !tracks.length) return;
     this.node.port.postMessage({
       type: "events",
       masterGain: batch.masterGain,
@@ -201,6 +202,7 @@ export class AudioEngine {
         gridWidth: batch.gridWidth,
         gridHeight: batch.gridHeight,
       })),
+      tracks,
     });
   }
 

@@ -1,6 +1,6 @@
 # Listening gate — Sonic Laws (manual)
 
-**Status: RE-RUN REQUIRED** after calm wash packing + regime envelopes (and prior region-detection roadmap) on branch `v4`.
+**Status: RE-RUN REQUIRED** after direct pan/Y region follow + outline overlay.
 
 North star: `Creative Brief v4.txt`.
 Automated checks: `npm run verify` (phases 0–4).
@@ -12,13 +12,15 @@ Re-run after major scheduler / worklet / observation changes.
 
 - [ ] App boots; CA visible; Field observation meters move
 - [ ] Enable Audio loads default source without errors
-- [ ] Overlay shows **cell silhouettes** of regions (not a fixed lattice grid); AABB may appear faint
+- [ ] Overlay shows **cell silhouettes** with bright edges (outline-first); toggle Overlay On/Off works
+- [ ] Overlay fill is subtle (does not recolour the CA heavily)
 
-## Freeze-at-spawn
+## Freeze-at-spawn (sample) + pan/Y track
 
-- [ ] No zipper / pitch-tear glitches when calm regions move
-- [ ] Texture follows motion via *new* grains, not one grain being dragged
-- [ ] Pan stays fixed for the life of a grain (no mid-grain stereo chase)
+- [ ] No zipper / pitch-tear from sample scrub when calm regions move
+- [ ] Sample material stays locked for a grain’s life (no mid-grain scrub chase)
+- [ ] Region grains’ pan / spectrum directly follow the region as it moves (no lag/smoothing)
+- [ ] Chaos-bag grains keep spawn pan/Y (no region id)
 
 ## Calm vs chaos
 
@@ -37,7 +39,7 @@ Re-run after major scheduler / worklet / observation changes.
 
 ## Observed rhythm → rate
 
-- [ ] Pulsing / periodic calm areas can phase grain fires with visible change (still freeze-at-spawn)
+- [ ] Pulsing / periodic calm areas can phase grain fires with visible change
 - [ ] No imposed musical BPM when the field has no period (falls back to packing rate)
 - [ ] Rhythm does not raise loudness or steal area budget
 
@@ -51,6 +53,7 @@ Re-run after major scheduler / worklet / observation changes.
 
 - [ ] Distinct hues scrub distinct sample regions; similar hues feel related
 - [ ] Left-side cells lean left in the stereo field; right-side lean right
+- [ ] Moving calm masses can be heard moving in pan / spectrum without sample tears
 - [ ] Motion left/right can reverse scrub direction on new calm grains (velX)
 - [ ] Tall **filled** calm regions feel spectrally fuller (Y spread); sparse tall AABBs do not fake fullness
 - [ ] Colour chooses sample area / scrub, not master volume (envelope follows regime packing, not RGB)
@@ -59,11 +62,10 @@ Re-run after major scheduler / worklet / observation changes.
 
 - [ ] Constant repeating scrub locked to fixed posts (old lattice failure)
 - [ ] Mid-grain sample jumps chasing COM or colour
-- [ ] Mid-grain pan chasing cell X
 - [ ] Chaos winning the mix only because it fires more (without area share)
 
 ## Pass
 
 All boxes checked → Sonic Laws listening gate passed for this build.
 
-**Next:** fine-tune negotiable constants (`FIELD_OBS`, `SCHED` packing / envelope / rhythm knobs, worklet `TARGET_RMS` / budget) — do not revive lattice / voice-ownership paths or V3 identity without a new listening decision.
+**Next:** fine-tune negotiable constants (`FIELD_OBS`, `SCHED` packing / envelope / rhythm, worklet `TARGET_RMS`) — do not revive lattice / voice-ownership paths or V3 identity without a new listening decision.

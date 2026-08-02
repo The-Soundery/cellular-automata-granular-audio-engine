@@ -174,9 +174,9 @@ Follow-up D — X / Y mapping
 Originally confirmed: horizontal position → sample position; vertical position → spectrum.
 
 *** UPDATED by V4 listening (2026-08-01) — see Creative Brief v4.txt ***
-Current: Hue(RGB) → sample position; X → stereo pan; Y → spectrum (unchanged).
-Q3 colour→envelope-only is also superseded for sample mapping; colour still must
-never set loudness, allocation, or macro schedule.
+Current: Hue(RGB) → sample position (frozen); X → stereo pan; Y → spectrum.
+Region-bound grains directly follow pan/Y with region COM + spawn offset
+(no smoothing). Colour still must never set loudness, allocation, or macro schedule.
 
 
 Follow-up E — Sonic state + dumb granular renderer (2026-07-31)
@@ -190,4 +190,5 @@ locked to fixed addresses). Also rejected: fixing motion via luminance→volume.
 Superseded by Sonic Laws (author session 2026-07-31): ephemeral grains from
 field coherence / change; area-weighted budget; freeze-at-spawn; neutral
 loudness. Later identity remap (2026-08-01) is Creative Brief v4.txt /
-branch `v4` — Hue→sample, X→pan, Y→spectrum, fixed envelope.
+branch `v4` — Hue→sample (frozen), X→pan / Y→spectrum with direct region follow,
+fixed envelope.

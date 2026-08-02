@@ -1,5 +1,5 @@
 Cellular Automata Granular Audio Engine — Implementation Filter (V4)
-Status: Sonic Laws LIVE (V4 identity). Author listening validated 2026-08-01.
+Status: Sonic Laws LIVE (V4 identity + pan/Y track amend). 
 North star: Creative Brief v4.txt (Sonic Laws + remap notes).
 Branch: `v4` — ephemeral grains; hue→sample; X→pan; Y→spectrum.
 Verify: `npm run verify` + `scripts/listening-gate-sonic-laws.md` (re-run after big audio changes).
@@ -13,7 +13,8 @@ STOP — do not revive
 - Equal-share or presence/luminance amplitude on fixed addresses
 - Voice ownership / structure tracking / fieldOrder scoring
 - Rebake-on-change or “dumb paint of frozen scrub positions”
-- Mid-grain sample/frequency/pan chase of moving regions
+- Mid-grain sample-window scrub chase of moving regions
+  (direct pan / Y-spectrum follow for region-bound grains is allowed)
 - V3 identity (X→sample / RGB→envelope) without a new listening decision
 
 Archives (reference only): public/_obsolete/ (failed lattice path — do not revive)
@@ -22,14 +23,14 @@ Archives (reference only): public/_obsolete/ (failed lattice path — do not rev
 Live pipeline
 ------------------------------------------------------------------------------
 
-Utomata → FrameObserver → FieldObserver → GrainScheduler → AudioEngine.sendEvents
-  → grain-processor (ephemeral voices, hue-locked window, X pan, energy norm)
+Utomata → FrameObserver → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
+  → grain-processor (hue-locked sample window; direct region pan/Y follow; energy norm)
 
 Key modules:
 - src/field/FieldObserver.ts — δ, s, κ, ℓ, coherent regions, chaotic remainder
-- src/field/GrainScheduler.ts — area-weighted budget, hue→sample, X→pan, freeze-at-spawn
-- public/grain-processor.js — ephemeral stereo playback + energy normalisation
-- src/ui/RegionOverlay.ts — region bounds + active grain dots (debug, not ears)
+- src/field/GrainScheduler.ts — area-weighted budget, hue→sample, region COM tracks
+- public/grain-processor.js — ephemeral stereo playback + direct pan/Y follow + energy normalisation
+- src/ui/RegionOverlay.ts — region silhouettes + active grain dots (debug, not ears)
 
 Keep: src/ca/*, FrameObserver, spectral.ts, AudioEngine lifecycle, controls shell.
 

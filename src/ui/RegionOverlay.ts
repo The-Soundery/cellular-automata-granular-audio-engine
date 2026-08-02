@@ -3,8 +3,8 @@ import type { AudioStats } from "../audio/AudioEngine.ts";
 import { GRID_SIZE } from "../ca/UtomataHost.ts";
 
 /**
- * Debug visualisation: observational region cell masks + faint AABB + grains.
- * Not listening posts / lattice ears.
+ * Debug visualisation: observational region cell silhouettes with bright edges.
+ * Not listening posts / lattice ears. No AABB rectangles.
  */
 export class RegionOverlay {
   readonly canvas: HTMLCanvasElement;
@@ -39,49 +39,47 @@ export class RegionOverlay {
     ctx.clearRect(0, 0, GRID_SIZE, GRID_SIZE);
     if (!this.visible || !obs) return;
 
-    const scaleX = GRID_SIZE / obs.width;
-    const scaleY = GRID_SIZE / obs.height;
+    const w = obs.width;
+    const h = obs.height;
+    const scaleX = GRID_SIZE / w;
+    const scaleY = GRID_SIZE / h;
     const cellW = Math.max(1, scaleX);
     const cellH = Math.max(1, scaleY);
 
     for (const r of obs.coherent) {
       const hue = (r.id * 47) % 360;
-      ctx.fillStyle = `hsla(${hue}, 65%, 55%, 0.28)`;
-
-      // Primary: true cell silhouette from membership mask.
       const cells = r.cells;
-      if (cells && cells.length > 0) {
-        for (let i = 0; i < cells.length; i++) {
-          const ci = cells[i]!;
-          const cx = ci % obs.width;
-          const cy = (ci / obs.width) | 0;
-          ctx.fillRect(cx * scaleX, cy * scaleY, cellW, cellH);
-        }
+      if (!cells || cells.length === 0) continue;
+
+      const inRegion = new Set<number>();
+      for (let i = 0; i < cells.length; i++) inRegion.add(cells[i]!);
+
+      // Interior: dim fill. Edge cells (missing 4-neighbour): brighter outline.
+      for (let i = 0; i < cells.length; i++) {
+        const ci = cells[i]!;
+        const cx = ci % w;
+        const cy = (ci / w) | 0;
+        const edge = isEdgeCell(inRegion, cx, cy, w, h);
+        ctx.fillStyle = edge
+          ? `hsla(${hue}, 75%, 70%, 0.7)`
+          : `hsla(${hue}, 55%, 50%, 0.07)`;
+        ctx.fillRect(cx * scaleX, cy * scaleY, cellW, cellH);
       }
 
-      // Secondary: faint AABB for extent reference only.
-      ctx.strokeStyle = `hsla(${hue}, 70%, 62%, 0.28)`;
-      ctx.lineWidth = 1;
-      const x0 = r.minX * scaleX;
-      const y0 = r.minY * scaleY;
-      const bw = r.width * scaleX;
-      const bh = r.height * scaleY;
-      ctx.strokeRect(x0 + 0.5, y0 + 0.5, Math.max(1, bw - 1), Math.max(1, bh - 1));
-
-      const cx = r.comX * scaleX;
-      const cy = r.comY * scaleY;
+      const comX = r.comX * scaleX;
+      const comY = r.comY * scaleY;
       ctx.beginPath();
-      ctx.fillStyle = `hsla(${hue}, 80%, 70%, 0.95)`;
-      ctx.arc(cx, cy, 2.2, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${hue}, 70%, 68%, 0.65)`;
+      ctx.arc(comX, comY, 1.8, 0, Math.PI * 2);
       ctx.fill();
 
       const vx = r.velX * scaleX * 4;
       const vy = r.velY * scaleY * 4;
       if (Math.hypot(vx, vy) > 0.5) {
         ctx.beginPath();
-        ctx.strokeStyle = `hsla(${hue}, 80%, 75%, 0.9)`;
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + vx, cy + vy);
+        ctx.strokeStyle = `hsla(${hue}, 75%, 72%, 0.7)`;
+        ctx.moveTo(comX, comY);
+        ctx.lineTo(comX + vx, comY + vy);
         ctx.stroke();
       }
     }
@@ -100,4 +98,24 @@ export class RegionOverlay {
       }
     }
   }
+}
+
+/** True when any 4-neighbour is outside the region mask (toroidal). */
+function isEdgeCell(
+  inRegion: Set<number>,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): boolean {
+  const nIdx = [
+    y * w + ((x + 1) % w),
+    y * w + ((x - 1 + w) % w),
+    ((y + 1) % h) * w + x,
+    ((y - 1 + h) % h) * w + x,
+  ];
+  for (const j of nIdx) {
+    if (!inRegion.has(j)) return true;
+  }
+  return false;
 }

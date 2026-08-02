@@ -265,7 +265,7 @@ function tick() {
         frameObserver.current,
         performance.now(),
       );
-      if (audio.isReady && lastBatch.events.length) {
+      if (audio.isReady) {
         audio.sendEvents(lastBatch);
       }
     }

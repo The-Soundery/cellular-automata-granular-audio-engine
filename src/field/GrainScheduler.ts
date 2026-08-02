@@ -19,27 +19,39 @@ export const SCHED = {
   /** Legacy calm Hz band — packing rate supersedes for calm wash. */
   calmRateMinHz: 0.8,
   calmRateMaxHz: 6,
-  chaosRateMinHz: 8,
+  chaosRateMinHz: 6,
   chaosRateMaxHz: 48,
-  deltaRateNorm: 0.25,
+  /** δ scale for rate/duration — headroom so mid-chaos does not stick at max. */
+  deltaRateNorm: 0.35,
   /**
    * Floor multiplier on packing rate when δ̄→0.
-   * Keeps static calm fields at ~desired concurrent overlap.
+   * Keeps static calm fields overlapping; evolving calm fires denser.
    */
-  calmPackRateMin: 0.85,
-  /** Soft envelope fractions frozen at spawn (calm wash). */
-  calmAttackFrac: 0.5,
-  calmReleaseFrac: 0.5,
+  calmPackRateMin: 0.5,
+  /**
+   * Floor multiplier on chaos pack-to-share rate when δ̄→0.
+   * Fast chaos fills area share; quieter change stays thinner.
+   */
+  chaosPackRateMin: 0.55,
+  /** Soft envelope with sustain plateau (calm wash) — frozen at spawn. */
+  calmAttackFrac: 0.22,
+  calmReleaseFrac: 0.28,
   /** Sharp envelope fractions frozen at spawn (chaos hits). */
   chaosAttackFrac: 0.06,
   chaosReleaseFrac: 0.15,
-  ySpreadFrac: 0.85,
+  ySpreadFrac: 0.95,
+  /** Min fillRatio before tall regions bias Y spawn diversity. */
+  ySpreadFillMin: 0.35,
   velDirEps: 0.08,
   stepsPerSec: 30,
-  /** Half-width of hue→sample window (calm). */
-  calmSampleHalf: 0.04,
-  /** Half-width of hue→sample window (chaos). */
-  chaosSampleHalf: 0.012,
+  /** Base half-width of hue→sample window (calm); ℓ widens toward max. */
+  calmSampleHalf: 0.035,
+  /** Max calm sample half when mean ℓ is high. */
+  calmSampleHalfMax: 0.08,
+  /** ℓ (cells) that maps to full calmSampleHalfMax boost. */
+  lengthNorm: 12,
+  /** Half-width of hue→sample window (chaos) — stays tight. */
+  chaosSampleHalf: 0.01,
   /** Samples of meanDelta kept per calm region for period detection. */
   rhythmHistory: 48,
   /** Minimum accepted observed period (seconds). */
@@ -48,11 +60,15 @@ export const SCHED = {
   rhythmMaxSec: 2.0,
   /** Autocorr peak ratio above lag-0 neighbourhood to trust a period. */
   rhythmConfidence: 0.35,
+  /** Max grains fired on a trusted period wrap (felt pulse, not packing burst). */
+  rhythmPulseMax: 2,
+  /** While period trusted, top up wash only below this fraction of desired. */
+  rhythmWashFloor: 0.5,
 } as const;
 
 export type GrainRegime = "calm" | "chaos";
 
-/** Frozen-at-spawn ephemeral grain descriptor (V4: hue→sample, X→pan). */
+/** Ephemeral grain descriptor (V4: hue→sample frozen; pan/Y follow region). */
 export interface GrainSpawnEvent {
   x: number;
   y: number;
@@ -66,9 +82,9 @@ export interface GrainSpawnEvent {
   /** Locked sample window [0,1] for ping-pong (from hue). */
   sampleLo: number;
   sampleHi: number;
-  /** Locked spectral position [0,1], 1 = high frequency. */
+  /** Spectral position [0,1] at spawn; follows region while alive. */
   yNorm: number;
-  /** Stereo pan [-1,1] from spawn X (frozen). */
+  /** Stereo pan [-1,1] at spawn; follows region while alive. */
   pan: number;
   /** Envelope attack as fraction of duration (frozen at spawn). */
   attackFrac: number;
@@ -76,6 +92,18 @@ export interface GrainSpawnEvent {
   releaseFrac: number;
   regime: GrainRegime;
   regionId: number;
+  /** Spawn offset from region COM (cells) — used for direct pan/Y follow. */
+  trackDx: number;
+  trackDy: number;
+}
+
+/** Per-step region COM for direct pan/Y follow (no smoothing). */
+export interface RegionTrack {
+  regionId: number;
+  comX: number;
+  comY: number;
+  gridWidth: number;
+  gridHeight: number;
 }
 
 export interface GrainEventBatch {
@@ -83,6 +111,7 @@ export interface GrainEventBatch {
   gridWidth: number;
   gridHeight: number;
   events: GrainSpawnEvent[];
+  tracks: RegionTrack[];
   budget: number;
   predictedActive: number;
   calmActive: number;
@@ -152,6 +181,7 @@ export class GrainScheduler {
 
     const shares = allocateShares(obs, this.budget, nCells);
     const amp = equalAmp(this.budget);
+    const tracks: RegionTrack[] = [];
 
     const liveCalmIds = new Set(obs.coherent.map((r) => r.id));
     for (const id of [...this.calmClocks.keys()]) {
@@ -159,8 +189,17 @@ export class GrainScheduler {
     }
 
     for (const region of obs.coherent) {
+      tracks.push({
+        regionId: region.id,
+        comX: region.comX,
+        comY: region.comY,
+        gridWidth: obs.width,
+        gridHeight: obs.height,
+      });
+
       const share = shares.calm.get(region.id) ?? 0;
       if (share <= 0) continue;
+
       const desired = desiredCalmConcurrent(region, share);
       const activeHere = this.active.filter((a) => a.regionId === region.id).length;
       let clock = this.calmClocks.get(region.id);
@@ -186,56 +225,64 @@ export class GrainScheduler {
       const durationSec = durationFromRegion(region);
       const packHz = desired / Math.max(0.05, durationSec);
       const baseHz = calmPackRateHz(packHz, region.meanDelta);
-      // events are also recorded in this.active — budget check uses active only.
+      const regionActive = () =>
+        activeHere + countEventsForRegion(events, region.id);
       const room = () =>
-        activeHere + countEventsForRegion(events, region.id) < desired &&
-        this.active.length < this.budget;
+        regionActive() < desired && this.active.length < this.budget;
+
+      const pushCalm = () => {
+        const ev = spawnCalm(region, obs, rgb, amp, durationSec);
+        events.push(ev);
+        this.active.push({
+          endMs: nowMs + ev.durationSec * 1000,
+          regime: "calm",
+          regionId: region.id,
+        });
+      };
 
       if (
         rhythm.confidence >= SCHED.rhythmConfidence &&
         rhythm.periodSec > 0
       ) {
-        // Phase fires on period wrap; keep packing density (do not under-fire).
+        // Phase-locked pulse — small burst on wrap (do not packing-smear the beat).
         clock.phase += dtSec / rhythm.periodSec;
-        const firesThisStep = Math.min(
-          desired,
-          Math.max(1, Math.round(baseHz * rhythm.periodSec)),
-        );
         while (clock.phase >= 1 && room()) {
           clock.phase -= 1;
+          const pulseN = Math.min(SCHED.rhythmPulseMax, desired);
           let burst = 0;
-          while (burst < firesThisStep && room()) {
-            const ev = spawnCalm(region, obs, rgb, amp, durationSec);
-            events.push(ev);
-            this.active.push({
-              endMs: nowMs + ev.durationSec * 1000,
-              regime: "calm",
-              regionId: region.id,
-            });
+          while (burst < pulseN && room()) {
+            pushCalm();
             burst += 1;
           }
         }
         if (clock.phase > 2) clock.phase = clock.phase % 1;
+
+        // Soft wash top-up only if concurrent collapses below floor.
+        const washTarget = Math.max(1, Math.floor(desired * SCHED.rhythmWashFloor));
+        if (regionActive() < washTarget) {
+          clock.acc += baseHz * dtSec;
+          while (clock.acc >= 1 && regionActive() < washTarget && room()) {
+            clock.acc -= 1;
+            pushCalm();
+          }
+          if (clock.acc > 2) clock.acc = 2;
+        }
       } else {
         clock.acc += baseHz * dtSec;
         while (clock.acc >= 1 && room()) {
           clock.acc -= 1;
-          const ev = spawnCalm(region, obs, rgb, amp, durationSec);
-          events.push(ev);
-          this.active.push({
-            endMs: nowMs + ev.durationSec * 1000,
-            regime: "calm",
-            regionId: region.id,
-          });
+          pushCalm();
         }
         if (clock.acc > 2) clock.acc = 2;
       }
     }
 
+    // Chaos pack-to-share: spend area budget as many short concurrent hits.
     const desiredChaos = shares.chaos;
-    const chaosRateHz = rateFromDelta(obs.chaotic.meanDelta, false);
-    const chaosAreaScale = Math.max(0.15, obs.chaosAreaFraction);
-    this.chaosAcc += chaosRateHz * chaosAreaScale * dtSec;
+    const chaosDur = durationChaosMean(obs.chaotic);
+    const chaosPackHz = desiredChaos / Math.max(0.02, chaosDur);
+    const chaosRateHz = chaosPackRateHz(chaosPackHz, obs.chaotic.meanDelta);
+    this.chaosAcc += chaosRateHz * dtSec;
 
     while (
       this.chaosAcc >= 1 &&
@@ -254,13 +301,17 @@ export class GrainScheduler {
         regionId: -1,
       });
     }
-    if (this.chaosAcc > 3) this.chaosAcc = 3;
+    // Allow multi-spawn per step at high pack rates; do not stall at 3.
+    if (this.chaosAcc > Math.max(3, desiredChaos)) {
+      this.chaosAcc = Math.max(3, desiredChaos);
+    }
 
     return {
       masterGain: MASTER_GAIN,
       gridWidth: obs.width,
       gridHeight: obs.height,
       events,
+      tracks,
       budget: this.budget,
       predictedActive: this.active.length,
       calmActive: countActiveRegime(this.active, "calm"),
@@ -338,6 +389,10 @@ function equalAmp(budget: number): number {
   return 1 / Math.sqrt(Math.max(1, budget));
 }
 
+/**
+ * Area-proportional concurrent shares. Rounding leftovers stay unused —
+ * unused calm packing capacity must not be donated to chaos.
+ */
 function allocateShares(
   obs: FieldObservation,
   budget: number,
@@ -355,35 +410,33 @@ function allocateShares(
     Math.round((budget * obs.chaotic.area) / nCells),
   );
   if (assigned + chaosFromArea > budget && assigned > 0) {
-    const scale = (budget - Math.min(chaosFromArea, budget)) / assigned;
+    const roomForCalm = budget - Math.min(chaosFromArea, budget);
+    const scale = roomForCalm / assigned;
     let sum = 0;
     for (const [id, s] of calm) {
       const ns = Math.max(0, Math.floor(s * scale));
       calm.set(id, ns);
       sum += ns;
     }
-    return { calm, chaos: Math.max(0, budget - sum) };
+    // Cap chaos at its area share (and remaining slots) — do not dump leftovers.
+    return {
+      calm,
+      chaos: Math.min(chaosFromArea, Math.max(0, budget - sum)),
+    };
   }
   return {
     calm,
-    chaos: Math.max(chaosFromArea, Math.max(0, budget - assigned)),
+    chaos: Math.min(chaosFromArea, Math.max(0, budget - assigned)),
   };
 }
 
 function desiredCalmConcurrent(region: CoherentRegion, share: number): number {
   if (share <= 0) return 0;
   const fromArea = 1 + Math.floor(Math.log2(Math.max(2, region.area / 24)));
-  return Math.max(1, Math.min(SCHED.maxCalmConcurrent, share, fromArea));
-}
-
-function rateFromDelta(meanDelta: number, calm: boolean): number {
-  const t = clamp01(meanDelta / SCHED.deltaRateNorm);
-  if (calm) {
-    return SCHED.calmRateMinHz + (SCHED.calmRateMaxHz - SCHED.calmRateMinHz) * t;
-  }
-  return (
-    SCHED.chaosRateMinHz + (SCHED.chaosRateMaxHz - SCHED.chaosRateMinHz) * t
-  );
+  const k = clamp01(region.meanCoherence);
+  // Overlap ∝ κ̄ × size — κ scales the area-derived concurrent count.
+  const fromLaws = Math.max(1, Math.round(fromArea * (0.35 + 0.65 * k)));
+  return Math.max(1, Math.min(SCHED.maxCalmConcurrent, share, fromLaws));
 }
 
 /** Packing-first calm rate: sustain overlap; δ̄ nudges within a band. */
@@ -393,18 +446,52 @@ function calmPackRateHz(packHz: number, meanDelta: number): number {
   return Math.max(0.05, packHz * scale);
 }
 
+/** Pack-to-share chaos rate: fill area concurrent; δ̄ scales toward full share. */
+function chaosPackRateHz(packHz: number, meanDelta: number): number {
+  const t = clamp01(meanDelta / SCHED.deltaRateNorm);
+  const scale = SCHED.chaosPackRateMin + (1 - SCHED.chaosPackRateMin) * t;
+  return Math.max(0.05, packHz * scale);
+}
+
+/** Representative chaos duration from bag means (for packing rate). */
+function durationChaosMean(chaotic: ChaoticArea): number {
+  const t = clamp01(
+    0.65 * clamp01(chaotic.meanDelta / SCHED.deltaRateNorm) +
+      0.35 * (1 - clamp01(chaotic.meanCoherence)),
+  );
+  return SCHED.chaosDurMin + (SCHED.chaosDurMax - SCHED.chaosDurMin) * t;
+}
+
 function durationFromRegion(region: CoherentRegion): number {
   const k = clamp01(region.meanCoherence);
   const areaT = clamp01(Math.log2(Math.max(2, region.area)) / 10);
   const fill = clamp01(region.fillRatio ?? 1);
-  // Sparse shapes slightly shorter; κ + area still dominate.
-  const t = 0.5 * k + 0.4 * areaT + 0.1 * fill;
+  const ellT = clamp01((region.meanLength ?? 0) / SCHED.lengthNorm);
+  // Sparse shorter; κ + area dominate; ℓ extends hold for large coherent extents.
+  const t = 0.4 * k + 0.3 * areaT + 0.15 * fill + 0.15 * ellT;
   return SCHED.calmDurMin + (SCHED.calmDurMax - SCHED.calmDurMin) * t;
 }
 
-function durationChaos(chaotic: ChaoticArea): number {
-  const t = 1 - clamp01(chaotic.meanCoherence);
+/** Chaos duration from spawn-cell δ / κ (bag means as fallback). */
+function durationChaosAt(
+  obs: FieldObservation,
+  ci: number,
+  chaotic: ChaoticArea,
+): number {
+  const d = obs.delta[ci] ?? chaotic.meanDelta;
+  const k = obs.coherence[ci] ?? chaotic.meanCoherence;
+  const t = clamp01(
+    0.65 * clamp01(d / SCHED.deltaRateNorm) + 0.35 * (1 - clamp01(k)),
+  );
   return SCHED.chaosDurMin + (SCHED.chaosDurMax - SCHED.chaosDurMin) * t;
+}
+
+function calmSampleHalfFor(region: CoherentRegion): number {
+  const ellT = clamp01((region.meanLength ?? 0) / SCHED.lengthNorm);
+  return (
+    SCHED.calmSampleHalf +
+    (SCHED.calmSampleHalfMax - SCHED.calmSampleHalf) * ellT
+  );
 }
 
 function spawnCalm(
@@ -425,10 +512,10 @@ function spawnCalm(
   // Shape-true: uniform pick from membership mask (not AABB jitter).
   const ci = region.cells[(Math.random() * region.cells.length) | 0]!;
 
-  // Optional mild Y diversity for tall filled regions only.
+  // Optional Y diversity for tall filled regions only.
   const fill = clamp01(region.fillRatio ?? 1);
   if (
-    fill > 0.45 &&
+    fill > SCHED.ySpreadFillMin &&
     region.height > h * 0.12 &&
     Math.random() < fill * SCHED.ySpreadFrac
   ) {
@@ -465,8 +552,12 @@ function spawnCalmAt(
     r,
     g,
     b,
-    SCHED.calmSampleHalf,
+    calmSampleHalfFor(region),
   );
+
+  // Toroidal offset from COM so pan/Y follow keeps relative placement in the mass.
+  const trackDx = toroidalOffset(cx, region.comX, w);
+  const trackDy = toroidalOffset(cy, region.comY, h);
 
   return {
     x: cx,
@@ -485,6 +576,8 @@ function spawnCalmAt(
     releaseFrac: SCHED.calmReleaseFrac,
     regime: "calm",
     regionId: region.id,
+    trackDx,
+    trackDy,
   };
 }
 
@@ -515,7 +608,7 @@ function spawnChaos(
     r,
     g,
     b,
-    durationSec: durationChaos(chaotic),
+    durationSec: durationChaosAt(obs, ci, chaotic),
     amplitude,
     direction: 1,
     sampleLo,
@@ -526,6 +619,8 @@ function spawnChaos(
     releaseFrac: SCHED.chaosReleaseFrac,
     regime: "chaos",
     regionId: -1,
+    trackDx: 0,
+    trackDy: 0,
   };
 }
 
@@ -564,6 +659,14 @@ function sampleWindowFromHue(
 function panFromX(x: number, width: number): number {
   const t = x / Math.max(1, width - 1);
   return Math.max(-1, Math.min(1, t * 2 - 1));
+}
+
+/** Shortest signed toroidal offset from COM to cell (cells). */
+function toroidalOffset(cell: number, com: number, period: number): number {
+  let d = cell - com;
+  if (d > period * 0.5) d -= period;
+  if (d < -period * 0.5) d += period;
+  return d;
 }
 
 function pickNearestCellInColumn(

@@ -31,13 +31,59 @@ assert("no sendPlan lattice path", !/sendPlan/.test(main) && !/sendPlan/.test(au
 assert("freeze-at-spawn sample window fields", /sampleLo/.test(schedSrc) && /sampleHi/.test(schedSrc));
 assert("direction from motion", /velDirEps/.test(schedSrc) && /direction/.test(schedSrc));
 assert("area-weighted budget", /allocateShares/.test(schedSrc) && /GRAIN_BUDGET/.test(schedSrc));
+assert(
+  "no chaos leftover budget dump",
+  !/Math\.max\(\s*chaosFromArea\s*,\s*Math\.max\(\s*0\s*,\s*budget\s*-\s*assigned\s*\)\s*\)/.test(
+    schedSrc,
+  ),
+);
+assert(
+  "chaos share capped at area (no leftover donate)",
+  /Math\.min\(\s*chaosFromArea\s*,\s*Math\.max\(\s*0\s*,\s*budget\s*-\s*(?:sum|assigned)\s*\)\s*\)/.test(
+    schedSrc,
+  ),
+);
+assert(
+  "no chaos area-rate floor 0.15",
+  !/Math\.max\(\s*0\.15\s*,\s*obs\.chaosAreaFraction\s*\)/.test(schedSrc),
+);
+assert(
+  "no chaosAreaFraction double-scale on rate",
+  !/chaosRateHz\s*\*\s*obs\.chaosAreaFraction/.test(schedSrc),
+);
+assert(
+  "chaos pack-to-share",
+  /chaosPackRateHz/.test(schedSrc) && /chaosPackRateMin/.test(schedSrc),
+);
 assert("spawn from region.cells", /region\.cells\[/.test(schedSrc));
 assert("rhythm history / period", /rhythmHistory/.test(schedSrc) && /estimatePeriod/.test(schedSrc));
+assert(
+  "rhythm pulse without packing burst",
+  /rhythmPulseMax/.test(schedSrc) && /rhythmWashFloor/.test(schedSrc),
+);
 assert("fillRatio used in duration", /fillRatio/.test(schedSrc));
+assert("meanLength / ℓ drives calm sample + duration", /meanLength/.test(schedSrc) && /calmSampleHalfFor|lengthNorm/.test(schedSrc));
+assert("overlap scales with κ", /meanCoherence/.test(schedSrc) && /0\.35 \+ 0\.65/.test(schedSrc));
 assert("calm packing rate", /calmPackRateHz|calmPackRateMin/.test(schedSrc));
+assert("calmPackRateMin widened for δ tracking", /calmPackRateMin:\s*0\.5/.test(schedSrc));
 assert("maxCalmConcurrent raised", /maxCalmConcurrent:\s*8/.test(schedSrc));
-assert("regime envelope fracs on spawn", /attackFrac/.test(schedSrc) && /calmAttackFrac:\s*0\.5/.test(schedSrc));
-assert("overlay draws cell silhouette", /cells/.test(readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8")));
+assert(
+  "regime envelope fracs on spawn",
+  /attackFrac/.test(schedSrc) && /calmAttackFrac:\s*0\.22/.test(schedSrc),
+);
+assert("per-cell chaos duration", /durationChaosAt/.test(schedSrc));
+assert("ySpreadFillMin", /ySpreadFillMin/.test(schedSrc));
+assert("no velocity-hybrid calm laws", !/hybridCalmLaws/.test(schedSrc) && !/velChaosNorm/.test(schedSrc));
+assert("region tracks for pan/Y", /RegionTrack/.test(schedSrc) && /tracks/.test(schedSrc) && /trackDx/.test(schedSrc));
+const overlaySrc = readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8");
+assert("overlay draws cell silhouette", /cells/.test(overlaySrc));
+assert("overlay bright edge cells", /isEdgeCell/.test(overlaySrc));
+assert("overlay has no AABB strokeRect", !/strokeRect/.test(overlaySrc));
+assert("overlay outline-first interior alpha", /0\.07/.test(overlaySrc));
+assert("overlay toggle On/Off label", /Overlay: On/.test(controls));
+assert("worklet direct pan/Y follow", /applyTracks/.test(worklet) && /trackDx/.test(worklet));
+assert("worklet has no TRACK_SMOOTH", !/TRACK_SMOOTH/.test(worklet));
+assert("worklet does not chase sample bounds from track", !/boundLo\s*=\s*[^;]*track/i.test(worklet));
 assert("worklet handles events", /type === "events"/.test(worklet));
 assert("worklet ping-pong", /boundLo/.test(worklet) && /dir = -1/.test(worklet));
 assert("worklet energy normalisation", /TARGET_RMS/.test(worklet) && /normGain/.test(worklet));
@@ -45,7 +91,7 @@ assert("worklet uses frozen attackFrac", /attackFrac/.test(worklet) && /getEnvel
 assert("no latticeIndex in worklet", !/latticeIndex/.test(worklet));
 assert("no paintGrain lattice loop", !/paintGrain/.test(worklet));
 assert("UI budget meters", /st-budget/.test(controls) && /Calm g/.test(controls));
-assert("UI sonic laws hint", /freeze-at-spawn/.test(controls));
+assert("UI sonic laws hint", /hue→sample|pan\/Y follow/.test(controls));
 
 async function runtimeScheduler() {
   let fieldMod;
@@ -122,7 +168,7 @@ async function runtimeScheduler() {
       if (e.regime === "calm") {
         sawCalm = true;
         if (!(e.sampleHi > e.sampleLo && e.durationSec >= 0.3)) calmOk = false;
-        if (!(e.attackFrac === 0.5 && e.releaseFrac === 0.5)) envOk = false;
+        if (!(e.attackFrac === 0.22 && e.releaseFrac === 0.28)) envOk = false;
       }
       if (e.regime === "chaos") {
         sawChaos = true;
@@ -166,6 +212,135 @@ async function runtimeScheduler() {
     "static full-calm sustains overlapping grains (peak calmActive ≥ 3)",
     peakCalm >= 3,
   );
+
+  // Mostly-calm with a thin chaotic strip: chaos concurrent must stay near area share
+  // (no leftover-budget donate + no 0.15 rate floor inflation).
+  const strip = makeField((r, g, b, i) => {
+    const y = (i / w) | 0;
+    if (y < 3) {
+      r[i] = ((i * 17) % 97) / 97;
+      g[i] = ((i * 31) % 89) / 89;
+      b[i] = ((i * 13) % 83) / 83;
+    } else {
+      r[i] = 0.2;
+      g[i] = 0.55;
+      b[i] = 0.85;
+    }
+  });
+  const stripFo = new FieldObserver(w, h);
+  stripFo.observe(strip, prev);
+  for (let t = 0; t < 12; t++) stripFo.observe(strip, strip);
+  const stripObs = stripFo.observation;
+  const chaosShareCap = Math.max(
+    1,
+    Math.ceil(GRAIN_BUDGET * stripObs.chaosAreaFraction) + 2,
+  );
+  assert(
+    "thin chaos strip is minority area",
+    stripObs.chaosAreaFraction > 0 && stripObs.chaosAreaFraction < 0.25,
+  );
+  const stripSched = new GrainScheduler(GRAIN_BUDGET);
+  let peakChaos = 0;
+  let now3 = 9000;
+  for (let t = 0; t < 90; t++) {
+    now3 += 1000 / 30;
+    const batch = stripSched.step(stripObs, strip, now3);
+    if (batch.chaosActive > peakChaos) peakChaos = batch.chaosActive;
+  }
+  assert(
+    `thin chaos concurrent stays near area share (peak ${peakChaos} ≤ ${chaosShareCap})`,
+    peakChaos <= chaosShareCap,
+  );
+
+  // Near-100% chaotic field: pack-to-share must fill a meaningful concurrent count.
+  const chaosField = makeField((r, g, b, i) => {
+    r[i] = ((i * 17) % 97) / 97;
+    g[i] = ((i * 31) % 89) / 89;
+    b[i] = ((i * 13) % 83) / 83;
+  });
+  const chaosPrev = makeField((r, g, b, i) => {
+    r[i] = ((i * 41) % 91) / 91;
+    g[i] = ((i * 19) % 87) / 87;
+    b[i] = ((i * 23) % 79) / 79;
+  });
+  const chaosFo = new FieldObserver(w, h);
+  // Alternate frames so δ stays elevated (fast chaos).
+  let a = chaosField;
+  let b = chaosPrev;
+  chaosFo.observe(a, b);
+  for (let t = 0; t < 20; t++) {
+    const tmp = a;
+    a = b;
+    b = tmp;
+    // Reshuffle slightly each pair so similarity stays low.
+    for (let i = 0; i < n; i++) {
+      a.r[i] = ((i * (17 + (t % 5)) + t * 3) % 97) / 97;
+      a.g[i] = ((i * (31 + (t % 7)) + t * 5) % 89) / 89;
+      a.b[i] = ((i * (13 + (t % 3)) + t * 7) % 83) / 83;
+    }
+    chaosFo.observe(a, b);
+  }
+  const chaosObs = chaosFo.observation;
+  assert(
+    "full-chaos field is mostly chaotic",
+    chaosObs.chaosAreaFraction > 0.85,
+  );
+  const fullChaosSched = new GrainScheduler(GRAIN_BUDGET);
+  let peakFullChaos = 0;
+  let now4 = 12000;
+  for (let t = 0; t < 90; t++) {
+    now4 += 1000 / 30;
+    // Keep feeding alternating high-δ frames while scheduling.
+    if (t % 2 === 0) {
+      for (let i = 0; i < n; i++) {
+        a.r[i] = Math.random();
+        a.g[i] = Math.random();
+        a.b[i] = Math.random();
+      }
+      chaosFo.observe(a, b);
+      [a, b] = [b, a];
+    }
+    const batch = fullChaosSched.step(chaosFo.observation, a, now4);
+    if (batch.chaosActive > peakFullChaos) peakFullChaos = batch.chaosActive;
+  }
+  assert(
+    `full-chaos concurrent fills share (peak ${peakFullChaos} ≥ 16)`,
+    peakFullChaos >= 16,
+  );
+
+  // Region tracks carry COM + grid size; calm grains carry spawn offset for direct follow.
+  const trackFo = new FieldObserver(w, h);
+  trackFo.observe(solid, prev);
+  for (let t = 0; t < 8; t++) trackFo.observe(solid, solid);
+  const trackObs = trackFo.observation;
+  const trackSched = new GrainScheduler(GRAIN_BUDGET);
+  let now5 = 20000;
+  let sawTracks = false;
+  let trackHasCom = false;
+  let spawnHasOffset = false;
+  for (let t = 0; t < 40; t++) {
+    now5 += 1000 / 30;
+    const batch = trackSched.step(trackObs, solid, now5);
+    if (batch.tracks?.length) {
+      sawTracks = true;
+      const tr = batch.tracks[0];
+      if (
+        typeof tr.comX === "number" &&
+        typeof tr.comY === "number" &&
+        tr.gridWidth === w
+      ) {
+        trackHasCom = true;
+      }
+    }
+    for (const e of batch.events) {
+      if (e.regime === "calm" && typeof e.trackDx === "number") {
+        spawnHasOffset = true;
+      }
+    }
+  }
+  assert("batch includes region tracks", sawTracks);
+  assert("tracks include COM + grid size", trackHasCom);
+  assert("calm grains include trackDx/Dy offset", spawnHasOffset);
 }
 
 await runtimeScheduler();

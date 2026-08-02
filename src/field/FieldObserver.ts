@@ -44,6 +44,8 @@ export interface CoherentRegion {
   velY: number;
   meanDelta: number;
   meanCoherence: number;
+  /** Mean coherence length ℓ (cells) over the region mask. */
+  meanLength: number;
   meanR: number;
   meanG: number;
   meanB: number;
@@ -268,6 +270,7 @@ export class FieldObserver {
       let sumYSin = 0;
       let sumD = 0;
       let sumK = 0;
+      let sumL = 0;
       let sumR = 0;
       let sumG = 0;
       let sumB = 0;
@@ -285,6 +288,7 @@ export class FieldObserver {
         sumYSin += Math.sin(angY);
         sumD += this.delta[i]!;
         sumK += this.coherence[i]!;
+        sumL += this.coherenceLength[i]!;
         sumR += current.r[i]!;
         sumG += current.g[i]!;
         sumB += current.b[i]!;
@@ -369,6 +373,7 @@ export class FieldObserver {
         velY: 0,
         meanDelta: sumD / area,
         meanCoherence: sumK / area,
+        meanLength: sumL / area,
         meanR: sumR / area,
         meanG: sumG / area,
         meanB: sumB / area,

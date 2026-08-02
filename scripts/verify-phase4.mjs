@@ -26,17 +26,35 @@ const gate = join(root, "scripts/listening-gate-sonic-laws.md");
 
 assert("Sonic Laws in brief", /Sonic Laws \(authoritative\)/.test(brief));
 assert("freeze-at-spawn in brief", /Freeze at spawn/.test(brief));
+assert(
+  "brief allows direct pan/Y region follow",
+  /directly follow|Allowed to track directly/i.test(brief),
+);
+assert("brief has no velocity-hybrid", !/velocity-hybrid/i.test(brief));
+assert(
+  "brief forbids sample scrub chase",
+  /sample scrub window|Sample \/ scrub window/i.test(brief),
+);
 assert("listening gate doc present", existsSync(gate));
+const gateSrc = readFileSync(gate, "utf8");
+assert(
+  "listening gate allows direct pan/Y follow",
+  /directly follow|pan \/ spectrum directly/i.test(gateSrc),
+);
 assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/.test(main) && /scheduler\.step/.test(main) && /sendEvents/.test(main));
 assert(
-  "worklet documents freeze (no live region chase)",
-  /No mid-grain chase|frozen-at-spawn|Freeze/.test(worklet),
+  "worklet documents sample freeze + direct pan/Y follow",
+  /applyTracks/.test(worklet) && /No smoothing/.test(worklet),
 );
 assert("ping-pong uses locked bounds only", /voice\.boundLo/.test(worklet) && /voice\.boundHi/.test(worklet));
 const processBody = worklet.slice(worklet.indexOf("process(_inputs"));
 assert(
   "process() does not rewrite boundLo/Hi",
   !/voice\.boundLo\s*=/.test(processBody) && !/voice\.boundHi\s*=/.test(processBody),
+);
+assert(
+  "worklet has no pan/Y lerp smoothing",
+  !/TRACK_SMOOTH/.test(worklet) && !/panTarget/.test(worklet),
 );
 assert("no luminance→volume mapping in scheduler", !/luminance/.test(sched) && !/brightness/.test(sched));
 assert("equal amplitude / sqrt budget", /equalAmp|1 \/ Math\.sqrt/.test(sched));

@@ -79,7 +79,7 @@ export function mountControls(
       </label>
     </div>
     <div class="row">
-      <button type="button" id="overlay-toggle">Hide Regions</button>
+      <button type="button" id="overlay-toggle">Overlay: On</button>
     </div>
     <dl class="stats">
       <div><dt>Step</dt><dd id="st-step">0</dd></div>
@@ -111,7 +111,7 @@ export function mountControls(
         <div><dt>Sounding</dt><dd id="st-sounding">—</dd></div>
         <div><dt>Events/s</dt><dd id="st-trigs">—</dd></div>
       </dl>
-      <p class="meter-hint">Sonic Laws V4 — hue→sample · X→pan · Y→spectrum · freeze-at-spawn · neutral loudness</p>
+      <p class="meter-hint">Sonic Laws V4 — hue→sample (frozen) · pan/Y follow region · neutral loudness</p>
     </div>
   `;
   parent.appendChild(root);
@@ -151,7 +151,7 @@ export function mountControls(
   });
   overlayBtn.addEventListener("click", () => {
     const visible = handlers.onToggleOverlay();
-    overlayBtn.textContent = visible ? "Hide Regions" : "Show Regions";
+    overlayBtn.textContent = visible ? "Overlay: On" : "Overlay: Off";
   });
   root.querySelector("#file")!.addEventListener("change", (e) => {
     const input = e.target as HTMLInputElement;
@@ -177,7 +177,7 @@ export function mountControls(
       audioBtn.textContent = enabled ? "Stop Audio" : "Enable Audio";
     },
     setOverlayVisible(visible: boolean) {
-      overlayBtn.textContent = visible ? "Hide Regions" : "Show Regions";
+      overlayBtn.textContent = visible ? "Overlay: On" : "Overlay: Off";
     },
     setStats(s) {
       (root.querySelector("#st-step") as HTMLElement).textContent = String(s.step);

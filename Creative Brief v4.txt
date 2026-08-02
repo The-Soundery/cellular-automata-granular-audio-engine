@@ -23,8 +23,9 @@ DO NOT continue or refine:
 - Voice ownership or structure-tracking allocation
 - Luminance → volume / presence-as-loudness as the fix for motion
 - Plans that ask “what should this point in space sound like?”
-- Mid-grain modulation of sample/frequency/pan to “chase” a region
-  (causes audio glitches; forbidden)
+- Mid-grain modulation of the sample scrub window to “chase” a region
+  (causes audio glitches; forbidden). Direct pan / Y-spectrum follow for
+  region-bound grains is allowed (no smoothing).
 - Reviving X→sample / RGB→envelope without a new listening decision
 
 Next work is fine-tuning negotiable constants — not architectural rewrites.
@@ -94,7 +95,8 @@ One-sentence axiom:
   The CA field is observed as coherence regions and chaotic areas; each area’s
   share of a finite grain pool is proportional to its size; within that share,
   change and coherence set rate, length, and overlap; grain identity at spawn
-  is hue→sample, X→pan, Y→spectrum; parameters freeze at spawn; loudness is
+  is hue→sample, X→pan, Y→spectrum; sample window freezes at spawn while
+  region-bound grains directly follow pan/Y with their region; loudness is
   globally neutral.
 
 
@@ -107,13 +109,15 @@ One-sentence axiom:
 
 2. Grain identity (what the grain is made of)
 
-   Locked at spawn from the spawn cell (or calm spawn site):
+   From the spawn cell (or calm spawn site):
 
    - Hue(RGB) → sample position / locked scrub window in the source
-                (similar colours scrub similar sample areas)
-   - X        → stereo pan (−1 left … +1 right)
-   - Y        → frequency / spectral position
-   - Envelope → fixed material shape (not driven by RGB)
+                (similar colours scrub similar sample areas) — FROZEN at spawn
+   - X        → stereo pan (−1 left … +1 right) — initial at spawn; while a
+                grain belongs to a region it directly follows that region’s
+                motion in pan (spawn offset from COM preserved)
+   - Y        → frequency / spectral position — same direct region follow
+   - Envelope → fixed material shape at spawn (not driven by RGB)
 
    Colour chooses where in the source the grain listens. Spatial X places the
    grain in the stereo field. Colour must never set loudness, allocation, or
@@ -162,18 +166,27 @@ One-sentence axiom:
    observation.
 
 
-5. Freeze at spawn (anti-glitch law)
+5. Freeze at spawn (anti-glitch law) — revised
 
-   Sample window, pan, frequency, playback direction, ping-pong bounds, and
-   envelope are FIXED when the grain is born.
+   Frozen at birth (must not chase):
 
-   Forbidden: modulating sample, frequency, or pan during playback to chase
-   a moving region or cell (causes undesirable glitches / pitch tears /
-   stereo zipper).
+   - Sample / scrub window and ping-pong bounds
+   - Playback direction
+   - Envelope shape (attack/release fractions for that grain’s life)
 
-   How calm texture follows motion: new grains spawn from the region’s
-   updated position / colour as it moves; old grains finish with their locked
-   settings; overlap crossfades create continuous evolution.
+   Allowed to track directly after birth (any grain with a region id):
+
+   - Stereo pan ← region COM X + spawn offset (equal-power, no smoothing)
+   - Spectral Y ← region COM Y + spawn offset (no smoothing)
+
+   Forbidden: modulating the sample scrub window during playback to chase a
+   moving region or cell (causes undesirable glitches / pitch tears).
+
+   How region texture follows motion: grains that belong to a coherent region
+   move their pan and spectrum with that region; sample material stays locked;
+   new grains also spawn from the updated mask/colour; overlap crossfades
+   create continuous evolution. Chaos-bag grains have no region id and keep
+   spawn pan/Y.
 
 
 6. Geometry and colour laws at spawn (setup for each grain)
@@ -324,7 +337,8 @@ FORBIDDEN
 - Fixed listening-point / lattice-pixel listening architectures
 - Voice ownership / structure prioritisation / interestingness scores
 - Using luminance→volume as the primary way to “hear the CA”
-- Mid-grain sample/frequency/pan chase of moving regions
+- Mid-grain sample-window scrub chase of moving regions
+  (direct pan / Y-spectrum follow for region-bound grains is allowed)
 - Colour → loudness, allocation, or macro schedule
 - Treating the CA as a modulation source for an unrelated granular synth
 - Optimising for ambient beauty, glitch excitement, or “musicality”
@@ -374,10 +388,11 @@ LIVE PIPELINE
   Utomata → FrameObserver
     → FieldObserver (δ, s, κ, ℓ + region extract: A, COM, velocity, bounds)
     → GrainScheduler (area-weighted budget; hue→sample window; X→pan;
-                      freeze params at spawn; geometry laws)
-    → AudioEngine.sendEvents
-    → grain-processor (ephemeral grains: locked sample/pan/spectrum, ping-pong,
-                       equal-power stereo, die; global energy normalisation)
+                      region COM tracks for direct pan/Y follow)
+    → AudioEngine.sendEvents (+ track)
+    → grain-processor (ephemeral grains: locked sample window, ping-pong;
+                       direct pan/Y follow for region grains; equal-power;
+                       global energy normalisation)
 
 Listening gate: scripts/listening-gate-sonic-laws.md.
 Next: fine-tune negotiable constants only.

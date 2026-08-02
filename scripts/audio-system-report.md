@@ -1,6 +1,6 @@
 # Audio system report — V4 Sonic Laws pipeline
 
-**Status:** Current. V4 identity + region detection + calm packing wash / regime envelopes. Re-run `scripts/listening-gate-sonic-laws.md`.
+**Status:** Current. V4 identity + region detection + calm packing + direct region pan/Y follow. Re-run `scripts/listening-gate-sonic-laws.md`.
 North star: `Creative Brief v4.txt`.
 
 ## Live pipeline
@@ -10,23 +10,25 @@ Utomata
   → FrameObserver          (RGB fields + previous frame)
   → FieldObserver          (δ, s, κ, ℓ → soft-colour coherent regions + chaos bag;
                             κ hysteresis; fillRatio; ID match via COM+colour+IoU)
-  → GrainScheduler         (area-weighted budget; spawn from cells; packing-driven calm
-                            rate for overlap wash; optional period phase; freeze-at-spawn)
-  → AudioEngine.sendEvents
-  → grain-processor.js     (ephemeral voices; ping-pong in locked window;
-                            regime envelope at spawn; equal-power pan; energy norm)
+  → GrainScheduler         (area-weighted budget; region COM tracks; packing/rhythm;
+                            sample frozen at spawn)
+  → AudioEngine.sendEvents (+ pan/Y tracks)
+  → grain-processor.js     (locked sample window; direct region pan/Y follow;
+                            regime envelope at spawn; energy norm)
 ```
 
-## Grain identity (locked at spawn)
+## Grain identity
 
 | Source | Maps to |
 |--------|---------|
-| Hue(RGB) | Sample window centre / scrub range (similar colours → similar areas) |
-| X | Stereo pan (−1…+1), equal-power |
-| Y | Spectral bin blend |
-| velX (calm) | Playback direction |
+| Hue(RGB) | Sample window centre / scrub range — **frozen at spawn** |
+| X / region COM | Stereo pan (−1…+1), equal-power — region grains **directly follow** COM + spawn offset |
+| Y / region COM | Spectral bin blend — same direct follow |
+| velX (calm) | Playback direction at spawn |
 | Region cells (+ fillRatio) | Spawn location; Y spread only when fill is high |
-| Regime | Envelope: calm attack/release 0.5 / 0.5; chaos sharp (~0.06 / 0.15) — not RGB-driven |
+| Regime | Envelope: calm attack/release 0.22 / 0.28; chaos sharp (~0.06 / 0.15) — not RGB-driven |
+
+Chaos-bag grains have no region id and keep spawn pan/Y.
 
 ## Obsolete (do not extend)
 

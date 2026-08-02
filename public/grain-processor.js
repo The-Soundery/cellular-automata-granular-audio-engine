@@ -1,11 +1,10 @@
 /**
  * AudioWorklet — ephemeral grains (V4 Sonic Laws: hue→sample, X→pan).
  *
- * Receives frozen-at-spawn events. Plays with locked sample window
- * (from colour hue), direction, spectral position, stereo pan, and
- * regime envelope (calm soft / chaos sharp). Ping-pongs inside the
- * window. No mid-grain chase. Global energy normalisation keeps
- * loudness roughly neutral.
+ * Sample window / ping-pong bounds freeze at spawn (no scrub chase).
+ * Any grain with a regionId directly follows that region's COM for pan + Y
+ * (spawn offset preserved). No smoothing. Envelope frozen at spawn.
+ * Energy normalisation keeps loudness roughly neutral.
  */
 
 const MAX_GRAINS = 128;
@@ -18,6 +17,8 @@ const NORM_SMOOTH = 0.05;
 /** Chaos defaults when spawn omits attack/release (regime packing material). */
 const ENV_ATTACK_CHAOS = 0.06;
 const ENV_RELEASE_CHAOS = 0.15;
+const ENV_ATTACK_CALM = 0.22;
+const ENV_RELEASE_CALM = 0.28;
 const ENV_CURVE = 0.875;
 
 class GrainVoice {
@@ -41,6 +42,8 @@ class GrainVoice {
     this.x = 0;
     this.y = 0;
     this.pan = 0;
+    this.trackDx = 0;
+    this.trackDy = 0;
     this.gainL = 1;
     this.gainR = 1;
     this.regime = "chaos";
@@ -92,6 +95,9 @@ class GrainProcessor extends AudioWorkletProcessor {
         this.masterGainTarget =
           typeof msg.masterGain === "number" ? msg.masterGain : 1;
         this.spawnEvents(msg.events || []);
+        if (msg.tracks && msg.tracks.length) this.applyTracks(msg.tracks);
+      } else if (msg.type === "track") {
+        if (msg.tracks && msg.tracks.length) this.applyTracks(msg.tracks);
       } else if (msg.type === "resetGrains" || msg.type === "resetVoices") {
         this.masterGainTarget = 0;
         this.masterGain = 0;
@@ -135,9 +141,9 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
       // Envelope shape frozen at spawn (calm soft / chaos sharp) — not RGB-driven.
       const defA =
-        voice.regime === "calm" ? 0.5 : ENV_ATTACK_CHAOS;
+        voice.regime === "calm" ? ENV_ATTACK_CALM : ENV_ATTACK_CHAOS;
       const defR =
-        voice.regime === "calm" ? 0.5 : ENV_RELEASE_CHAOS;
+        voice.regime === "calm" ? ENV_RELEASE_CALM : ENV_RELEASE_CHAOS;
       voice.attackFrac = clamp01(
         typeof e.attackFrac === "number" ? e.attackFrac : defA,
       );
@@ -145,13 +151,12 @@ class GrainProcessor extends AudioWorkletProcessor {
         typeof e.releaseFrac === "number" ? e.releaseFrac : defR,
       );
 
+      voice.trackDx = typeof e.trackDx === "number" ? e.trackDx : 0;
+      voice.trackDy = typeof e.trackDy === "number" ? e.trackDy : 0;
       const pan =
         typeof e.pan === "number" ? Math.max(-1, Math.min(1, e.pan)) : 0;
       voice.pan = pan;
-      // Equal-power pan, frozen at spawn.
-      const angle = ((pan + 1) * 0.5 * Math.PI) / 2;
-      voice.gainL = Math.cos(angle);
-      voice.gainR = Math.sin(angle);
+      applyEqualPowerPan(voice, pan);
 
       let lo = clamp01(e.sampleLo ?? 0);
       let hi = clamp01(e.sampleHi ?? 1);
@@ -172,6 +177,36 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.readPos = (voice.boundLo + voice.boundHi) * 0.5;
 
       this.statsTriggers++;
+    }
+  }
+
+  /**
+   * Direct pan/Y follow: any voice with regionId snaps to COM + spawn offset.
+   * Sample window stays frozen. No smoothing.
+   */
+  applyTracks(tracks) {
+    /** @type {Map<number, {comX:number,comY:number,w:number,h:number}>} */
+    const byId = new Map();
+    for (const t of tracks) {
+      if (typeof t.regionId !== "number") continue;
+      byId.set(t.regionId, {
+        comX: t.comX ?? 0,
+        comY: t.comY ?? 0,
+        w: Math.max(1, t.gridWidth || 1),
+        h: Math.max(1, t.gridHeight || 1),
+      });
+    }
+    for (const voice of this.voices) {
+      if (!voice.active || voice.regionId < 0) continue;
+      const t = byId.get(voice.regionId);
+      if (!t) continue;
+      const x = wrapCoord(t.comX + voice.trackDx, t.w);
+      const y = wrapCoord(t.comY + voice.trackDy, t.h);
+      voice.x = x;
+      voice.y = y;
+      voice.pan = panFromX(x, t.w);
+      voice.yNorm = 1 - y / Math.max(1, t.h - 1);
+      applyEqualPowerPan(voice, voice.pan);
     }
   }
 
@@ -283,6 +318,7 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (const voice of this.voices) {
       if (!voice.active) continue;
       active++;
+
       const env = this.getEnvelope(
         voice.duration,
         voice.attackFrac,
@@ -415,6 +451,22 @@ function softClip(x) {
   if (x > 1) return 1 + Math.tanh(x - 1) * 0.1;
   if (x < -1) return -1 + Math.tanh(x + 1) * 0.1;
   return x;
+}
+
+function wrapCoord(v, period) {
+  return ((v % period) + period) % period;
+}
+
+function panFromX(x, width) {
+  const t = x / Math.max(1, width - 1);
+  return Math.max(-1, Math.min(1, t * 2 - 1));
+}
+
+function applyEqualPowerPan(voice, pan) {
+  const p = Math.max(-1, Math.min(1, pan));
+  const angle = ((p + 1) * 0.5 * Math.PI) / 2;
+  voice.gainL = Math.cos(angle);
+  voice.gainR = Math.sin(angle);
 }
 
 registerProcessor("grain-processor", GrainProcessor);
