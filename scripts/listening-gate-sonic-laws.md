@@ -1,12 +1,12 @@
 # Listening gate — Sonic Laws (manual)
 
-**Status: RE-RUN REQUIRED** after direct pan/Y region follow + outline overlay.
+**Status: PASSED** for V4.1 Continuous Laws (ear-validated 2026-08-02).
+Re-run after any further major scheduler / worklet / observation changes.
 
 North star: `Creative Brief v4.txt`.
 Automated checks: `npm run verify` (phases 0–4).
 
 Use this checklist with ears + the region overlay after Enable Audio.
-Re-run after major scheduler / worklet / observation changes.
 
 ## Setup
 
@@ -29,6 +29,9 @@ Re-run after major scheduler / worklet / observation changes.
 - [ ] Chaotic areas → many short grains, sharp attack, little/no overlap
 - [ ] If sim is mostly calm, budget meters show most grains on calm side (area share)
 - [ ] If sim is mostly chaotic, audio texture is mostly short/dense
+- [ ] Order→disorder sweep glides through intermediate grain materials (length, attack, purity) — not a two-mood snap
+- [ ] Chaos is broadband / noisier; calm rings narrower / purer; mid-κ sits between
+- [ ] Paused / static heterogeneous field decays to near-silence; sound resumes where change resumes
 
 ## Region fidelity (shape + shared colour)
 
@@ -48,24 +51,28 @@ Re-run after major scheduler / worklet / observation changes.
 - [ ] Switching between calm-heavy and chaos-heavy variations does not make one regime obviously “louder” as a policy
 - [ ] RMS stays in a usable range (energy norm working); no constant clipping scream
 - [ ] Hard-panned activity does not make the mix scream or collapse oddly
+- [ ] No 30 Hz machine-gun comb in dense chaos; no normalisation pumping on density changes
 
-## Identity (V4)
+## Identity (V4.1)
 
-- [ ] Distinct hues scrub distinct sample regions; similar hues feel related
+- [ ] Distinct hues scrub distinct sample regions; similar hues feel *sonically* related (centroid LUT)
+- [ ] Grey / desaturated areas sound diffuse (wide window); saturated areas focused (tight window)
 - [ ] Left-side cells lean left in the stereo field; right-side lean right
 - [ ] Moving calm masses can be heard moving in pan / spectrum without sample tears
-- [ ] Motion left/right can reverse scrub direction on new calm grains (velX)
-- [ ] Tall **filled** calm regions feel spectrally fuller (Y spread); sparse tall AABBs do not fake fullness
-- [ ] Colour chooses sample area / scrub, not master volume (envelope follows regime packing, not RGB)
+- [ ] Vertical region drift glides in spectrum (no 48-step staircase)
+- [ ] Motion left/right can reverse scrub direction on new calm grains (velX); rate stays ±1 (no Doppler)
+- [ ] Long source (≥3 min) loads fast; same CA state sounds comparable to a short source
+- [ ] Colour chooses sample area / scrub, not master volume (envelope from κ/δ order, not RGB)
 
 ## Failure modes (must NOT hear)
 
 - [ ] Constant repeating scrub locked to fixed posts (old lattice failure)
 - [ ] Mid-grain sample jumps chasing COM or colour
 - [ ] Chaos winning the mix only because it fires more (without area share)
+- [ ] Pitch transposition / Doppler whistles that are not in the source material
 
 ## Pass
 
 All boxes checked → Sonic Laws listening gate passed for this build.
 
-**Next:** fine-tune negotiable constants (`FIELD_OBS`, `SCHED` packing / envelope / rhythm, worklet `TARGET_RMS`) — do not revive lattice / voice-ownership paths or V3 identity without a new listening decision.
+**Next:** fine-tune negotiable constants (`FIELD_OBS`, `SCHED` continuous-law curves, worklet `TARGET_RMS` / filter range) — do not revive lattice / voice-ownership paths, the 48-bin bank, or Doppler rate without a new listening decision.

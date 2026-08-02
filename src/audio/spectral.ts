@@ -1,29 +1,29 @@
-/** Offline spectral bin bank — V2 selects by structure Y only; colour never enters. */
+/** Offline source prep — mono PCM, seam crossfade, perceptual hue→sample LUT. */
 
-export const SPECTRAL_BIN_COUNT = 48;
-export const BIN_FREQ_LOW = 80;
-export const BIN_FREQ_HIGH = 15000;
-/** Design Q for offline bandpass centers — higher = narrower, clearer Y motion. */
-export const BIN_DESIGN_Q = 4.5;
+/** Equal-power crossfade length at the loop seam (seconds). */
+export const SEAM_FADE_SEC = 0.05;
+/** Hop length for spectral-centroid segmentation (seconds). */
+export const CENTROID_HOP_SEC = 0.25;
+/** Discrete hue→sample LUT resolution. */
+export const HUE_LUT_SIZE = 256;
+/** Analysis window for centroid FFT (samples, power of two). */
+const CENTROID_FFT_SIZE = 2048;
 
 export interface SpectralBank {
   sampleRate: number;
-  binCount: number;
   length: number;
   durationSec: number;
-  /** Mono mix of the source (same timeline as bins). */
+  /** Mono mix of the source (peak-normalized, seam-crossfaded). */
   pcm: Float32Array;
-  /** Sharp bandpass-filtered copies; each length === pcm.length */
-  bins: Float32Array[];
-  /** Center frequency of each bin (Hz) */
-  centersHz: Float32Array;
+  /**
+   * Hue [0,1] → sample position [0,1], ordered by spectral centroid
+   * so adjacent hues scrub spectrally adjacent material.
+   */
+  hueSampleLut: Float32Array;
 }
 
-/** Build mono PCM + N sharp bandpass bins (offline; not for the audio thread). */
-export function buildSpectralBank(
-  audioBuffer: AudioBuffer,
-  binCount = SPECTRAL_BIN_COUNT,
-): SpectralBank {
+/** Build mono PCM with loop-seam crossfade + perceptual hue map. */
+export function buildSpectralBank(audioBuffer: AudioBuffer): SpectralBank {
   const sampleRate = audioBuffer.sampleRate;
   const length = audioBuffer.length;
   const channels = audioBuffer.numberOfChannels;
@@ -37,109 +37,221 @@ export function buildSpectralBank(
     pcm[i] = s / channels;
   }
 
-  const nyquist = sampleRate * 0.5;
-  const fHigh = Math.min(BIN_FREQ_HIGH, nyquist * 0.92);
-  const fLow = Math.min(BIN_FREQ_LOW, fHigh * 0.5);
-  const centersHz = new Float32Array(binCount);
-  const bins: Float32Array[] = [];
-
-  const q = BIN_DESIGN_Q;
-
-  for (let b = 0; b < binCount; b++) {
-    const t = binCount === 1 ? 0 : b / (binCount - 1);
-    const fc = fLow * Math.pow(fHigh / fLow, t);
-    centersHz[b] = fc;
-    const bwHz = Math.max(40, fc / q);
-    bins.push(bandpassFilter(pcm, sampleRate, fc, bwHz));
-  }
-
-  // Preserve relative bin energy; set overall peak from the loudest bin only.
-  normalizeBankRelative(bins, 0.9);
+  applySeamCrossfade(pcm, sampleRate);
+  peakNormalize(pcm, 0.9);
+  const hueSampleLut = buildHueSampleLut(pcm, sampleRate);
 
   return {
     sampleRate,
-    binCount,
     length,
     durationSec: length / sampleRate,
     pcm,
-    bins,
-    centersHz,
+    hueSampleLut,
   };
 }
 
-/**
- * Single-stage RBJ bandpass (wider, less ringy than cascaded ultra-narrow).
- * No per-bin boost — relative levels fixed later across the bank.
- */
-function bandpassFilter(
-  input: Float32Array,
-  sampleRate: number,
-  fc: number,
-  bwHz: number,
-): Float32Array {
-  const q = Math.max(0.7, fc / Math.max(bwHz, 1));
-  const coeffs = rbjBandpass(sampleRate, fc, q);
-  return biquadProcess(input, coeffs);
+/** Linear interpolation on the hue→sample LUT. */
+export function sampleCenterFromHue(
+  lut: Float32Array,
+  hue: number,
+): number {
+  const n = lut.length;
+  if (n < 2) return clamp01(hue);
+  const x = clamp01(hue) * (n - 1);
+  const i0 = Math.floor(x);
+  const i1 = Math.min(n - 1, i0 + 1);
+  const f = x - i0;
+  return lut[i0]! * (1 - f) + lut[i1]! * f;
 }
 
-interface BiquadCoeffs {
-  b0: number;
-  b1: number;
-  b2: number;
-  a1: number;
-  a2: number;
+/** Identity LUT (hue → same file fraction) for tests / fallback. */
+export function identityHueSampleLut(size = HUE_LUT_SIZE): Float32Array {
+  const n = Math.max(2, size);
+  const lut = new Float32Array(n);
+  for (let i = 0; i < n; i++) lut[i] = i / (n - 1);
+  return lut;
 }
 
-function rbjBandpass(sampleRate: number, fc: number, q: number): BiquadCoeffs {
-  const w0 = (2 * Math.PI * fc) / sampleRate;
-  const cos = Math.cos(w0);
-  const sin = Math.sin(w0);
-  const alpha = sin / (2 * q);
-  const b0 = alpha;
-  const b1 = 0;
-  const b2 = -alpha;
-  const a0 = 1 + alpha;
-  const a1 = -2 * cos;
-  const a2 = 1 - alpha;
-  return {
-    b0: b0 / a0,
-    b1: b1 / a0,
-    b2: b2 / a0,
-    a1: a1 / a0,
-    a2: a2 / a0,
-  };
-}
+/** Blend final SEAM_FADE_SEC into the start so wrapped reads never click. */
+function applySeamCrossfade(pcm: Float32Array, sampleRate: number): void {
+  const n = pcm.length;
+  if (n < 4) return;
+  const fadeN = Math.min(
+    Math.floor(SEAM_FADE_SEC * sampleRate),
+    Math.floor(n / 2),
+  );
+  if (fadeN < 2) return;
 
-function biquadProcess(input: Float32Array, c: BiquadCoeffs): Float32Array {
-  const out = new Float32Array(input.length);
-  let x1 = 0;
-  let x2 = 0;
-  let y1 = 0;
-  let y2 = 0;
-  for (let i = 0; i < input.length; i++) {
-    const x0 = input[i]!;
-    const y0 = c.b0 * x0 + c.b1 * x1 + c.b2 * x2 - c.a1 * y1 - c.a2 * y2;
-    out[i] = y0;
-    x2 = x1;
-    x1 = x0;
-    y2 = y1;
-    y1 = y0;
+  for (let i = 0; i < fadeN; i++) {
+    const t = i / (fadeN - 1);
+    // Equal-power: head fades in, tail contribution fades out into head.
+    const wHead = Math.sin(t * 0.5 * Math.PI);
+    const wTail = Math.cos(t * 0.5 * Math.PI);
+    const head = pcm[i]!;
+    const tail = pcm[n - fadeN + i]!;
+    pcm[i] = head * wHead + tail * wTail;
   }
-  return out;
 }
 
-/** Scale entire bank by one gain so the loudest bin peaks at target — no empty-bin boost. */
-function normalizeBankRelative(bins: Float32Array[], target: number): void {
+function peakNormalize(pcm: Float32Array, target: number): void {
   let peak = 0;
-  for (const buf of bins) {
-    for (let i = 0; i < buf.length; i++) {
-      const a = Math.abs(buf[i]!);
-      if (a > peak) peak = a;
-    }
+  for (let i = 0; i < pcm.length; i++) {
+    const a = Math.abs(pcm[i]!);
+    if (a > peak) peak = a;
   }
   if (peak < 1e-8) return;
   const g = target / peak;
-  for (const buf of bins) {
-    for (let i = 0; i < buf.length; i++) buf[i]! *= g;
+  for (let i = 0; i < pcm.length; i++) pcm[i]! *= g;
+}
+
+/**
+ * Segment PCM by hop, measure spectral centroid, sort segments, build a
+ * smoothed hue→file-position lookup (CataRT-style descriptor axis).
+ */
+function buildHueSampleLut(
+  pcm: Float32Array,
+  sampleRate: number,
+): Float32Array {
+  const n = pcm.length;
+  if (n < 64) return identityHueSampleLut();
+
+  const hop = Math.max(64, Math.floor(CENTROID_HOP_SEC * sampleRate));
+  const fftSize = Math.min(CENTROID_FFT_SIZE, highestPowerOfTwo(n));
+  if (fftSize < 64) return identityHueSampleLut();
+
+  type Seg = { pos: number; centroid: number; energy: number };
+  const segs: Seg[] = [];
+
+  for (let start = 0; start < n; start += hop) {
+    const mid = Math.min(n - 1, start + (hop >> 1));
+    const winStart = Math.max(0, Math.min(n - fftSize, mid - (fftSize >> 1)));
+    const { centroid, energy } = spectralCentroid(
+      pcm,
+      winStart,
+      fftSize,
+      sampleRate,
+    );
+    segs.push({
+      pos: mid / Math.max(1, n - 1),
+      centroid,
+      energy,
+    });
   }
+
+  if (segs.length === 0) return identityHueSampleLut();
+
+  // Drop near-silent hops from ordering (keep for coverage via neighbours).
+  const energetic = segs.filter((s) => s.energy > 1e-8);
+  const ordered = (energetic.length >= 2 ? energetic : segs).slice();
+  ordered.sort((a, b) => a.centroid - b.centroid || a.pos - b.pos);
+
+  // Hue 0..1 walks the centroid-sorted segment midpoints.
+  const lut = new Float32Array(HUE_LUT_SIZE);
+  const denom = Math.max(1, HUE_LUT_SIZE - 1);
+  for (let i = 0; i < HUE_LUT_SIZE; i++) {
+    const t = i / denom;
+    const x = t * (ordered.length - 1);
+    const j0 = Math.floor(x);
+    const j1 = Math.min(ordered.length - 1, j0 + 1);
+    const f = x - j0;
+    lut[i] = ordered[j0]!.pos * (1 - f) + ordered[j1]!.pos * f;
+  }
+
+  // Smooth so adjacent hues stay adjacent in file space.
+  smoothLutInPlace(lut, 4);
+  return lut;
+}
+
+function spectralCentroid(
+  pcm: Float32Array,
+  start: number,
+  fftSize: number,
+  sampleRate: number,
+): { centroid: number; energy: number } {
+  const re = new Float32Array(fftSize);
+  const im = new Float32Array(fftSize);
+  for (let i = 0; i < fftSize; i++) {
+    const w = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (fftSize - 1)));
+    re[i] = (pcm[start + i] ?? 0) * w;
+    im[i] = 0;
+  }
+  fftInPlace(re, im);
+
+  const nyquist = sampleRate * 0.5;
+  let num = 0;
+  let den = 0;
+  const half = fftSize >> 1;
+  for (let k = 1; k < half; k++) {
+    const mag = Math.hypot(re[k]!, im[k]!);
+    const freq = (k / half) * nyquist;
+    num += freq * mag;
+    den += mag;
+  }
+  if (den < 1e-12) return { centroid: 0, energy: 0 };
+  return { centroid: num / den, energy: den };
+}
+
+/** Iterative in-place Cooley–Tukey FFT (length must be power of two). */
+function fftInPlace(re: Float32Array, im: Float32Array): void {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]!;
+      re[i] = re[j]!;
+      re[j] = tr;
+      const ti = im[i]!;
+      im[i] = im[j]!;
+      im[j] = ti;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    const wlenRe = Math.cos(ang);
+    const wlenIm = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let wRe = 1;
+      let wIm = 0;
+      for (let j = 0; j < len / 2; j++) {
+        const uRe = re[i + j]!;
+        const uIm = im[i + j]!;
+        const vRe = re[i + j + len / 2]! * wRe - im[i + j + len / 2]! * wIm;
+        const vIm = re[i + j + len / 2]! * wIm + im[i + j + len / 2]! * wRe;
+        re[i + j] = uRe + vRe;
+        im[i + j] = uIm + vIm;
+        re[i + j + len / 2] = uRe - vRe;
+        im[i + j + len / 2] = uIm - vIm;
+        const nextWRe = wRe * wlenRe - wIm * wlenIm;
+        wIm = wRe * wlenIm + wIm * wlenRe;
+        wRe = nextWRe;
+      }
+    }
+  }
+}
+
+function smoothLutInPlace(lut: Float32Array, passes: number): void {
+  const n = lut.length;
+  if (n < 3) return;
+  const tmp = new Float32Array(n);
+  for (let p = 0; p < passes; p++) {
+    for (let i = 0; i < n; i++) {
+      const a = lut[Math.max(0, i - 1)]!;
+      const b = lut[i]!;
+      const c = lut[Math.min(n - 1, i + 1)]!;
+      tmp[i] = 0.25 * a + 0.5 * b + 0.25 * c;
+    }
+    lut.set(tmp);
+  }
+}
+
+function highestPowerOfTwo(n: number): number {
+  let p = 1;
+  while (p * 2 <= n) p *= 2;
+  return p;
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
 }

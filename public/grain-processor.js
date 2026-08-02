@@ -1,25 +1,35 @@
 /**
- * AudioWorklet — ephemeral grains (V4 Sonic Laws: hue→sample, X→pan).
+ * AudioWorklet — ephemeral grains (V4.1 Continuous Laws).
  *
  * Sample window / ping-pong bounds freeze at spawn (no scrub chase).
  * Any grain with a regionId directly follows that region's COM for pan + Y
  * (spawn offset preserved). No smoothing. Envelope frozen at spawn.
- * Energy normalisation keeps loudness roughly neutral.
+ * Y→spectrum via per-grain resonant bandpass over raw PCM.
+ * Energy normalisation keeps loudness roughly neutral (asymmetric).
  */
 
 const MAX_GRAINS = 128;
 const STATS_EVERY_BLOCKS = 8;
 const GAIN_SMOOTH = 0.05;
-const ENV_CACHE_MAX = 64;
 /** Target RMS before soft clip — negotiable. */
 const TARGET_RMS = 0.12;
-const NORM_SMOOTH = 0.05;
+const NORM_MIN = 0.25;
+const NORM_MAX = 3.0;
+/** Per-block coeffs: fast protect / slow recover. */
+const NORM_ATTACK = 0.25;
+const NORM_RELEASE = 0.004;
+const PRESCALE_SMOOTH = NORM_RELEASE;
+const BUDGET_VOICES = 64;
 /** Chaos defaults when spawn omits attack/release (regime packing material). */
 const ENV_ATTACK_CHAOS = 0.06;
 const ENV_RELEASE_CHAOS = 0.15;
 const ENV_ATTACK_CALM = 0.22;
 const ENV_RELEASE_CALM = 0.28;
-const ENV_CURVE = 0.875;
+/** Y→cutoff exponential range (Hz). */
+const FILT_FMIN = 80;
+const FILT_FMAX = 12000;
+/** Fallback Q when spawn omits q (scheduler always sends continuous q). */
+const Q_DEFAULT = 2.0;
 
 class GrainVoice {
   constructor() {
@@ -34,6 +44,8 @@ class GrainVoice {
     this.dir = 1;
     this.boundLo = 0;
     this.boundHi = 1;
+    this.windowCenter = 0;
+    this.windowHalf = 1;
     this.yNorm = 0.5;
     this.r = 0.5;
     this.g = 0.5;
@@ -50,6 +62,17 @@ class GrainVoice {
     this.regionId = -1;
     this.attackFrac = ENV_ATTACK_CHAOS;
     this.releaseFrac = ENV_RELEASE_CHAOS;
+    this.attackN = 1;
+    this.releaseN = 1;
+    this.delaySamples = 0;
+    this.q = Q_DEFAULT;
+    this.fcNorm = -1;
+    this.filtQ = -1;
+    this.ic1eq = 0;
+    this.ic2eq = 0;
+    this.a1 = 0;
+    this.a2 = 0;
+    this.a3 = 0;
     this.sounding = false;
   }
 }
@@ -57,18 +80,15 @@ class GrainVoice {
 class GrainProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    /** @type {Float32Array[]} */
-    this.bins = [];
     /** @type {Float32Array | null} */
     this.pcm = null;
     this.length = 0;
-    this.binCount = 0;
     this.sampleRate_ = sampleRate;
     this.masterGainTarget = 1;
     this.masterGain = 0;
     this.normGain = 1;
+    this.preScale = 1;
     this.voices = Array.from({ length: MAX_GRAINS }, () => new GrainVoice());
-    this.windowCache = new Map();
     this.blockCounter = 0;
     this.statsTriggers = 0;
     this.statsPeak = 0;
@@ -81,16 +101,9 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (!msg || !msg.type) return;
       if (msg.type === "source") {
         this.sampleRate_ = msg.sampleRate || sampleRate;
-        this.binCount = msg.binCount || 0;
         this.length = msg.length || 0;
-        this.bins = [];
-        if (msg.bins && msg.bins.length) {
-          for (let i = 0; i < msg.bins.length; i++) {
-            this.bins.push(new Float32Array(msg.bins[i]));
-          }
-        }
         this.pcm = msg.pcm ? new Float32Array(msg.pcm) : null;
-        if (!this.length && this.bins[0]) this.length = this.bins[0].length;
+        if (!this.length && this.pcm) this.length = this.pcm.length;
       } else if (msg.type === "events") {
         this.masterGainTarget =
           typeof msg.masterGain === "number" ? msg.masterGain : 1;
@@ -104,10 +117,8 @@ class GrainProcessor extends AudioWorkletProcessor {
         for (const v of this.voices) v.reset();
         this.statsTriggers = 0;
       } else if (msg.type === "clear") {
-        this.bins = [];
         this.pcm = null;
         this.length = 0;
-        this.binCount = 0;
         this.masterGainTarget = 0;
         this.masterGain = 0;
         for (const v of this.voices) v.reset();
@@ -116,7 +127,7 @@ class GrainProcessor extends AudioWorkletProcessor {
   }
 
   spawnEvents(list) {
-    if (!this.bins.length || this.length < 2) return;
+    if (!this.pcm || this.length < 2) return;
     const len = this.length;
     for (const e of list) {
       const voice = this.allocVoice();
@@ -139,7 +150,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.dir = e.direction < 0 ? -1 : 1;
       voice.regime = e.regime === "calm" ? "calm" : "chaos";
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
-      // Envelope shape frozen at spawn (calm soft / chaos sharp) — not RGB-driven.
+      // Envelope shape frozen at spawn — not RGB-driven.
       const defA =
         voice.regime === "calm" ? ENV_ATTACK_CALM : ENV_ATTACK_CHAOS;
       const defR =
@@ -150,6 +161,24 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.releaseFrac = clamp01(
         typeof e.releaseFrac === "number" ? e.releaseFrac : defR,
       );
+      let aN = Math.max(1, Math.floor(voice.duration * voice.attackFrac));
+      let rN = Math.max(1, Math.floor(voice.duration * voice.releaseFrac));
+      if (aN + rN > voice.duration) {
+        const scale = voice.duration / (aN + rN);
+        aN = Math.max(1, Math.floor(aN * scale));
+        rN = Math.max(1, voice.duration - aN);
+      }
+      voice.attackN = aN;
+      voice.releaseN = rN;
+
+      voice.q = typeof e.q === "number" && e.q > 0 ? e.q : Q_DEFAULT;
+
+      const delaySec =
+        typeof e.startOffsetSec === "number" ? e.startOffsetSec : 0;
+      voice.delaySamples = Math.max(
+        0,
+        Math.floor(delaySec * this.sampleRate_),
+      );
 
       voice.trackDx = typeof e.trackDx === "number" ? e.trackDx : 0;
       voice.trackDy = typeof e.trackDy === "number" ? e.trackDy : 0;
@@ -158,24 +187,39 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.pan = pan;
       applyEqualPowerPan(voice, pan);
 
-      let lo = clamp01(e.sampleLo ?? 0);
-      let hi = clamp01(e.sampleHi ?? 1);
-      if (hi < lo) {
-        const t = lo;
-        lo = hi;
-        hi = t;
+      let center;
+      let half;
+      if (
+        typeof e.sampleCenter === "number" &&
+        typeof e.sampleHalf === "number"
+      ) {
+        center = clamp01(e.sampleCenter);
+        half = Math.max(1 / len, e.sampleHalf);
+      } else {
+        let lo = clamp01(e.sampleLo ?? 0);
+        let hi = clamp01(e.sampleHi ?? 1);
+        if (hi < lo) {
+          const t = lo;
+          lo = hi;
+          hi = t;
+        }
+        if (hi - lo < 1 / len) hi = Math.min(1, lo + 2 / len);
+        center = (lo + hi) * 0.5;
+        half = (hi - lo) * 0.5;
       }
-      if (hi - lo < 1 / len) hi = Math.min(1, lo + 2 / len);
+      half = Math.min(0.49, half);
 
-      voice.boundLo = lo * Math.max(0, len - 1);
-      voice.boundHi = hi * Math.max(0, len - 1);
-      if (voice.boundHi <= voice.boundLo + 1) {
-        voice.boundHi = voice.boundLo + 2;
-      }
+      const maxIdx = Math.max(0, len - 1);
+      voice.windowCenter = center * maxIdx;
+      voice.windowHalf = Math.max(1, half * maxIdx);
+      // Unwrapped window coordinates (verify-phase4 pins boundLo/Hi names).
+      voice.boundLo = voice.windowCenter - voice.windowHalf;
+      voice.boundHi = voice.windowCenter + voice.windowHalf;
 
       // Start at midpoint of hue-locked window (frozen; no later chase).
-      voice.readPos = (voice.boundLo + voice.boundHi) * 0.5;
+      voice.readPos = voice.windowCenter;
 
+      this.updateFilterCoeffs(voice);
       this.statsTriggers++;
     }
   }
@@ -229,67 +273,59 @@ class GrainProcessor extends AudioWorkletProcessor {
     return oldest;
   }
 
-  buildSpectralWeights(yNorm) {
-    const binCount = this.binCount;
-    const scaled = clamp01(yNorm) * Math.max(1, binCount - 1);
-    const weights = [];
-    const bin0 = Math.max(0, Math.min(binCount - 1, Math.floor(scaled)));
-    const bin1 = Math.max(0, Math.min(binCount - 1, bin0 + 1));
-    const frac = scaled - Math.floor(scaled);
-    weights.push({ bin: bin0, w: 1 - frac });
-    if (bin1 !== bin0) weights.push({ bin: bin1, w: frac });
-    return weights;
+  updateFilterCoeffs(voice) {
+    const y = clamp01(voice.yNorm);
+    const q = Math.max(0.5, voice.q);
+    if (Math.abs(y - voice.fcNorm) < 1e-6 && Math.abs(q - voice.filtQ) < 1e-6) {
+      return;
+    }
+    voice.fcNorm = y;
+    voice.filtQ = q;
+    const fs = this.sampleRate_;
+    let fc = FILT_FMIN * Math.pow(FILT_FMAX / FILT_FMIN, y);
+    const fcMax = 0.45 * fs;
+    if (fc > fcMax) fc = fcMax;
+    const g = Math.tan((Math.PI * fc) / fs);
+    const k = 1 / q;
+    const a1 = 1 / (1 + g * (g + k));
+    const a2 = g * a1;
+    const a3 = g * a2;
+    voice.a1 = a1;
+    voice.a2 = a2;
+    voice.a3 = a3;
   }
 
-  getEnvelope(n, attackFrac, releaseFrac) {
-    const attack = clamp01(
-      typeof attackFrac === "number" ? attackFrac : ENV_ATTACK_CHAOS,
-    );
-    const release = clamp01(
-      typeof releaseFrac === "number" ? releaseFrac : ENV_RELEASE_CHAOS,
-    );
-    const curve = ENV_CURVE;
-    const key = `${n}|${attack.toFixed(3)}|${release.toFixed(3)}`;
-    let w = this.windowCache.get(key);
-    if (w) return w;
-    if (this.windowCache.size > ENV_CACHE_MAX) this.windowCache.clear();
-    w = new Float32Array(n);
-    let aN = Math.max(1, Math.floor(n * attack));
-    let rN = Math.max(1, Math.floor(n * release));
-    if (aN + rN > n) {
-      const scale = n / (aN + rN);
-      aN = Math.max(1, Math.floor(aN * scale));
-      rN = Math.max(1, n - aN);
+  /** Analytic smoothstep envelope — no tables / no allocation. */
+  envelopeAt(voice) {
+    const age = voice.age;
+    const dur = voice.duration;
+    const aN = voice.attackN;
+    const rN = voice.releaseN;
+    if (age < aN) {
+      const t = age / aN;
+      return t * t * (3 - 2 * t);
     }
-    for (let i = 0; i < n; i++) {
-      let env = 1;
-      if (i < aN) {
-        const t = i / aN;
-        env = Math.pow(t, 0.65 + curve * 0.6);
-      } else if (i > n - 1 - rN) {
-        const t = (n - 1 - i) / rN;
-        env = Math.pow(Math.max(0, t), 0.7 + (1.15 - curve) * 0.45);
-      }
-      const x = n === 1 ? 0 : i / (n - 1);
-      const hann = 0.5 * (1 - Math.cos(2 * Math.PI * x));
-      w[i] = env * 0.65 + hann * 0.35;
+    if (age > dur - 1 - rN) {
+      const t = (dur - 1 - age) / rN;
+      const u = Math.max(0, t);
+      return u * u * (3 - 2 * u);
     }
-    this.windowCache.set(key, w);
-    return w;
+    return 1;
   }
 
-  readSample(pos, weights) {
+  readPcm(pos) {
     const len = this.length;
-    const idx = Math.max(0, Math.min(len - 1, pos | 0));
-    let band = 0;
-    for (const row of weights) {
-      const src = this.bins[row.bin];
-      if (src) band += src[idx] * row.w;
-    }
-    if (this.pcm && Math.abs(band) < 1e-6) {
-      return this.pcm[idx] * 0.04;
-    }
-    return band;
+    const idx = wrapIndex(Math.round(pos), len);
+    return this.pcm[idx] || 0;
+  }
+
+  bandpass(voice, v0) {
+    const v3 = v0 - voice.ic2eq;
+    const v1 = voice.a1 * voice.ic1eq + voice.a2 * v3;
+    const v2 = voice.ic2eq + voice.a2 * voice.ic1eq + voice.a3 * v3;
+    voice.ic1eq = 2 * v1 - voice.ic1eq;
+    voice.ic2eq = 2 * v2 - voice.ic2eq;
+    return v1;
   }
 
   process(_inputs, outputs) {
@@ -304,7 +340,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (outR !== outL) outR[i] = 0;
     }
 
-    if (!this.bins.length || this.length < 2) {
+    if (!this.pcm || this.length < 2) {
       this.emitStats(0, 0);
       return true;
     }
@@ -314,38 +350,47 @@ class GrainProcessor extends AudioWorkletProcessor {
 
     let sounding = 0;
     let active = 0;
-
+    let soundingCount = 0;
     for (const voice of this.voices) {
       if (!voice.active) continue;
       active++;
+      if (voice.delaySamples <= 0 && voice.age < voice.duration) soundingCount++;
+    }
 
-      const env = this.getEnvelope(
-        voice.duration,
-        voice.attackFrac,
-        voice.releaseFrac,
-      );
-      const weights = this.buildSpectralWeights(voice.yNorm);
+    const desiredPre = Math.sqrt(
+      BUDGET_VOICES / Math.max(1, soundingCount),
+    );
+    const preClamped = Math.max(0.5, Math.min(2.5, desiredPre));
+    this.preScale += (preClamped - this.preScale) * PRESCALE_SMOOTH;
+
+    for (const voice of this.voices) {
+      if (!voice.active) continue;
+
+      this.updateFilterCoeffs(voice);
       const gL = voice.gainL;
       const gR = voice.gainR;
       let voiceSounded = false;
 
       for (let i = 0; i < n; i++) {
+        if (voice.delaySamples > 0) {
+          voice.delaySamples--;
+          continue;
+        }
         if (voice.age >= voice.duration) {
           voice.active = false;
           voice.sounding = false;
           break;
         }
 
-        const e = env[Math.min(voice.age, env.length - 1)] || 0;
-        const s =
-          this.readSample(voice.readPos, weights) *
-          e *
-          voice.amp *
-          this.masterGain;
+        const e = this.envelopeAt(voice);
+        const raw = this.readPcm(voice.readPos);
+        const band = this.bandpass(voice, raw);
+        const s = band * e * voice.amp * this.masterGain * this.preScale;
 
         outL[i] += s * gL;
         if (outR !== outL) outR[i] += s * gR;
 
+        // Ping-pong in unwrapped window coords; wrap only for PCM read.
         voice.readPos += voice.dir;
         if (voice.readPos >= voice.boundHi) {
           voice.readPos = voice.boundHi;
@@ -370,11 +415,14 @@ class GrainProcessor extends AudioWorkletProcessor {
     }
     const blockRms = Math.sqrt(blockEnergy / Math.max(1, n));
     if (blockRms > 1e-5) {
-      const desired = TARGET_RMS / blockRms;
-      const capped = Math.max(0.2, Math.min(3.5, desired));
-      this.normGain += (capped - this.normGain) * NORM_SMOOTH;
+      const desired = Math.max(
+        NORM_MIN,
+        Math.min(NORM_MAX, TARGET_RMS / blockRms),
+      );
+      const coeff = desired < this.normGain ? NORM_ATTACK : NORM_RELEASE;
+      this.normGain += (desired - this.normGain) * coeff;
     } else if (active === 0) {
-      this.normGain += (1 - this.normGain) * NORM_SMOOTH;
+      this.normGain += (1 - this.normGain) * NORM_RELEASE;
     }
 
     let blockPeak = 0;
@@ -418,7 +466,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         amp: s.amp,
         len: s.duration / this.sampleRate_,
         sounding: s.sounding,
-        gain: s.amp * this.masterGain * this.normGain,
+        gain: s.amp * this.masterGain * this.normGain * this.preScale,
         regime: s.regime,
       });
     }
@@ -427,7 +475,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       type: "stats",
       rms,
       peak: this.statsPeak,
-      masterGain: this.masterGain * this.normGain,
+      masterGain: this.masterGain * this.normGain * this.preScale,
       activeVoices: activeCount,
       activeGrains: activeCount,
       sounding: soundingNow,
@@ -445,6 +493,13 @@ class GrainProcessor extends AudioWorkletProcessor {
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, v || 0));
+}
+
+function wrapIndex(i, len) {
+  if (len <= 0) return 0;
+  let x = i % len;
+  if (x < 0) x += len;
+  return x;
 }
 
 function softClip(x) {

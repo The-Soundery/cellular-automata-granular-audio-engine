@@ -4,6 +4,10 @@ import type {
   FieldObservation,
 } from "./FieldObserver.ts";
 import type { RgbField } from "./FrameObserver.ts";
+import {
+  identityHueSampleLut,
+  sampleCenterFromHue,
+} from "../audio/spectral.ts";
 
 /** Negotiable physical budget — raise after listening + CPU check. */
 export const GRAIN_BUDGET = 64;
@@ -12,10 +16,20 @@ export const MASTER_GAIN = 1.0;
 /** Negotiable scheduler curves (Sonic Laws shape; numbers are tunable). */
 export const SCHED = {
   maxCalmConcurrent: 8,
-  calmDurMin: 0.35,
-  calmDurMax: 1.4,
-  chaosDurMin: 0.045,
-  chaosDurMax: 0.14,
+  /** Unified continuous duration range (log-lerp by order). */
+  DUR_MIN: 0.03,
+  DUR_MAX: 2.2,
+  /** Attack / release fraction range (chaos→calm via order). */
+  ATT_MIN: 0.04,
+  ATT_MAX: 0.30,
+  REL_MIN: 0.12,
+  REL_MAX: 0.34,
+  /** κ → filter Q (spectral purity). */
+  Q_MIN: 0.8,
+  Q_MAX: 8.0,
+  /** Saturation → window half-width (seconds). */
+  WINDOW_HALF_MIN_S: 0.06,
+  WINDOW_HALF_MAX_S: 0.8,
   /** Legacy calm Hz band — packing rate supersedes for calm wash. */
   calmRateMinHz: 0.8,
   calmRateMaxHz: 6,
@@ -30,28 +44,11 @@ export const SCHED = {
   calmPackRateMin: 0.5,
   /**
    * Floor multiplier on chaos pack-to-share rate when δ̄→0.
-   * Fast chaos fills area share; quieter change stays thinner.
+   * Static heterogeneous fields go nearly quiet.
    */
-  chaosPackRateMin: 0.55,
-  /** Soft envelope with sustain plateau (calm wash) — frozen at spawn. */
-  calmAttackFrac: 0.22,
-  calmReleaseFrac: 0.28,
-  /** Sharp envelope fractions frozen at spawn (chaos hits). */
-  chaosAttackFrac: 0.06,
-  chaosReleaseFrac: 0.15,
-  ySpreadFrac: 0.95,
-  /** Min fillRatio before tall regions bias Y spawn diversity. */
-  ySpreadFillMin: 0.35,
+  chaosPackRateMin: 0.1,
   velDirEps: 0.08,
   stepsPerSec: 30,
-  /** Base half-width of hue→sample window (calm); ℓ widens toward max. */
-  calmSampleHalf: 0.035,
-  /** Max calm sample half when mean ℓ is high. */
-  calmSampleHalfMax: 0.08,
-  /** ℓ (cells) that maps to full calmSampleHalfMax boost. */
-  lengthNorm: 12,
-  /** Half-width of hue→sample window (chaos) — stays tight. */
-  chaosSampleHalf: 0.01,
   /** Samples of meanDelta kept per calm region for period detection. */
   rhythmHistory: 48,
   /** Minimum accepted observed period (seconds). */
@@ -68,7 +65,7 @@ export const SCHED = {
 
 export type GrainRegime = "calm" | "chaos";
 
-/** Ephemeral grain descriptor (V4: hue→sample frozen; pan/Y follow region). */
+/** Ephemeral grain descriptor (V4.1: continuous material; hue→sample frozen). */
 export interface GrainSpawnEvent {
   x: number;
   y: number;
@@ -79,9 +76,14 @@ export interface GrainSpawnEvent {
   amplitude: number;
   /** +1 forward / -1 reverse along sample axis. */
   direction: number;
-  /** Locked sample window [0,1] for ping-pong (from hue). */
-  sampleLo: number;
-  sampleHi: number;
+  /** Window centre [0,1] of file length (wrap-aware). */
+  sampleCenter: number;
+  /** Window half-width [0,1] of file length. */
+  sampleHalf: number;
+  /** Sample-accurate onset delay within the CA step (seconds). */
+  startOffsetSec: number;
+  /** Resonant bandpass Q (spectral purity); frozen at spawn. */
+  q: number;
   /** Spectral position [0,1] at spawn; follows region while alive. */
   yNorm: number;
   /** Stereo pan [-1,1] at spawn; follows region while alive. */
@@ -137,6 +139,14 @@ type RegionClock = {
   confidence: number;
 };
 
+type GrainMaterial = {
+  order: number;
+  durationSec: number;
+  attackFrac: number;
+  releaseFrac: number;
+  q: number;
+};
+
 /**
  * Area-weighted ephemeral grain scheduler.
  * Activity shapes rate/length usage; area shapes budget share;
@@ -148,9 +158,21 @@ export class GrainScheduler {
   private calmClocks = new Map<number, RegionClock>();
   private chaosAcc = 0;
   private lastStepMs = 0;
+  /** Source file duration (seconds) for window-in-seconds law. */
+  private sourceDurationSec = 1;
+  /** Perceptual hue→sample LUT (centroid-sorted); identity until a source loads. */
+  private hueSampleLut: Float32Array = identityHueSampleLut();
 
   constructor(budget = GRAIN_BUDGET) {
     this.budget = budget;
+  }
+
+  setSourceDurationSec(durationSec: number): void {
+    this.sourceDurationSec = Math.max(1e-3, durationSec);
+  }
+
+  setHueSampleLut(lut: Float32Array): void {
+    this.hueSampleLut = lut.length >= 2 ? lut : identityHueSampleLut();
   }
 
   reset(): void {
@@ -164,11 +186,13 @@ export class GrainScheduler {
    * Produce spawn events for this CA step.
    * @param rgb Current frame RGB (identity at spawn).
    * @param nowMs performance.now()
+   * @param sourceDurationSec Optional override for window law (else setSourceDurationSec).
    */
   step(
     obs: FieldObservation,
     rgb: RgbField,
     nowMs = performance.now(),
+    sourceDurationSec?: number,
   ): GrainEventBatch {
     this.prune(nowMs);
     const events: GrainSpawnEvent[] = [];
@@ -178,6 +202,10 @@ export class GrainScheduler {
         ? Math.min(0.25, (nowMs - this.lastStepMs) / 1000)
         : 1 / SCHED.stepsPerSec;
     this.lastStepMs = nowMs;
+    const bankDur =
+      typeof sourceDurationSec === "number" && sourceDurationSec > 0
+        ? sourceDurationSec
+        : this.sourceDurationSec;
 
     const shares = allocateShares(obs, this.budget, nCells);
     const amp = equalAmp(this.budget);
@@ -222,8 +250,8 @@ export class GrainScheduler {
       clock.periodSec = rhythm.periodSec;
       clock.confidence = rhythm.confidence;
 
-      const durationSec = durationFromRegion(region);
-      const packHz = desired / Math.max(0.05, durationSec);
+      const mat = materialFromRegion(region);
+      const packHz = desired / Math.max(0.05, mat.durationSec);
       const baseHz = calmPackRateHz(packHz, region.meanDelta);
       const regionActive = () =>
         activeHere + countEventsForRegion(events, region.id);
@@ -231,7 +259,16 @@ export class GrainScheduler {
         regionActive() < desired && this.active.length < this.budget;
 
       const pushCalm = () => {
-        const ev = spawnCalm(region, obs, rgb, amp, durationSec);
+        const ev = spawnCalm(
+          region,
+          obs,
+          rgb,
+          amp,
+          mat,
+          bankDur,
+          dtSec,
+          this.hueSampleLut,
+        );
         events.push(ev);
         this.active.push({
           endMs: nowMs + ev.durationSec * 1000,
@@ -293,7 +330,15 @@ export class GrainScheduler {
       obs.chaotic.cells.length > 0
     ) {
       this.chaosAcc -= 1;
-      const ev = spawnChaos(obs.chaotic, obs, rgb, amp);
+      const ev = spawnChaos(
+        obs.chaotic,
+        obs,
+        rgb,
+        amp,
+        bankDur,
+        dtSec,
+        this.hueSampleLut,
+      );
       events.push(ev);
       this.active.push({
         endMs: nowMs + ev.durationSec * 1000,
@@ -453,45 +498,46 @@ function chaosPackRateHz(packHz: number, meanDelta: number): number {
   return Math.max(0.05, packHz * scale);
 }
 
+/** Unified continuous grain material from κ/δ/area/fill. */
+function grainMaterial(
+  kappa: number,
+  delta: number,
+  areaT: number,
+  fillT: number,
+): GrainMaterial {
+  const order = clamp01(
+    0.55 * clamp01(kappa) +
+      0.15 * (1 - clamp01(delta / SCHED.deltaRateNorm)) +
+      0.2 * clamp01(areaT) +
+      0.1 * clamp01(fillT),
+  );
+  const durationSec =
+    SCHED.DUR_MIN * Math.pow(SCHED.DUR_MAX / SCHED.DUR_MIN, order);
+  const s = smoothstep01(order);
+  return {
+    order,
+    durationSec,
+    attackFrac: lerp(SCHED.ATT_MIN, SCHED.ATT_MAX, s),
+    releaseFrac: lerp(SCHED.REL_MIN, SCHED.REL_MAX, s),
+    q: SCHED.Q_MIN * Math.pow(SCHED.Q_MAX / SCHED.Q_MIN, clamp01(kappa)),
+  };
+}
+
+function materialFromRegion(region: CoherentRegion): GrainMaterial {
+  const areaT = clamp01(Math.log2(Math.max(2, region.area)) / 10);
+  const fillT = clamp01(region.fillRatio ?? 1);
+  return grainMaterial(
+    region.meanCoherence,
+    region.meanDelta,
+    areaT,
+    fillT,
+  );
+}
+
 /** Representative chaos duration from bag means (for packing rate). */
 function durationChaosMean(chaotic: ChaoticArea): number {
-  const t = clamp01(
-    0.65 * clamp01(chaotic.meanDelta / SCHED.deltaRateNorm) +
-      0.35 * (1 - clamp01(chaotic.meanCoherence)),
-  );
-  return SCHED.chaosDurMin + (SCHED.chaosDurMax - SCHED.chaosDurMin) * t;
-}
-
-function durationFromRegion(region: CoherentRegion): number {
-  const k = clamp01(region.meanCoherence);
-  const areaT = clamp01(Math.log2(Math.max(2, region.area)) / 10);
-  const fill = clamp01(region.fillRatio ?? 1);
-  const ellT = clamp01((region.meanLength ?? 0) / SCHED.lengthNorm);
-  // Sparse shorter; κ + area dominate; ℓ extends hold for large coherent extents.
-  const t = 0.4 * k + 0.3 * areaT + 0.15 * fill + 0.15 * ellT;
-  return SCHED.calmDurMin + (SCHED.calmDurMax - SCHED.calmDurMin) * t;
-}
-
-/** Chaos duration from spawn-cell δ / κ (bag means as fallback). */
-function durationChaosAt(
-  obs: FieldObservation,
-  ci: number,
-  chaotic: ChaoticArea,
-): number {
-  const d = obs.delta[ci] ?? chaotic.meanDelta;
-  const k = obs.coherence[ci] ?? chaotic.meanCoherence;
-  const t = clamp01(
-    0.65 * clamp01(d / SCHED.deltaRateNorm) + 0.35 * (1 - clamp01(k)),
-  );
-  return SCHED.chaosDurMin + (SCHED.chaosDurMax - SCHED.chaosDurMin) * t;
-}
-
-function calmSampleHalfFor(region: CoherentRegion): number {
-  const ellT = clamp01((region.meanLength ?? 0) / SCHED.lengthNorm);
-  return (
-    SCHED.calmSampleHalf +
-    (SCHED.calmSampleHalfMax - SCHED.calmSampleHalf) * ellT
-  );
+  return grainMaterial(chaotic.meanCoherence, chaotic.meanDelta, 0, 0)
+    .durationSec;
 }
 
 function spawnCalm(
@@ -499,37 +545,33 @@ function spawnCalm(
   obs: FieldObservation,
   rgb: RgbField,
   amplitude: number,
-  durationSec: number,
+  mat: GrainMaterial,
+  bankDur: number,
+  dtSec: number,
+  hueLut: Float32Array,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
+  let ci: number;
   if (region.cells.length === 0) {
     const cx = Math.floor(region.comX) % w;
     const cy = Math.floor(region.comY) % h;
-    return spawnCalmAt(region, obs, rgb, amplitude, durationSec, cy * w + cx);
+    ci = cy * w + cx;
+  } else {
+    // Shape-true: uniform pick from membership mask (not AABB jitter).
+    ci = region.cells[(Math.random() * region.cells.length) | 0]!;
   }
-
-  // Shape-true: uniform pick from membership mask (not AABB jitter).
-  const ci = region.cells[(Math.random() * region.cells.length) | 0]!;
-
-  // Optional Y diversity for tall filled regions only.
-  const fill = clamp01(region.fillRatio ?? 1);
-  if (
-    fill > SCHED.ySpreadFillMin &&
-    region.height > h * 0.12 &&
-    Math.random() < fill * SCHED.ySpreadFrac
-  ) {
-    const cy0 = (ci / w) | 0;
-    const targetY = wrap(
-      cy0 + (Math.random() - 0.5) * region.height * fill * SCHED.ySpreadFrac,
-      h,
-    );
-    const cx = ci % w;
-    const alt = pickNearestCellInColumn(region.cells, cx, targetY, w);
-    return spawnCalmAt(region, obs, rgb, amplitude, durationSec, alt);
-  }
-
-  return spawnCalmAt(region, obs, rgb, amplitude, durationSec, ci);
+  return spawnCalmAt(
+    region,
+    obs,
+    rgb,
+    amplitude,
+    mat,
+    bankDur,
+    dtSec,
+    ci,
+    hueLut,
+  );
 }
 
 function spawnCalmAt(
@@ -537,8 +579,11 @@ function spawnCalmAt(
   obs: FieldObservation,
   rgb: RgbField,
   amplitude: number,
-  durationSec: number,
+  mat: GrainMaterial,
+  bankDur: number,
+  dtSec: number,
   ci: number,
+  hueLut: Float32Array,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -548,11 +593,12 @@ function spawnCalmAt(
   const r = rgb.r[ci] ?? region.meanR;
   const g = rgb.g[ci] ?? region.meanG;
   const b = rgb.b[ci] ?? region.meanB;
-  const { sampleLo, sampleHi } = sampleWindowFromHue(
+  const { sampleCenter, sampleHalf } = sampleWindowFromColour(
     r,
     g,
     b,
-    calmSampleHalfFor(region),
+    bankDur,
+    hueLut,
   );
 
   // Toroidal offset from COM so pan/Y follow keeps relative placement in the mass.
@@ -565,15 +611,17 @@ function spawnCalmAt(
     r,
     g,
     b,
-    durationSec,
+    durationSec: mat.durationSec,
     amplitude,
     direction: region.velX < -SCHED.velDirEps ? -1 : 1,
-    sampleLo,
-    sampleHi,
+    sampleCenter,
+    sampleHalf,
+    startOffsetSec: Math.random() * dtSec,
+    q: mat.q,
     yNorm: 1 - cy / Math.max(1, h - 1),
     pan: panFromX(cx, w),
-    attackFrac: SCHED.calmAttackFrac,
-    releaseFrac: SCHED.calmReleaseFrac,
+    attackFrac: mat.attackFrac,
+    releaseFrac: mat.releaseFrac,
     regime: "calm",
     regionId: region.id,
     trackDx,
@@ -586,20 +634,27 @@ function spawnChaos(
   obs: FieldObservation,
   rgb: RgbField,
   amplitude: number,
+  bankDur: number,
+  dtSec: number,
+  hueLut: Float32Array,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
-  const ci = chaotic.cells[(Math.random() * chaotic.cells.length) | 0]!;
+  const ci = pickChaosCell(chaotic, obs);
   const x = ci % w;
   const y = (ci / w) | 0;
   const r = rgb.r[ci] ?? 0.5;
   const g = rgb.g[ci] ?? 0.5;
   const b = rgb.b[ci] ?? 0.5;
-  const { sampleLo, sampleHi } = sampleWindowFromHue(
+  const kappa = obs.coherence[ci] ?? chaotic.meanCoherence;
+  const delta = obs.delta[ci] ?? chaotic.meanDelta;
+  const mat = grainMaterial(kappa, delta, 0, 0);
+  const { sampleCenter, sampleHalf } = sampleWindowFromColour(
     r,
     g,
     b,
-    SCHED.chaosSampleHalf,
+    bankDur,
+    hueLut,
   );
 
   return {
@@ -608,20 +663,36 @@ function spawnChaos(
     r,
     g,
     b,
-    durationSec: durationChaosAt(obs, ci, chaotic),
+    durationSec: mat.durationSec,
     amplitude,
     direction: 1,
-    sampleLo,
-    sampleHi,
+    sampleCenter,
+    sampleHalf,
+    startOffsetSec: Math.random() * dtSec,
+    q: mat.q,
     yNorm: 1 - y / Math.max(1, h - 1),
     pan: panFromX(x, w),
-    attackFrac: SCHED.chaosAttackFrac,
-    releaseFrac: SCHED.chaosReleaseFrac,
+    attackFrac: mat.attackFrac,
+    releaseFrac: mat.releaseFrac,
     regime: "chaos",
     regionId: -1,
     trackDx: 0,
     trackDy: 0,
   };
+}
+
+/** δ-weighted rejection sampling over the chaos bag. */
+function pickChaosCell(chaotic: ChaoticArea, obs: FieldObservation): number {
+  const cells = chaotic.cells;
+  if (cells.length === 0) return 0;
+  const bagMax = Math.max(1e-4, chaotic.maxDelta);
+  let last = cells[(Math.random() * cells.length) | 0]!;
+  for (let t = 0; t < 8; t++) {
+    const ci = cells[(Math.random() * cells.length) | 0]!;
+    last = ci;
+    if (Math.random() < (obs.delta[ci] ?? 0) / bagMax) return ci;
+  }
+  return last;
 }
 
 /** Hue [0,1] from RGB; undefined hue (grey) → 0.5. */
@@ -640,20 +711,29 @@ export function rgbToHueNorm(r: number, g: number, b: number): number {
   return clamp01(h);
 }
 
-function sampleWindowFromHue(
+/** HSV saturation → window half-width in seconds; hue → perceptual centre. */
+function sampleWindowFromColour(
   r: number,
   g: number,
   b: number,
-  half: number,
-): { sampleLo: number; sampleHi: number } {
-  const sampleC = rgbToHueNorm(r, g, b);
-  let sampleLo = clamp01(sampleC - half);
-  let sampleHi = clamp01(sampleC + half);
-  if (sampleHi - sampleLo < 0.002) {
-    sampleLo = Math.max(0, sampleC - 0.001);
-    sampleHi = Math.min(1, sampleLo + 0.002);
-  }
-  return { sampleLo, sampleHi };
+  bankDur: number,
+  hueLut: Float32Array,
+): { sampleCenter: number; sampleHalf: number } {
+  const rr = clamp01(r);
+  const gg = clamp01(g);
+  const bb = clamp01(b);
+  const max = Math.max(rr, gg, bb);
+  const min = Math.min(rr, gg, bb);
+  const sat = (max - min) / Math.max(1e-4, max);
+  const halfSec = lerp(
+    SCHED.WINDOW_HALF_MIN_S,
+    SCHED.WINDOW_HALF_MAX_S,
+    1 - sat,
+  );
+  const hue = rgbToHueNorm(rr, gg, bb);
+  const sampleCenter = sampleCenterFromHue(hueLut, hue);
+  const sampleHalf = Math.min(0.49, halfSec / Math.max(1e-3, bankDur));
+  return { sampleCenter, sampleHalf: Math.max(1e-4, sampleHalf) };
 }
 
 function panFromX(x: number, width: number): number {
@@ -667,28 +747,6 @@ function toroidalOffset(cell: number, com: number, period: number): number {
   if (d > period * 0.5) d -= period;
   if (d < -period * 0.5) d += period;
   return d;
-}
-
-function pickNearestCellInColumn(
-  cells: Uint32Array,
-  x: number,
-  y: number,
-  w: number,
-): number {
-  if (cells.length === 0) return (y | 0) * w + (x | 0);
-  let best = cells[0]!;
-  let bestD = Infinity;
-  for (let i = 0; i < cells.length; i++) {
-    const ci = cells[i]!;
-    const cx = ci % w;
-    const cy = (ci / w) | 0;
-    const d = (cx - x) * (cx - x) * 4 + (cy - y) * (cy - y);
-    if (d < bestD) {
-      bestD = d;
-      best = ci;
-    }
-  }
-  return best;
 }
 
 function countEventsForRegion(events: GrainSpawnEvent[], id: number): number {
@@ -715,8 +773,13 @@ function countActiveRegime(
   return n;
 }
 
-function wrap(v: number, period: number): number {
-  return ((v % period) + period) % period;
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function smoothstep01(t: number): number {
+  const x = clamp01(t);
+  return x * x * (3 - 2 * x);
 }
 
 function clamp01(v: number): number {

@@ -30,7 +30,7 @@ assert("observes δ / similarity / κ", /deltaEma/.test(fieldSrc) && /kappaThres
 assert("soft colour gate", /regionColourEps/.test(fieldSrc));
 assert("κ hysteresis enter/exit", /kappaEnter/.test(fieldSrc) && /kappaExit/.test(fieldSrc));
 assert("fillRatio on regions", /fillRatio/.test(fieldSrc));
-assert("meanLength (ℓ) on regions", /meanLength/.test(fieldSrc));
+assert("no per-cell coherence length", !/meanLength/.test(fieldSrc) && !/measureCoherenceLength/.test(fieldSrc));
 assert("extracts coherent regions", /extractRegions/.test(fieldSrc));
 assert("builds chaotic remainder", /buildChaotic/.test(fieldSrc));
 assert("toroidal COM / velocity", /toroidalDelta/.test(fieldSrc) && /velX/.test(fieldSrc));
@@ -112,8 +112,8 @@ async function runtimeCheck() {
     out.coherent.every((r) => r.fillRatio > 0 && r.fillRatio <= 1),
   );
   assert(
-    "region has meanLength ≥ 0",
-    out.coherent.every((r) => typeof r.meanLength === "number" && r.meanLength >= 0),
+    "region has width/height extent",
+    out.coherent.every((r) => r.width >= 1 && r.height >= 1),
   );
 
   // Two adjacent different-hue calm blobs must not merge (soft colour gate).

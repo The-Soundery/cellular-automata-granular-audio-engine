@@ -28,7 +28,10 @@ assert("main wires GrainScheduler", /GrainScheduler/.test(main) && /sendEvents/.
 assert("AudioEngine.sendEvents", /sendEvents/.test(audioSrc));
 assert("no lattice FieldReducer", !existsSync(join(root, "src/field/FieldReducer.ts")));
 assert("no sendPlan lattice path", !/sendPlan/.test(main) && !/sendPlan/.test(audioSrc));
-assert("freeze-at-spawn sample window fields", /sampleLo/.test(schedSrc) && /sampleHi/.test(schedSrc));
+assert(
+  "freeze-at-spawn sample window fields",
+  /sampleCenter/.test(schedSrc) && /sampleHalf/.test(schedSrc),
+);
 assert("direction from motion", /velDirEps/.test(schedSrc) && /direction/.test(schedSrc));
 assert("area-weighted budget", /allocateShares/.test(schedSrc) && /GRAIN_BUDGET/.test(schedSrc));
 assert(
@@ -62,17 +65,27 @@ assert(
   /rhythmPulseMax/.test(schedSrc) && /rhythmWashFloor/.test(schedSrc),
 );
 assert("fillRatio used in duration", /fillRatio/.test(schedSrc));
-assert("meanLength / ℓ drives calm sample + duration", /meanLength/.test(schedSrc) && /calmSampleHalfFor|lengthNorm/.test(schedSrc));
+assert(
+  "saturation drives window width",
+  /WINDOW_HALF/.test(schedSrc) && /sat/.test(schedSrc),
+);
+assert(
+  "unified continuous law",
+  /order/.test(schedSrc) && /DUR_MIN/.test(schedSrc) && /grainMaterial/.test(schedSrc),
+);
+assert(
+  "δ-weighted chaos spawn",
+  /maxDelta/.test(schedSrc) && /obs\.delta\[ci\]/.test(schedSrc),
+);
 assert("overlap scales with κ", /meanCoherence/.test(schedSrc) && /0\.35 \+ 0\.65/.test(schedSrc));
 assert("calm packing rate", /calmPackRateHz|calmPackRateMin/.test(schedSrc));
 assert("calmPackRateMin widened for δ tracking", /calmPackRateMin:\s*0\.5/.test(schedSrc));
 assert("maxCalmConcurrent raised", /maxCalmConcurrent:\s*8/.test(schedSrc));
 assert(
-  "regime envelope fracs on spawn",
-  /attackFrac/.test(schedSrc) && /calmAttackFrac:\s*0\.22/.test(schedSrc),
+  "continuous envelope fracs on spawn",
+  /attackFrac/.test(schedSrc) && /ATT_MIN/.test(schedSrc) && /ATT_MAX/.test(schedSrc),
 );
-assert("per-cell chaos duration", /durationChaosAt/.test(schedSrc));
-assert("ySpreadFillMin", /ySpreadFillMin/.test(schedSrc));
+assert("no ySpread special case", !/ySpreadFillMin/.test(schedSrc) && !/pickNearestCellInColumn/.test(schedSrc));
 assert("no velocity-hybrid calm laws", !/hybridCalmLaws/.test(schedSrc) && !/velChaosNorm/.test(schedSrc));
 assert("region tracks for pan/Y", /RegionTrack/.test(schedSrc) && /tracks/.test(schedSrc) && /trackDx/.test(schedSrc));
 const overlaySrc = readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8");
@@ -87,7 +100,10 @@ assert("worklet does not chase sample bounds from track", !/boundLo\s*=\s*[^;]*t
 assert("worklet handles events", /type === "events"/.test(worklet));
 assert("worklet ping-pong", /boundLo/.test(worklet) && /dir = -1/.test(worklet));
 assert("worklet energy normalisation", /TARGET_RMS/.test(worklet) && /normGain/.test(worklet));
-assert("worklet uses frozen attackFrac", /attackFrac/.test(worklet) && /getEnvelope\(/.test(worklet));
+assert(
+  "worklet uses frozen attackFrac (analytic envelope)",
+  /attackFrac/.test(worklet) && /envelopeAt/.test(worklet) && !/windowCache/.test(worklet),
+);
 assert("no latticeIndex in worklet", !/latticeIndex/.test(worklet));
 assert("no paintGrain lattice loop", !/paintGrain/.test(worklet));
 assert("UI budget meters", /st-budget/.test(controls) && /Calm g/.test(controls));
@@ -167,20 +183,59 @@ async function runtimeScheduler() {
       if (!(e.direction === 1 || e.direction === -1)) dirOk = false;
       if (e.regime === "calm") {
         sawCalm = true;
-        if (!(e.sampleHi > e.sampleLo && e.durationSec >= 0.3)) calmOk = false;
-        if (!(e.attackFrac === 0.22 && e.releaseFrac === 0.28)) envOk = false;
+        if (
+          !(
+            typeof e.sampleCenter === "number" &&
+            typeof e.sampleHalf === "number" &&
+            e.sampleHalf > 0 &&
+            e.durationSec >= 0.03 &&
+            e.durationSec <= 2.2 &&
+            typeof e.q === "number" &&
+            e.q > 0
+          )
+        ) {
+          calmOk = false;
+        }
+        if (
+          !(
+            e.attackFrac >= 0.04 &&
+            e.attackFrac <= 0.3 &&
+            e.releaseFrac >= 0.12 &&
+            e.releaseFrac <= 0.34
+          )
+        ) {
+          envOk = false;
+        }
       }
       if (e.regime === "chaos") {
         sawChaos = true;
-        if (!(e.durationSec <= 0.2)) chaosOk = false;
-        if (!(e.attackFrac < 0.12 && e.releaseFrac < 0.25)) envOk = false;
+        if (
+          !(
+            e.durationSec >= 0.03 &&
+            e.durationSec <= 2.2 &&
+            typeof e.sampleCenter === "number" &&
+            typeof e.q === "number"
+          )
+        ) {
+          chaosOk = false;
+        }
+        if (
+          !(
+            e.attackFrac >= 0.04 &&
+            e.attackFrac <= 0.3 &&
+            e.releaseFrac >= 0.12 &&
+            e.releaseFrac <= 0.34
+          )
+        ) {
+          envOk = false;
+        }
       }
     }
   }
   assert("never exceeds budget prediction", budgetOk);
   assert("calm events well-formed", !sawCalm || calmOk);
   assert("chaos events well-formed", !sawChaos || chaosOk);
-  assert("regime envelope fracs frozen on events", envOk);
+  assert("continuous envelope fracs frozen on events", envOk);
   assert("amplitude finite", ampOk);
   assert("direction ±1", dirOk);
   assert("scheduler emitted events over time", totalEvents > 0);

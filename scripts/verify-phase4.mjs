@@ -61,6 +61,21 @@ assert("equal amplitude / sqrt budget", /equalAmp|1 \/ Math\.sqrt/.test(sched));
 assert("lattice archive only under _obsolete", existsSync(join(root, "public/_obsolete/grain-processor-lattice.js")));
 assert("live worklet is not lattice archive", !/latticeIndex/.test(worklet));
 
+const spectral = readFileSync(join(root, "src/audio/spectral.ts"), "utf8");
+const audioSrc = readFileSync(join(root, "src/audio/AudioEngine.ts"), "utf8");
+assert("source prep has seam crossfade", /SEAM_FADE/.test(spectral));
+assert("source prep has perceptual hue LUT", /hueSampleLut/.test(spectral) && /spectralCentroid|buildHueSampleLut/.test(spectral));
+assert("scheduler uses perceptual sample center", /sampleCenterFromHue/.test(sched));
+assert("source prep has no 48-bin bank", !/SPECTRAL_BIN_COUNT/.test(spectral) && !/bins:\s*Float32Array/.test(spectral));
+assert("source message has no bins", !/msg\.bins/.test(worklet) && !/\bbins:/.test(audioSrc));
+assert("per-grain filter present", /ic1eq/.test(worklet));
+assert("analytic envelope (no envelope table cache)", !/windowCache/.test(worklet) && /envelopeAt/.test(worklet));
+assert("onset offset honored", /startOffsetSec|delaySamples/.test(worklet));
+assert(
+  "no regime-branched audible Q defaults after continuous law",
+  !/regime === "calm" \? Q_CALM/.test(worklet),
+);
+
 if (failed) {
   console.error(`\nPhase 4 verify: ${failed} failure(s)`);
   process.exit(1);

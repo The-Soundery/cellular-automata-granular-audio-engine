@@ -1,7 +1,7 @@
-Cellular Automata Granular Audio Engine — Implementation Filter (V4)
-Status: Sonic Laws LIVE (V4 identity + pan/Y track amend). 
-North star: Creative Brief v4.txt (Sonic Laws + remap notes).
-Branch: `v4` — ephemeral grains; hue→sample; X→pan; Y→spectrum.
+Cellular Automata Granular Audio Engine — Implementation Filter (V4.1)
+Status: Sonic Laws LIVE + V4.1 Continuous Laws ear-validated (2026-08-02).
+North star: Creative Brief v4.txt (Sonic Laws + V4.1 amend).
+Branch: `v4.1` — ephemeral grains; perceptual hue→sample; X→pan; Y→per-grain bandpass.
 Verify: `npm run verify` + `scripts/listening-gate-sonic-laws.md` (re-run after big audio changes).
 Next: fine-tune negotiable constants — not architectural rewrites.
 
@@ -16,6 +16,8 @@ STOP — do not revive
 - Mid-grain sample-window scrub chase of moving regions
   (direct pan / Y-spectrum follow for region-bound grains is allowed)
 - V3 identity (X→sample / RGB→envelope) without a new listening decision
+- 48-bin offline spectral bank (replaced by per-grain resonant bandpass)
+- Doppler / velocity→grain rate (pitch offsets beyond ±1) — rejected
 
 Archives (reference only): public/_obsolete/ (failed lattice path — do not revive)
 
@@ -24,17 +26,22 @@ Live pipeline
 ------------------------------------------------------------------------------
 
 Utomata → FrameObserver → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
-  → grain-processor (hue-locked sample window; direct region pan/Y follow; energy norm)
+  → grain-processor (hue-locked wrap-aware window; per-grain bandpass; direct pan/Y follow;
+                     analytic envelope; asymmetric energy norm)
 
 Key modules:
-- src/field/FieldObserver.ts — δ, s, κ, ℓ, coherent regions, chaotic remainder
-- src/field/GrainScheduler.ts — area-weighted budget, hue→sample, region COM tracks
-- public/grain-processor.js — ephemeral stereo playback + direct pan/Y follow + energy normalisation
+- src/field/FieldObserver.ts — δ, s, κ, coherent regions, chaotic remainder (+ maxDelta)
+- src/field/GrainScheduler.ts — area-weighted budget, continuous material law, hue→sample LUT,
+                                region COM tracks
+- src/audio/spectral.ts — mono PCM + seam crossfade + centroid hue→sample LUT
+- public/grain-processor.js — ephemeral stereo playback + per-grain SVF + energy normalisation
 - src/ui/RegionOverlay.ts — region silhouettes + active grain dots (debug, not ears)
 
 Keep: src/ca/*, FrameObserver, spectral.ts, AudioEngine lifecycle, controls shell.
 
 Negotiable tuneables (not doctrine):
 - FIELD_OBS in FieldObserver.ts
-- SCHED / GRAIN_BUDGET in GrainScheduler.ts (incl. calmSampleHalf / chaosSampleHalf)
-- TARGET_RMS / NORM_SMOOTH / MAX_GRAINS / ENV_* in grain-processor.js
+- SCHED / GRAIN_BUDGET in GrainScheduler.ts
+  (DUR_*/ATT_*/REL_*/Q_*/WINDOW_HALF_*_S, chaosPackRateMin, calmPackRateMin, rhythm_*)
+- SEAM_FADE_SEC / CENTROID_HOP_SEC / HUE_LUT_SIZE in spectral.ts
+- TARGET_RMS / NORM_* / FILT_FMIN/FMAX / MAX_GRAINS / ENV_* fallbacks in grain-processor.js

@@ -62,11 +62,19 @@ function ema(prev: number, next: number, a = METER_EMA): number {
   return prev + (next - prev) * a;
 }
 
+function syncSourceDuration(): void {
+  const bank = audio.getBank();
+  if (!bank) return;
+  scheduler.setSourceDurationSec(bank.durationSec);
+  scheduler.setHueSampleLut(bank.hueSampleLut);
+}
+
 async function ensureDefaultSource(): Promise<void> {
   if (audio.hasSource) return;
   if (!defaultSourcePromise) {
     defaultSourcePromise = (async () => {
       await audio.loadUrl(DEFAULT_SOURCE_URL);
+      syncSourceDuration();
     })().catch((err) => {
       defaultSourcePromise = null;
       throw err;
@@ -159,6 +167,7 @@ const controls = mountControls(controlsMount, {
     pushStats(true);
     try {
       await audio.loadFile(file);
+      syncSourceDuration();
       defaultSourcePromise = Promise.resolve();
       audioStatus = audio.isReady
         ? `loaded · ${file.name}`
@@ -264,6 +273,7 @@ function tick() {
         lastObs,
         frameObserver.current,
         performance.now(),
+        audio.getBank()?.durationSec,
       );
       if (audio.isReady) {
         audio.sendEvents(lastBatch);

@@ -1,20 +1,22 @@
-Cellular Automata Granular Audio Engine — Creative Brief (V4)
+Cellular Automata Granular Audio Engine — Creative Brief (V4 / V4.1)
 Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
 Supersedes prior V3 identity mapping (X→sample / RGB→envelope).
 Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn architecture.
-Source: Sonic Laws session (2026-07-31); V4 listening remap (2026-08-01).
+Source: Sonic Laws session (2026-07-31); V4 listening remap (2026-08-01);
+        V4.1 Continuous Laws ear-validated (2026-08-02).
 
 ------------------------------------------------------------------------------
-HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-01)
+HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-02)
 ------------------------------------------------------------------------------
 
-V3 ephemeral grains (FieldObserver → GrainScheduler → worklet) passed listening
-after the lattice path failed. A further identity remap was then validated by ear:
+Branch `v4.1` is the current mainline (Continuous Laws). Prior branches (`v4`,
+`v3`, …) and lattice code live in git history / `public/_obsolete/` — do not
+revive them.
 
-  Hue(RGB) → sample position · X → stereo pan · Y → spectrum · fixed envelope
+Identity (listening-validated):
 
-Branch `v4` is the current mainline. Prior briefs and lattice code live in git
-history / `public/_obsolete/` — do not revive them.
+  Hue(RGB) → sample position (centroid-ordered LUT) · saturation → window width
+  X → stereo pan · Y → spectrum (per-grain bandpass) · envelope from κ/δ order
 
 DO NOT continue or refine:
 
@@ -27,6 +29,8 @@ DO NOT continue or refine:
   (causes audio glitches; forbidden). Direct pan / Y-spectrum follow for
   region-bound grains is allowed (no smoothing).
 - Reviving X→sample / RGB→envelope without a new listening decision
+- Reviving the 48-bin offline spectral bank
+- Doppler / velocity→grain rate (pitch offsets beyond ±1)
 
 Next work is fine-tuning negotiable constants — not architectural rewrites.
 
@@ -112,16 +116,21 @@ One-sentence axiom:
    From the spawn cell (or calm spawn site):
 
    - Hue(RGB) → sample position / locked scrub window in the source
-                (similar colours scrub similar sample areas) — FROZEN at spawn
+                (similar colours scrub similar *sounding* areas via a
+                spectral-centroid-ordered sample map) — FROZEN at spawn
+   - Saturation → window half-width in seconds (grey = diffuse / wide;
+                  saturated = focused / tight) — FROZEN at spawn
    - X        → stereo pan (−1 left … +1 right) — initial at spawn; while a
                 grain belongs to a region it directly follows that region’s
                 motion in pan (spawn offset from COM preserved)
-   - Y        → frequency / spectral position — same direct region follow
-   - Envelope → fixed material shape at spawn (not driven by RGB)
+   - Y        → frequency / spectral position (continuous bandpass cutoff)
+                — same direct region follow
+   - Envelope / duration / filter Q → continuous functions of κ/δ (and calm
+                area/fill) at spawn — not binary calm|chaos presets, not RGB
 
    Colour chooses where in the source the grain listens. Spatial X places the
    grain in the stereo field. Colour must never set loudness, allocation, or
-   topology. Luminance is not volume.
+   topology. Luminance is not volume. Playback rate stays ±1 (no Doppler).
 
 
 3. Field observation (how we see regimes)
@@ -132,7 +141,7 @@ One-sentence axiom:
    - δ   local rate of change (smoothed colour/state delta)
    - s   local colour similarity (inverse of neighbour variance)
    - κ   coherence = similarity × stability (high only when BOTH hold)
-   - ℓ   coherence length / extent (how far similarity reaches)
+   - extent via region width / height / area (spatial scale of a coherent mass)
 
    Group into observational regions:
 
@@ -140,7 +149,8 @@ One-sentence axiom:
      centre of mass (x̄, ȳ), mean change δ̄, mean coherence κ̄, bounding
      width/height, and COM velocity from smoothed COM motion.
    - Chaotic area: low κ / high δ — treated as a bag of cells (no meaningful
-     centre-follow requirement).
+     centre-follow requirement); chaos grains spawn δ-weighted so change is
+     the event.
 
    Regions are re-derived each frame with smoothing. They are measurements,
    not voice owners. Do not score “interestingness” or prefer one regime.
@@ -371,34 +381,56 @@ Lattice path archived under public/_obsolete/. Do not revive it.
 KEEP (infrastructure) — retained
 - src/ca/* + public/utomata.js — visual CA universe
 - src/field/FrameObserver.ts — frame RGB + previous frame for deltas
-- src/audio/spectral.ts — sample → spectral bank
+- src/audio/spectral.ts — mono PCM prep + seam crossfade + centroid hue LUT
 - src/audio/AudioEngine.ts — context, worklet load, source load, lifecycle
 - src/ui/controls.ts — equation / reset / pause / load + field/listening meters
 - Vite shell, default/test samples
 
 REMOVED / REPLACED
 - src/field/FieldReducer.ts → FieldObserver.ts + GrainScheduler.ts
-- public/grain-processor.js → ephemeral event worklet (stereo pan + hue windows)
+- public/grain-processor.js → ephemeral event worklet (stereo pan + hue windows;
+  V4.1: per-grain bandpass, analytic envelope, asymmetric norm)
 - src/ui/listenOverlay.ts → RegionOverlay.ts (observation debug, not ears)
 - Lattice verify scripts → verify-phase0/1/2/4.mjs
 - V3 identity (X→sample / RGB→envelope) → V4 (hue→sample / X→pan)
+- 48-bin offline spectral bank → per-grain resonant bandpass over raw PCM
+- Per-cell ℓ ray measurement → region width/height/area as extent
 
 LIVE PIPELINE
 
   Utomata → FrameObserver
-    → FieldObserver (δ, s, κ, ℓ + region extract: A, COM, velocity, bounds)
-    → GrainScheduler (area-weighted budget; hue→sample window; X→pan;
+    → FieldObserver (δ, s, κ + region extract: A, COM, velocity, bounds, fill;
+                     chaos bag + maxDelta)
+    → GrainScheduler (area-weighted budget; continuous material law;
+                      perceptual hue→sample + saturation window; X→pan;
                       region COM tracks for direct pan/Y follow)
     → AudioEngine.sendEvents (+ track)
-    → grain-processor (ephemeral grains: locked sample window, ping-pong;
-                       direct pan/Y follow for region grains; equal-power;
-                       global energy normalisation)
+    → grain-processor (ephemeral grains: wrap-aware locked window, ping-pong;
+                       per-grain bandpass; analytic envelope; onset jitter;
+                       direct pan/Y follow; asymmetric energy normalisation)
 
-Listening gate: scripts/listening-gate-sonic-laws.md.
+Listening gate: scripts/listening-gate-sonic-laws.md (V4.1 ear-validated 2026-08-02).
 Next: fine-tune negotiable constants only.
 
 Do not revive V2 StructureTracker / allocator / interestingness scoring.
 Observational regions are allowed; owned voices are not.
+
+
+------------------------------------------------------------------------------
+V4.1 Continuous Laws — COMPLETE (2026-08-02)
+------------------------------------------------------------------------------
+
+Ear-validated on branch `v4.1`. Proposal doc retired (history in git).
+
+- Continuous grain material from κ/δ/area/fill (duration, attack, release, Q)
+- Per-grain resonant bandpass (Y→cutoff); κ→Q spectral purity
+- δ-weighted chaos spawn; windows in seconds; saturation→window width
+- Spectral-centroid hue→sample LUT (similar colours → similar sound)
+- Onset jitter within CA step; asymmetric loudness normalisation
+- Doppler / velocity→rate rejected (rate stays ±1)
+
+Negotiable constants: SCHED DUR_*/ATT_*/REL_*/Q_*/WINDOW_HALF_*_S; SEAM_FADE_SEC;
+FILT_FMIN/FMAX; CENTROID_HOP_SEC; worklet NORM_* / TARGET_RMS.
 
 
 ------------------------------------------------------------------------------

@@ -17,12 +17,8 @@ export const FIELD_OBS = {
   kappaThreshold: 0.55,
   /** Max RGB distance from running region mean to join a calm component. */
   regionColourEps: 0.12,
-  /** Drop coherent coherent speckles below this area (cells). */
+  /** Drop transient coherent speckles below this area (cells). */
   minRegionArea: 24,
-  /** Colour distance that ends a coherence-length ray. */
-  lengthColourEps: 0.12,
-  /** Max ray steps when measuring ℓ. */
-  lengthMaxSteps: 24,
   /** Max COM match distance (cells) for velocity continuity. */
   comMatchDist: 18,
   /** Max mean-RGB distance for ID continuity (same scale as regionColourEps). */
@@ -44,8 +40,6 @@ export interface CoherentRegion {
   velY: number;
   meanDelta: number;
   meanCoherence: number;
-  /** Mean coherence length ℓ (cells) over the region mask. */
-  meanLength: number;
   meanR: number;
   meanG: number;
   meanB: number;
@@ -66,6 +60,8 @@ export interface ChaoticArea {
   area: number;
   meanDelta: number;
   meanCoherence: number;
+  /** Max per-cell δ in the bag (for δ-weighted chaos spawn). */
+  maxDelta: number;
   cells: Uint32Array;
 }
 
@@ -78,8 +74,6 @@ export interface FieldObservation {
   similarity: Float32Array;
   /** Per-cell coherence κ = s × stability. */
   coherence: Float32Array;
-  /** Per-cell coherence length ℓ (cells). */
-  coherenceLength: Float32Array;
   coherent: CoherentRegion[];
   chaotic: ChaoticArea;
   meanDelta: number;
@@ -110,7 +104,6 @@ export class FieldObserver {
   private readonly delta: Float32Array;
   private readonly similarity: Float32Array;
   private readonly coherence: Float32Array;
-  private readonly coherenceLength: Float32Array;
   private readonly calmMask: Uint8Array;
   private readonly prevCalm: Uint8Array;
   private readonly labels: Int32Array;
@@ -127,7 +120,6 @@ export class FieldObserver {
     this.delta = new Float32Array(n);
     this.similarity = new Float32Array(n);
     this.coherence = new Float32Array(n);
-    this.coherenceLength = new Float32Array(n);
     this.calmMask = new Uint8Array(n);
     this.prevCalm = new Uint8Array(n);
     this.labels = new Int32Array(n);
@@ -138,7 +130,6 @@ export class FieldObserver {
       this.delta,
       this.similarity,
       this.coherence,
-      this.coherenceLength,
     );
   }
 
@@ -150,7 +141,6 @@ export class FieldObserver {
     this.delta.fill(0);
     this.similarity.fill(0);
     this.coherence.fill(0);
-    this.coherenceLength.fill(0);
     this.calmMask.fill(0);
     this.prevCalm.fill(0);
     this.labels.fill(-1);
@@ -163,7 +153,6 @@ export class FieldObserver {
       this.delta,
       this.similarity,
       this.coherence,
-      this.coherenceLength,
     );
   }
 
@@ -207,13 +196,6 @@ export class FieldObserver {
     }
     meanKappa /= n;
 
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        this.coherenceLength[i] = measureCoherenceLength(current, x, y, w, h);
-      }
-    }
-
     const coherent = this.extractRegions(current);
     const chaotic = this.buildChaotic(coherent);
     const calmCells = coherent.reduce((sum, r) => sum + r.area, 0);
@@ -226,7 +208,6 @@ export class FieldObserver {
       delta: this.delta,
       similarity: this.similarity,
       coherence: this.coherence,
-      coherenceLength: this.coherenceLength,
       coherent,
       chaotic,
       meanDelta,
@@ -270,7 +251,6 @@ export class FieldObserver {
       let sumYSin = 0;
       let sumD = 0;
       let sumK = 0;
-      let sumL = 0;
       let sumR = 0;
       let sumG = 0;
       let sumB = 0;
@@ -288,7 +268,6 @@ export class FieldObserver {
         sumYSin += Math.sin(angY);
         sumD += this.delta[i]!;
         sumK += this.coherence[i]!;
-        sumL += this.coherenceLength[i]!;
         sumR += current.r[i]!;
         sumG += current.g[i]!;
         sumB += current.b[i]!;
@@ -373,7 +352,6 @@ export class FieldObserver {
         velY: 0,
         meanDelta: sumD / area,
         meanCoherence: sumK / area,
-        meanLength: sumL / area,
         meanR: sumR / area,
         meanG: sumG / area,
         meanB: sumB / area,
@@ -472,17 +450,21 @@ export class FieldObserver {
     const cells: number[] = [];
     let sumD = 0;
     let sumK = 0;
+    let maxDelta = 0;
     for (let i = 0; i < n; i++) {
       if (inCalm[i]) continue;
       cells.push(i);
-      sumD += this.delta[i]!;
+      const d = this.delta[i]!;
+      sumD += d;
       sumK += this.coherence[i]!;
+      if (d > maxDelta) maxDelta = d;
     }
     const area = cells.length;
     return {
       area,
       meanDelta: area ? sumD / area : 0,
       meanCoherence: area ? sumK / area : 0,
+      maxDelta,
       cells: Uint32Array.from(cells),
     };
   }
@@ -556,53 +538,12 @@ function localSimilarity(
   return 1 / (1 + meanVar * 8);
 }
 
-/**
- * Mean extent of similarity rays in 4 directions — proxy for local ℓ.
- */
-function measureCoherenceLength(
-  field: RgbField,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): number {
-  const eps = FIELD_OBS.lengthColourEps;
-  const maxSteps = FIELD_OBS.lengthMaxSteps;
-  const i0 = y * w + x;
-  const r0 = field.r[i0]!;
-  const g0 = field.g[i0]!;
-  const b0 = field.b[i0]!;
-
-  const dirs = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ] as const;
-
-  let sum = 0;
-  for (const [dx, dy] of dirs) {
-    let steps = 0;
-    for (let s = 1; s <= maxSteps; s++) {
-      const nx = (x + dx * s + w * 16) % w;
-      const ny = (y + dy * s + h * 16) % h;
-      const j = ny * w + nx;
-      const d = rgbDelta(r0, g0, b0, field.r[j]!, field.g[j]!, field.b[j]!);
-      if (d > eps) break;
-      steps = s;
-    }
-    sum += steps;
-  }
-  return sum / 4;
-}
-
 function emptyObservation(
   width: number,
   height: number,
   delta: Float32Array,
   similarity: Float32Array,
   coherence: Float32Array,
-  coherenceLength: Float32Array,
 ): FieldObservation {
   return {
     width,
@@ -610,12 +551,12 @@ function emptyObservation(
     delta,
     similarity,
     coherence,
-    coherenceLength,
     coherent: [],
     chaotic: {
       area: width * height,
       meanDelta: 0,
       meanCoherence: 0,
+      maxDelta: 0,
       cells: new Uint32Array(0),
     },
     meanDelta: 0,
