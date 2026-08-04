@@ -9,6 +9,7 @@ export interface ControlsHandlers {
   onRandomVariation: () => string;
   onLoadAudio: (file: File) => Promise<void>;
   onToggleAudio: () => Promise<boolean>;
+  onToggleRecord: () => Promise<boolean>;
   onToggleOverlay: () => boolean;
 }
 
@@ -36,6 +37,7 @@ export interface ControlsApi {
   setEquation: (eq: string) => void;
   setPaused: (paused: boolean) => void;
   setAudioEnabled: (enabled: boolean) => void;
+  setRecording: (recording: boolean) => void;
   setOverlayVisible: (visible: boolean) => void;
   setStats: (s: {
     step: number;
@@ -79,6 +81,7 @@ export function mountControls(
       </label>
     </div>
     <div class="row">
+      <button type="button" id="record-toggle">Record</button>
       <button type="button" id="overlay-toggle">Overlay: On</button>
     </div>
     <dl class="stats">
@@ -119,6 +122,7 @@ export function mountControls(
   const eqEl = root.querySelector("#eq") as HTMLTextAreaElement;
   const pauseBtn = root.querySelector("#pause") as HTMLButtonElement;
   const audioBtn = root.querySelector("#audio-toggle") as HTMLButtonElement;
+  const recordBtn = root.querySelector("#record-toggle") as HTMLButtonElement;
   const overlayBtn = root.querySelector("#overlay-toggle") as HTMLButtonElement;
   eqEl.value = TYPE_U_SEED;
 
@@ -149,6 +153,11 @@ export function mountControls(
       audioBtn.textContent = enabled ? "Stop Audio" : "Enable Audio";
     });
   });
+  recordBtn.addEventListener("click", () => {
+    void handlers.onToggleRecord().then((recording) => {
+      setRecordingUi(recording);
+    });
+  });
   overlayBtn.addEventListener("click", () => {
     const visible = handlers.onToggleOverlay();
     overlayBtn.textContent = visible ? "Overlay: On" : "Overlay: Off";
@@ -158,6 +167,11 @@ export function mountControls(
     const file = input.files?.[0];
     if (file) void handlers.onLoadAudio(file);
   });
+
+  function setRecordingUi(recording: boolean) {
+    recordBtn.textContent = recording ? "Stop Recording" : "Record";
+    recordBtn.classList.toggle("recording", recording);
+  }
 
   function setBar(id: string, value: number, max: number) {
     const el = root.querySelector(id) as HTMLElement;
@@ -175,6 +189,9 @@ export function mountControls(
     },
     setAudioEnabled(enabled: boolean) {
       audioBtn.textContent = enabled ? "Stop Audio" : "Enable Audio";
+    },
+    setRecording(recording: boolean) {
+      setRecordingUi(recording);
     },
     setOverlayVisible(visible: boolean) {
       overlayBtn.textContent = visible ? "Overlay: On" : "Overlay: Off";

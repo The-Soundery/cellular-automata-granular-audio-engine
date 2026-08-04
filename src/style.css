@@ -136,6 +136,17 @@ button:hover,
   color: var(--accent);
 }
 
+button.recording {
+  border-color: #a85454;
+  color: #e8a0a0;
+  background: #2a1515;
+}
+
+button.recording:hover {
+  border-color: #c46a6a;
+  color: #f0b8b8;
+}
+
 .file-btn {
   display: inline-flex;
   align-items: center;

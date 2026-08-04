@@ -11,7 +11,7 @@ import {
   MASTER_GAIN,
   type GrainEventBatch,
 } from "./field/GrainScheduler.ts";
-import { AudioEngine } from "./audio/AudioEngine.ts";
+import { AudioEngine, type RecordingResult } from "./audio/AudioEngine.ts";
 import { mountControls, type AudioMeterStats } from "./ui/controls.ts";
 import { RegionOverlay } from "./ui/RegionOverlay.ts";
 import "./style.css";
@@ -60,6 +60,20 @@ let defaultSourcePromise: Promise<void> | null = null;
 
 function ema(prev: number, next: number, a = METER_EMA): number {
   return prev + (next - prev) * a;
+}
+
+function downloadRecording(result: RecordingResult): void {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .replace("T", "_")
+    .slice(0, 19);
+  const url = URL.createObjectURL(result.blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `ca-granular_${stamp}.${result.extension}`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function syncSourceDuration(): void {
@@ -122,7 +136,9 @@ const controls = mountControls(controlsMount, {
   async onToggleAudio() {
     try {
       if (audio.isEnabled) {
-        await audio.stop();
+        const result = await audio.stop();
+        if (result) downloadRecording(result);
+        controls.setRecording(false);
         audioStatus = audio.hasSource ? "stopped" : "idle";
         smoothMeter = null;
         controls.setAudioEnabled(false);
@@ -151,6 +167,44 @@ const controls = mountControls(controlsMount, {
       console.error(err);
       audioStatus = "audio init failed";
       controls.setAudioEnabled(false);
+      controls.setRecording(false);
+      pushStats(true);
+      return false;
+    }
+  },
+  async onToggleRecord() {
+    try {
+      if (audio.isRecording) {
+        const result = await audio.stopRecording();
+        controls.setRecording(false);
+        if (result) {
+          downloadRecording(result);
+          audioStatus = audio.isReady ? "running · saved recording" : "stopped";
+        } else {
+          audioStatus = audio.isReady
+            ? "running · empty recording"
+            : "stopped";
+        }
+        pushStats(true);
+        return false;
+      }
+
+      if (!audio.isEnabled) {
+        audioStatus = "enable audio to record";
+        pushStats(true);
+        return false;
+      }
+
+      audio.startRecording();
+      controls.setRecording(true);
+      audioStatus = "recording…";
+      pushStats(true);
+      return true;
+    } catch (err) {
+      console.error(err);
+      controls.setRecording(false);
+      audioStatus =
+        err instanceof Error ? err.message : "recording failed";
       pushStats(true);
       return false;
     }
@@ -184,6 +238,7 @@ const controls = mountControls(controlsMount, {
 controls.setEquation(TYPE_U_SEED);
 controls.setOverlayVisible(true);
 controls.setAudioEnabled(false);
+controls.setRecording(false);
 
 const ro = new ResizeObserver(() => host.fitZoom(caWrap));
 ro.observe(caWrap);

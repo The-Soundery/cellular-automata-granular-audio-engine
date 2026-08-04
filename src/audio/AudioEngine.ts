@@ -1,4 +1,5 @@
 import { buildSpectralBank, type SpectralBank } from "./spectral.ts";
+import { concatFloat32, encodeWav } from "./wav.ts";
 import type { GrainEventBatch } from "../field/GrainScheduler.ts";
 
 export { MASTER_GAIN } from "../field/GrainScheduler.ts";
@@ -30,12 +31,23 @@ export interface AudioStats {
   updatedAt: number;
 }
 
+export interface RecordingResult {
+  blob: Blob;
+  mimeType: string;
+  extension: string;
+}
+
 /**
  * AudioContext + worklet lifecycle. Sends ephemeral GrainEventBatch messages.
  */
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private recorderNode: AudioWorkletNode | null = null;
+  private recording = false;
+  private recordLeft: Float32Array[] = [];
+  private recordRight: Float32Array[] = [];
+  private stopWaiters: Array<() => void> = [];
   private bank: SpectralBank | null = null;
   private started = false;
   private stats: AudioStats | null = null;
@@ -59,6 +71,10 @@ export class AudioEngine {
     );
   }
 
+  get isRecording(): boolean {
+    return this.recording;
+  }
+
   get contextState(): string {
     return this.ctx?.state ?? "none";
   }
@@ -75,14 +91,63 @@ export class AudioEngine {
     return this.stats;
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<RecordingResult | null> {
     this.started = false;
+    let result: RecordingResult | null = null;
+    if (this.recording) {
+      result = await this.stopRecording().catch(() => null);
+    }
     if (this.node) {
       this.node.port.postMessage({ type: "resetGrains" });
     }
     if (this.ctx && this.ctx.state === "running") {
       await this.ctx.suspend().catch(() => undefined);
     }
+    return result;
+  }
+
+  /** Capture the live stereo mix as PCM for a WAV download. */
+  startRecording(): void {
+    if (!this.isEnabled || !this.recorderNode || !this.ctx) {
+      throw new Error("Enable audio before recording");
+    }
+    if (this.recording) return;
+
+    this.recordLeft = [];
+    this.recordRight = [];
+    this.recording = true;
+    this.recorderNode.port.postMessage({ type: "start" });
+  }
+
+  /** Finalize PCM buffers into a 16-bit WAV blob. */
+  async stopRecording(): Promise<RecordingResult | null> {
+    if (!this.recording || !this.recorderNode || !this.ctx) {
+      this.recording = false;
+      return null;
+    }
+
+    const stopped = new Promise<void>((resolve) => {
+      this.stopWaiters.push(resolve);
+      // Safety timeout if the worklet never acknowledges.
+      setTimeout(resolve, 500);
+    });
+    this.recorderNode.port.postMessage({ type: "stop" });
+    await stopped;
+
+    const left = concatFloat32(this.recordLeft);
+    const right = concatFloat32(this.recordRight);
+    this.recordLeft = [];
+    this.recordRight = [];
+    this.recording = false;
+
+    if (left.length === 0) return null;
+
+    const blob = encodeWav(left, right, this.ctx.sampleRate);
+    return {
+      blob,
+      mimeType: "audio/wav",
+      extension: "wav",
+    };
   }
 
   clearGrains(): void {
@@ -104,8 +169,10 @@ export class AudioEngine {
           this.ctx = null;
         }
         this.ctx = new AudioContext();
+        const bust = Date.now();
+        await this.ctx.audioWorklet.addModule(`/grain-processor.js?v=${bust}`);
         await this.ctx.audioWorklet.addModule(
-          `/grain-processor.js?v=${Date.now()}`,
+          `/recorder-processor.js?v=${bust}`,
         );
         this.node = new AudioWorkletNode(this.ctx, "grain-processor", {
           numberOfOutputs: 1,
@@ -129,7 +196,34 @@ export class AudioEngine {
             };
           }
         };
-        this.node.connect(this.ctx.destination);
+
+        this.recorderNode = new AudioWorkletNode(
+          this.ctx,
+          "recorder-processor",
+          {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+            channelCount: 2,
+          },
+        );
+        this.recorderNode.port.onmessage = (ev) => {
+          const msg = ev.data;
+          if (msg?.type === "pcm") {
+            // Accept late flush chunks that arrive with the stop ack.
+            if (msg.left instanceof Float32Array) this.recordLeft.push(msg.left);
+            if (msg.right instanceof Float32Array) {
+              this.recordRight.push(msg.right);
+            }
+          } else if (msg?.type === "stopped") {
+            const waiters = this.stopWaiters.splice(0);
+            for (const w of waiters) w();
+          }
+        };
+
+        // grain → recorder (passthrough) → speakers
+        this.node.connect(this.recorderNode);
+        this.recorderNode.connect(this.ctx.destination);
       }
 
       if (this.ctx.state === "suspended") {
@@ -146,7 +240,11 @@ export class AudioEngine {
       }
     } catch (err) {
       this.started = false;
+      this.recording = false;
+      this.recordLeft = [];
+      this.recordRight = [];
       this.node = null;
+      this.recorderNode = null;
       if (this.ctx) {
         await this.ctx.close().catch(() => undefined);
         this.ctx = null;
