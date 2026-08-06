@@ -1,19 +1,21 @@
-Cellular Automata Granular Audio Engine — Creative Brief (V4 / V4.1)
+Cellular Automata Granular Audio Engine — Creative Brief (V4 … V4.3)
 Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
 Supersedes prior V3 identity mapping (X→sample / RGB→envelope).
 Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn architecture.
 Source: Sonic Laws session (2026-07-31); V4 listening remap (2026-08-01);
-        V4.1 Continuous Laws ear-validated (2026-08-02).
+        V4.1 Continuous Laws ear-validated (2026-08-02);
+        V4.2 Recognition & Coupling harness-verified (2026-08-04);
+        V4.3 Loudness / Spend / Stasis harness-green (2026-08-05)
+        — PENDING owner listening validation (see V4.3 section + Filter OPEN ISSUES).
 
 ------------------------------------------------------------------------------
-HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-02)
+HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-05)
 ------------------------------------------------------------------------------
 
-Branch `v4.1` is the current mainline (Continuous Laws). Prior branches (`v4`,
-`v3`, …) and lattice code live in git history / `public/_obsolete/` — do not
-revive them.
+Agent entry: `Implementation Filter.txt` (pipeline, STOP list, OPEN ISSUES).
+North star: this Brief. Historical gates: `scripts/v4.3-implementation-log.md`.
 
-Identity (listening-validated):
+Identity (listening-validated V4.1; V4.2/V4.3 character pending ears):
 
   Hue(RGB) → sample position (centroid-ordered LUT) · saturation → window width
   X → stereo pan · Y → spectrum (per-grain bandpass) · envelope from κ/δ order
@@ -31,8 +33,11 @@ DO NOT continue or refine:
 - Reviving X→sample / RGB→envelope without a new listening decision
 - Reviving the 48-bin offline spectral bank
 - Doppler / velocity→grain rate (pitch offsets beyond ±1)
+- Caps that prevent a pool from spending its area share (loudness policy)
+- Treating CHAOS_EVENTS_MAX_HZ as a mix knob (CPU rail only)
 
-Next work is fine-tuning negotiable constants — not architectural rewrites.
+Next work: owner listening + negotiable fine-tune (especially live chaos
+balance via deltaRateNorm) — not architectural rewrites.
 
 
 ------------------------------------------------------------------------------
@@ -148,9 +153,18 @@ One-sentence axiom:
    - Coherent region: similar colour, slow changing, with measurable area A,
      centre of mass (x̄, ȳ), mean change δ̄, mean coherence κ̄, bounding
      width/height, and COM velocity from smoothed COM motion.
-   - Chaotic area: low κ / high δ — treated as a bag of cells (no meaningful
-     centre-follow requirement); chaos grains spawn δ-weighted so change is
-     the event.
+   - Chaotic area: genuinely changing (smoothed δ above stasis threshold)
+     — treated as a bag of cells (no meaningful centre-follow requirement);
+     chaos grains spawn δ-weighted so change is the event.
+   - Textured area (V4.2): spatially dissimilar but temporally stable —
+     static detail is NOT chaos. Heard as few long overlapping grains whose
+     identity diversity carries the texture. A frozen universe sounds still.
+   - Oscillator groups (V4.2): cells whose colour repeats with a confirmed
+     period (2..8 steps) are structure, not noise. Grouped by period,
+     re-derived every frame; excluded from calm/texture/chaos bags.
+
+   δ is spatially averaged (3×3) before regime decisions so single-cell
+   speckle cannot masquerade as chaos.
 
    Regions are re-derived each frame with smoothing. They are measurements,
    not voice owners. Do not score “interestingness” or prefer one regime.
@@ -431,6 +445,116 @@ Ear-validated on branch `v4.1`. Proposal doc retired (history in git).
 
 Negotiable constants: SCHED DUR_*/ATT_*/REL_*/Q_*/WINDOW_HALF_*_S; SEAM_FADE_SEC;
 FILT_FMIN/FMAX; CENTROID_HOP_SEC; worklet NORM_* / TARGET_RMS.
+
+
+------------------------------------------------------------------------------
+V4.2 Recognition & Coupling — IMPLEMENTED (2026-08-04, pending listening)
+------------------------------------------------------------------------------
+
+Harness-verified against synthetic ground-truth scenarios
+(scripts/investigate-scenarios.mjs, `npm run verify`); ear validation by the
+owner is still outstanding. Motivating findings: a frozen noise field read as
+100% chaos firing 67 grains/s; per-grain bandpass gain scaled with Q (+18 dB
+at Q=8), breaking loudness neutrality.
+
+Laws added or clarified:
+
+1. Three regimes, two axes. Change (δ) and spatial similarity (s) are
+   independent measurements. Calm = similar + stable. Textured = dissimilar
+   + stable (few long grains; diversity heard in material, not event rate).
+   Chaotic = actually changing. Stasis must sound like stasis.
+
+2. Chaos rate is pure change. Chaos spawn rate ∝ δ̄ with NO idle floor
+   (δ̄→0 → silence). Concurrency follows area share / duration.
+   CHAOS_EVENTS_MAX_HZ is a CPU rail only (not a mix ceiling) — V4.3 clarified.
+
+3. Oscillators are structure with a period. Confirmed periodic cells form
+   period groups; grains fire in bursts phase-locked to the visual period
+   (short grains ≈ 0.8 × period so the pulse stays a pulse). Groups are
+   measurements re-derived each frame — not owned voices, not rhythm
+   aesthetics; the CA sets the tempo.
+
+4. Sonic time follows CA time (inter-grain scrub). Each calm region / the
+   texture pool advances a scrub offset ∝ δ̄ (up to SCRUB_RATE_MAX file-
+   seconds per second). Newly spawned grains read hue-centre + offset;
+   living grains never move their window. Freeze-at-spawn is untouched:
+   the forbidden thing remains modulating the sample scrub window of a
+   playing grain.
+
+5. Q is purity, not loudness. The per-grain bandpass is unity-gain at its
+   centre frequency; κ→Q shapes spectral focus only. (Bug fix elevated to
+   law: nothing but neutrality may set loudness.)
+
+6. Declicked physicality. Voice overload forces a ~3 ms release and drops
+   the incoming event (a dropped grain is inaudible; a click is not).
+   Reset fades before clearing voices. Grain windows have an absolute
+   minimum width (WINDOW_HALF_ABS_MIN_S).
+
+Verification infrastructure (keep alive):
+
+- src/field/TestPatterns.ts — synthetic ground-truth states (uniform, hue
+  drift, frozen noise, checkerboard, half/half, moving bars, blinkers,
+  breathing, gradient, merging blobs, gliders, flicker).
+- scripts/investigate-scenarios.mjs --stage N — machine-checked expectations
+  per scenario; wired into `npm run verify`. Do not weaken assertions to
+  make changes pass.
+- Sim selector in the UI runs any pattern through the live pipeline so
+  known truths can be listened to, with Calm/Static/Chaos/Osc % meters.
+
+Negotiable constants added: FIELD_OBS chaosDeltaMin / osc*; SCHED
+CHAOS_EVENTS_MAX_HZ / SCRUB_RATE_MAX / textureMaxConcurrent /
+WINDOW_HALF_ABS_MIN_S / RHYTHM_DIP / rhythmConfidence (raised to reject
+quantisation-drift artifacts) / oscBurstMax / oscPhaseEma.
+
+Listening validation checklist (owner): calm-vs-chaos balance after the
+unity-gain fix; normaliser feel (NORM_ATTACK 0.06); texture drone character
+on real settled CA states; oscillator pulse musicality on blinker patterns;
+time-stretch audibility on evolving simulations; Reset/overload declicks.
+
+
+------------------------------------------------------------------------------
+V4.3 Loudness / Spend / Stasis — IMPLEMENTED (2026-08-05, pending listening)
+------------------------------------------------------------------------------
+
+Harness-green: `npm run verify` (investigate stage 9 + render stage 7).
+Detail: `scripts/v4.3-implementation-log.md`. Agent map: Implementation Filter.
+
+Laws clarified or added:
+
+1. Neutrality is measured, not assumed. Filter bandwidth is compensated
+   (Q_REF / bpGain); envelope energy is normalised after attack/release
+   rescale. Source spectrum is not compensated. Primary loudness measure for
+   equal-power stereo is total power √mean(L²+R²) — not mono fold-down.
+
+2. Area share is spent, not merely allocated. Concurrent grain count tracks
+   area share. CHAOS_EVENTS_MAX_HZ is a CPU rail (4000), never a mix control.
+   Caps that stop a pool reaching its share are loudness policy in disguise.
+
+3. Two axes, two consequences. timeOrder (stability + extent) → duration and
+   envelope; spatial similarity → Q. Still-and-uniform and still-and-detailed
+   must differ in material at matched loudness (mean-Q gate: frozen 1.32 vs
+   uniform 8.00 — character is ear-only).
+
+4. Sampling must not manufacture change. Calm/texture spawn sites are
+   stratified and dispersion-weighted from measured colourSpread; circular
+   concentration anchors (SPAWN_ANCHOR_R_MIN). Sites are re-derived every
+   frame — not listening posts, never owned. Chaos/osc stay random.
+
+5. Cold-start: first FrameObserver ingest after reset primes both buffers so
+   δ starts at zero (no black-frame burst).
+
+6. Chaos character: short end of the law is percussive (ATT_MIN 0.02,
+   REL_CHAOS 0.98, DUR_MIN 0.03); calm end stays sustained. Osc/blinker
+   envelope left at 0.04/0.2.
+
+OPEN — do not "fix" from saturated-δ harness alone (see Filter):
+
+- Live chaos thinness: chaosPackRateHz × clamp01(δ̄/0.35) under-spends at
+  δ≈0.1. Lever: deltaRateNorm / that scale term. Measure on real Utomata.
+- Whether frozen-noise vs uniform-static read as different materials.
+- Whether short chaos reads as clicks; whether blinkers still sound right.
+
+Proposed doctrine lines above (1–4) are for owner adopt/reject after listening.
 
 
 ------------------------------------------------------------------------------

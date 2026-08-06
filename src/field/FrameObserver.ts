@@ -36,19 +36,24 @@ export class FrameObserver {
       return false;
     }
 
+    // First ingest after construction/reset: write into both buffers so the
+    // first observed δ is exactly zero (no burst against a black previous).
+    if (this.lastStep === -1) {
+      writeRgba(this.current, imgData, n);
+      this.previous.r.set(this.current.r);
+      this.previous.g.set(this.current.g);
+      this.previous.b.set(this.current.b);
+      this.lastStep = step;
+      return true;
+    }
+
     this.lastStep = step;
 
     const tmp = this.previous;
     this.previous = this.current;
     this.current = tmp;
 
-    const { r, g, b } = this.current;
-    for (let i = 0; i < n; i++) {
-      const o = i * 4;
-      r[i] = imgData[o]! / 255;
-      g[i] = imgData[o + 1]! / 255;
-      b[i] = imgData[o + 2]! / 255;
-    }
+    writeRgba(this.current, imgData, n);
     return true;
   }
 
@@ -73,4 +78,18 @@ function createField(width: number, height: number): RgbField {
     g: new Float32Array(n),
     b: new Float32Array(n),
   };
+}
+
+function writeRgba(
+  field: RgbField,
+  imgData: Uint8ClampedArray,
+  n: number,
+): void {
+  const { r, g, b } = field;
+  for (let i = 0; i < n; i++) {
+    const o = i * 4;
+    r[i] = imgData[o]! / 255;
+    g[i] = imgData[o + 1]! / 255;
+    b[i] = imgData[o + 2]! / 255;
+  }
 }

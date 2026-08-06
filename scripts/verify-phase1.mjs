@@ -85,7 +85,7 @@ async function runtimeCheck() {
     }
   });
 
-  // Hold blob steady across two observes so δ drops and κ rises.
+  // Hold blob steady so δ EMA decays below chaosDeltaMin (static → textured).
   const obs = new FieldObserver(w, h);
   obs.observe(cur, prev);
   const still = {
@@ -95,7 +95,7 @@ async function runtimeCheck() {
     g: cur.g.slice(),
     b: cur.b.slice(),
   };
-  for (let t = 0; t < 8; t++) {
+  for (let t = 0; t < 24; t++) {
     obs.observe(still, still);
   }
   const out = obs.observation;
@@ -104,8 +104,51 @@ async function runtimeCheck() {
     "calm blob area is substantial",
     out.coherent.some((r) => r.area >= FIELD_OBS.minRegionArea),
   );
-  assert("chaotic remainder non-empty", out.chaotic.area > 0);
-  assert("fractions sum ~1", Math.abs(out.calmAreaFraction + out.chaosAreaFraction - 1) < 0.02);
+  // V4.2 Phase 4: static noisy surround is textured, not chaotic.
+  assert(
+    "static noisy surround is textured (not chaotic)",
+    out.textured.area > 0 && out.chaotic.area === 0,
+  );
+  assert(
+    "fractions sum ~1",
+    Math.abs(
+      out.calmAreaFraction +
+        out.chaosAreaFraction +
+        (out.texturedAreaFraction ?? 0) -
+        1,
+    ) < 0.02,
+  );
+
+  // Flickering surround: regenerate noise each observe → true chaos.
+  const flickerObs = new FieldObserver(w, h);
+  let flickerPrev = field((r, g, b, i) => {
+    r[i] = 0.1;
+    g[i] = 0.1;
+    b[i] = 0.1;
+  });
+  for (let t = 0; t < 10; t++) {
+    const flickerCur = field((r, g, b, i) => {
+      const x = i % w;
+      const y = (i / w) | 0;
+      const inBlob = x >= 8 && x < 20 && y >= 8 && y < 20;
+      if (inBlob) {
+        r[i] = 0.2;
+        g[i] = 0.55;
+        b[i] = 0.85;
+      } else {
+        const seed = (t + 1) * 9973 + i * 17;
+        r[i] = ((seed * 31) % 97) / 97;
+        g[i] = ((seed * 57) % 89) / 89;
+        b[i] = ((seed * 13) % 83) / 83;
+      }
+    });
+    flickerObs.observe(flickerCur, flickerPrev);
+    flickerPrev = flickerCur;
+  }
+  assert(
+    "flickering surround is chaotic",
+    flickerObs.observation.chaotic.area > 0,
+  );
   assert("region has COM and bounds", out.coherent[0].width >= 1 && out.coherent[0].height >= 1);
   assert(
     "region has fillRatio in (0,1]",

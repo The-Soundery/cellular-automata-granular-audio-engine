@@ -70,6 +70,27 @@ body,
   image-rendering: auto !important;
 }
 
+.pattern-preview {
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.controls select {
+  width: 100%;
+  background: #0a100e;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+}
+
 .controls {
   display: flex;
   flex-direction: column;

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "verify": "node scripts/verify-phase0.mjs && node scripts/verify-phase1.mjs && node scripts/verify-phase2.mjs && node scripts/verify-phase4.mjs"
+    "verify": "node scripts/verify-phase0.mjs && node scripts/verify-phase1.mjs && node scripts/verify-phase2.mjs && node scripts/verify-phase4.mjs && node scripts/investigate-scenarios.mjs --stage 9 && node scripts/render-scenarios.mjs --stage 7",
+    "scenarios": "node scripts/investigate-scenarios.mjs --stage 9",
+    "render": "node scripts/render-scenarios.mjs --stage 7"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

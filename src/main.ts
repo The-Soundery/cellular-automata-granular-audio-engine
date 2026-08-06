@@ -11,6 +11,11 @@ import {
   MASTER_GAIN,
   type GrainEventBatch,
 } from "./field/GrainScheduler.ts";
+import {
+  fillRgba,
+  getTestPattern,
+  type TestPattern,
+} from "./field/TestPatterns.ts";
 import { AudioEngine, type RecordingResult } from "./audio/AudioEngine.ts";
 import { mountControls, type AudioMeterStats } from "./ui/controls.ts";
 import { RegionOverlay } from "./ui/RegionOverlay.ts";
@@ -40,6 +45,16 @@ const fieldObserver = new FieldObserver(GRID_SIZE, GRID_SIZE);
 const scheduler = new GrainScheduler();
 const audio = new AudioEngine();
 
+const patternCanvas = document.createElement("canvas");
+patternCanvas.width = GRID_SIZE;
+patternCanvas.height = GRID_SIZE;
+patternCanvas.className = "pattern-preview";
+patternCanvas.hidden = true;
+caWrap.appendChild(patternCanvas);
+const patternCtx = patternCanvas.getContext("2d")!;
+const patternImage = patternCtx.createImageData(GRID_SIZE, GRID_SIZE);
+const patternRgba = patternImage.data;
+
 (window as unknown as {
   __fieldObserver: FieldObserver;
   __grainScheduler: GrainScheduler;
@@ -57,6 +72,40 @@ let lastMeterUiAt = 0;
 let smoothMeter: AudioMeterStats | null = null;
 let overlayVisible = true;
 let defaultSourcePromise: Promise<void> | null = null;
+/** null = live Utomata; else active synthetic pattern. */
+let activePattern: TestPattern | null = null;
+let patternPaused = false;
+let syntheticStep = 0;
+let syntheticAccSec = 0;
+let lastTickMs = performance.now();
+
+function clearPipeline(): void {
+  frameObserver.reset();
+  fieldObserver.reset();
+  scheduler.reset();
+  audio.clearGrains();
+  lastObservedStep = -1;
+  lastObs = null;
+  lastBatch = null;
+  overlay.clear();
+}
+
+function pushFieldThroughPipeline(step: number): void {
+  lastObservedStep = step;
+  lastObs = fieldObserver.observe(
+    frameObserver.current,
+    frameObserver.previous,
+  );
+  lastBatch = scheduler.step(
+    lastObs,
+    frameObserver.current,
+    performance.now(),
+    audio.getBank()?.durationSec,
+  );
+  if (audio.isReady) {
+    audio.sendEvents(lastBatch);
+  }
+}
 
 function ema(prev: number, next: number, a = METER_EMA): number {
   return prev + (next - prev) * a;
@@ -102,17 +151,45 @@ const controls = mountControls(controlsMount, {
     host.applyEquation(eq);
   },
   onReset() {
-    host.reset();
-    frameObserver.reset();
-    fieldObserver.reset();
-    scheduler.reset();
-    audio.clearGrains();
-    lastObservedStep = -1;
-    lastObs = null;
-    lastBatch = null;
-    overlay.clear();
+    if (activePattern) {
+      syntheticStep = 0;
+      syntheticAccSec = 0;
+      clearPipeline();
+    } else {
+      host.reset();
+      clearPipeline();
+    }
+  },
+  onSelectSimSource(id) {
+    if (id === "utomata" || id === "") {
+      activePattern = null;
+      patternPaused = false;
+      patternCanvas.hidden = true;
+      syntheticStep = 0;
+      syntheticAccSec = 0;
+      clearPipeline();
+      host.play();
+      controls.setPaused(false);
+      return;
+    }
+    const pattern = getTestPattern(id);
+    if (!pattern) return;
+    activePattern = pattern;
+    patternPaused = false;
+    patternCanvas.hidden = false;
+    host.pause();
+    // The pattern clock is running — Pause button controls it, not Utomata.
+    controls.setPaused(false);
+    syntheticStep = 0;
+    syntheticAccSec = 0;
+    clearPipeline();
   },
   onTogglePause() {
+    if (activePattern) {
+      patternPaused = !patternPaused;
+      if (!patternPaused) syntheticAccSec = 0;
+      return patternPaused;
+    }
     return host.togglePause();
   },
   onPrevVariation() {
@@ -283,7 +360,7 @@ function pushStats(forceMeter = false) {
 
   if (due || forceMeter || !audio.isReady) {
     controls.setStats({
-      step: host.getStep(),
+      step: activePattern ? syntheticStep : host.getStep(),
       fps: host.getFps(),
       energy: lastObs?.meanDelta ?? 0,
       audio: audioStatus,
@@ -293,9 +370,19 @@ function pushStats(forceMeter = false) {
             regions: lastObs.coherent.length,
             calmPct: lastObs.calmAreaFraction,
             chaosPct: lastObs.chaosAreaFraction,
+            staticPct: lastObs.texturedAreaFraction,
+            oscPct:
+              lastObs.oscillators.reduce((sum, g) => sum + g.area, 0) /
+              (lastObs.width * lastObs.height),
             meanKappa: lastObs.meanCoherence,
             calmGrains: lastBatch?.calmActive ?? 0,
             chaosGrains: lastBatch?.chaosActive ?? 0,
+            textureGrains: lastBatch?.textureActive ?? 0,
+            oscGrains: lastBatch?.oscActive ?? 0,
+            shareCalm: lastBatch?.shares.calm ?? 0,
+            shareTexture: lastBatch?.shares.texture ?? 0,
+            shareChaos: lastBatch?.shares.chaos ?? 0,
+            shareOsc: lastBatch?.shares.osc ?? 0,
             budget: lastBatch?.budget ?? scheduler.budget,
             predictedActive: lastBatch?.predictedActive ?? 0,
           }
@@ -306,32 +393,43 @@ function pushStats(forceMeter = false) {
 }
 
 function tick() {
-  const step = host.getStep();
+  const now = performance.now();
+  const dtSec = Math.min(0.1, (now - lastTickMs) / 1000);
+  lastTickMs = now;
 
-  if (step !== lastObservedStep) {
-    let img: Uint8ClampedArray;
-    try {
-      img = host.getImgData();
-    } catch {
-      requestAnimationFrame(tick);
-      return;
+  if (activePattern && !patternPaused) {
+    syntheticAccSec += dtSec;
+    const stepSec = 1 / 30;
+    while (syntheticAccSec >= stepSec) {
+      syntheticAccSec -= stepSec;
+      syntheticStep += 1;
+      fillRgba(
+        activePattern,
+        patternRgba,
+        GRID_SIZE,
+        GRID_SIZE,
+        syntheticStep,
+      );
+      patternCtx.putImageData(patternImage, 0, 0);
+      const advanced = frameObserver.ingest(patternRgba, syntheticStep);
+      if (advanced) {
+        pushFieldThroughPipeline(syntheticStep);
+      }
     }
+  } else {
+    const step = host.getStep();
+    if (step !== lastObservedStep) {
+      let img: Uint8ClampedArray;
+      try {
+        img = host.getImgData();
+      } catch {
+        requestAnimationFrame(tick);
+        return;
+      }
 
-    const advanced = frameObserver.ingest(img, step);
-    if (advanced) {
-      lastObservedStep = step;
-      lastObs = fieldObserver.observe(
-        frameObserver.current,
-        frameObserver.previous,
-      );
-      lastBatch = scheduler.step(
-        lastObs,
-        frameObserver.current,
-        performance.now(),
-        audio.getBank()?.durationSec,
-      );
-      if (audio.isReady) {
-        audio.sendEvents(lastBatch);
+      const advanced = frameObserver.ingest(img, step);
+      if (advanced) {
+        pushFieldThroughPipeline(step);
       }
     }
   }

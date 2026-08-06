@@ -27,6 +27,16 @@ export const FIELD_OBS = {
   idMinIoU: 0.08,
   /** EMA for region COM velocity. */
   velocityEma: 0.35,
+  /** Smoothed δ below this is stasis, not chaos; quantisation noise is ~0.007. */
+  chaosDeltaMin: 0.045,
+  /** Max oscillator period (steps) tested ascending. */
+  oscPeriodMax: 8,
+  /** RGB match epsilon for period-p frame compare. */
+  oscMatchEps: 0.06,
+  /** EMA δ must exceed this for a cell to be tested as oscillating. */
+  oscDeltaMin: 0.08,
+  /** Confirmed when streak ≥ oscConfirmCycles × period. */
+  oscConfirmCycles: 2,
 } as const;
 
 export interface CoherentRegion {
@@ -35,14 +45,25 @@ export interface CoherentRegion {
   /** Centre of mass (toroidal), continuous coords. */
   comX: number;
   comY: number;
+  /**
+   * Circular concentration (mean resultant length) of members about each axis.
+   * 1 = tightly localised, 0 = spread evenly round the torus, where the COM in
+   * that axis carries no information about where the mass is.
+   */
+  comConcX: number;
+  comConcY: number;
   /** Cells / step, EMA-smoothed after region matching. */
   velX: number;
   velY: number;
   meanDelta: number;
   meanCoherence: number;
+  /** Mean per-cell spatial similarity (spectral axis for material law). */
+  meanSimilarity: number;
   meanR: number;
   meanG: number;
   meanB: number;
+  /** RMS RGB distance of member cells from the region mean (internal diversity). */
+  colourSpread: number;
   /** Axis-aligned extent relative to COM (toroidal-aware). */
   minX: number;
   maxX: number;
@@ -60,26 +81,59 @@ export interface ChaoticArea {
   area: number;
   meanDelta: number;
   meanCoherence: number;
+  /** Mean per-cell spatial similarity (spectral axis for material law). */
+  meanSimilarity: number;
   /** Max per-cell δ in the bag (for δ-weighted chaos spawn). */
   maxDelta: number;
   cells: Uint32Array;
 }
 
+/** Dissimilar but stable remainder — static texture, not temporal chaos. */
+export interface TexturedArea {
+  area: number;
+  meanDelta: number;
+  meanCoherence: number;
+  /** Mean per-cell spatial similarity (spectral axis for material law). */
+  meanSimilarity: number;
+  meanR: number;
+  meanG: number;
+  meanB: number;
+  /** RMS RGB distance of member cells from the bag mean (internal diversity). */
+  colourSpread: number;
+  cells: Uint32Array;
+}
+
+/** Confirmed periodic cells grouped by period (re-derived every frame). */
+export interface OscillatorGroup {
+  period: number;
+  area: number;
+  cells: Uint32Array;
+  meanR: number;
+  meanG: number;
+  meanB: number;
+  meanDelta: number;
+}
+
 export interface FieldObservation {
   width: number;
   height: number;
-  /** Per-cell smoothed rate of change δ. */
+  /** Per-cell EMA rate of change δ (raw). */
   delta: Float32Array;
+  /** Spatially smoothed δ (3×3 box) used for stability / regime split. */
+  deltaSmooth: Float32Array;
   /** Per-cell local colour similarity s ∈ [0,1]. */
   similarity: Float32Array;
   /** Per-cell coherence κ = s × stability. */
   coherence: Float32Array;
   coherent: CoherentRegion[];
   chaotic: ChaoticArea;
+  textured: TexturedArea;
+  oscillators: OscillatorGroup[];
   meanDelta: number;
   meanCoherence: number;
   calmAreaFraction: number;
   chaosAreaFraction: number;
+  texturedAreaFraction: number;
 }
 
 type PrevRegion = {
@@ -102,12 +156,22 @@ export class FieldObserver {
   readonly width: number;
   readonly height: number;
   private readonly delta: Float32Array;
+  private readonly deltaSmooth: Float32Array;
   private readonly similarity: Float32Array;
   private readonly coherence: Float32Array;
   private readonly calmMask: Uint8Array;
   private readonly prevCalm: Uint8Array;
+  private readonly oscMask: Uint8Array;
+  private readonly oscPeriod: Uint8Array;
+  private readonly oscStreak: Uint16Array;
   private readonly labels: Int32Array;
   private readonly queue: Uint32Array;
+  private readonly histLen: number;
+  private readonly histR: Float32Array[];
+  private readonly histG: Float32Array[];
+  private readonly histB: Float32Array[];
+  private histWrite = 0;
+  private histCount = 0;
   private prevRegions: PrevRegion[] = [];
   private nextRegionId = 1;
   private primed = false;
@@ -118,16 +182,25 @@ export class FieldObserver {
     this.height = height;
     const n = width * height;
     this.delta = new Float32Array(n);
+    this.deltaSmooth = new Float32Array(n);
     this.similarity = new Float32Array(n);
     this.coherence = new Float32Array(n);
     this.calmMask = new Uint8Array(n);
     this.prevCalm = new Uint8Array(n);
+    this.oscMask = new Uint8Array(n);
+    this.oscPeriod = new Uint8Array(n);
+    this.oscStreak = new Uint16Array(n);
     this.labels = new Int32Array(n);
     this.queue = new Uint32Array(n);
+    this.histLen = FIELD_OBS.oscPeriodMax + 1;
+    this.histR = Array.from({ length: this.histLen }, () => new Float32Array(n));
+    this.histG = Array.from({ length: this.histLen }, () => new Float32Array(n));
+    this.histB = Array.from({ length: this.histLen }, () => new Float32Array(n));
     this.last = emptyObservation(
       width,
       height,
       this.delta,
+      this.deltaSmooth,
       this.similarity,
       this.coherence,
     );
@@ -139,11 +212,22 @@ export class FieldObserver {
 
   reset(): void {
     this.delta.fill(0);
+    this.deltaSmooth.fill(0);
     this.similarity.fill(0);
     this.coherence.fill(0);
     this.calmMask.fill(0);
     this.prevCalm.fill(0);
+    this.oscMask.fill(0);
+    this.oscPeriod.fill(0);
+    this.oscStreak.fill(0);
     this.labels.fill(-1);
+    this.histWrite = 0;
+    this.histCount = 0;
+    for (let h = 0; h < this.histLen; h++) {
+      this.histR[h]!.fill(0);
+      this.histG[h]!.fill(0);
+      this.histB[h]!.fill(0);
+    }
     this.prevRegions = [];
     this.nextRegionId = 1;
     this.primed = false;
@@ -151,6 +235,7 @@ export class FieldObserver {
       this.width,
       this.height,
       this.delta,
+      this.deltaSmooth,
       this.similarity,
       this.coherence,
     );
@@ -183,12 +268,14 @@ export class FieldObserver {
     }
     meanDelta /= n;
 
+    blurDelta3x3(this.delta, this.deltaSmooth, w, h);
+
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
         const s = localSimilarity(current, x, y, w, h);
         this.similarity[i] = s;
-        const stability = 1 - clamp01(this.delta[i]! / deltaNorm);
+        const stability = 1 - clamp01(this.deltaSmooth[i]! / deltaNorm);
         const kappa = s * stability;
         this.coherence[i] = kappa;
         meanKappa += kappa;
@@ -196,8 +283,12 @@ export class FieldObserver {
     }
     meanKappa /= n;
 
+    this.pushHistory(current);
+    this.updateOscillators(current);
+    const oscillators = this.buildOscillatorGroups(current);
+
     const coherent = this.extractRegions(current);
-    const chaotic = this.buildChaotic(coherent);
+    const { chaotic, textured } = this.buildRemainder(coherent, current);
     const calmCells = coherent.reduce((sum, r) => sum + r.area, 0);
 
     this.prevCalm.set(this.calmMask);
@@ -206,14 +297,18 @@ export class FieldObserver {
       width: w,
       height: h,
       delta: this.delta,
+      deltaSmooth: this.deltaSmooth,
       similarity: this.similarity,
       coherence: this.coherence,
       coherent,
       chaotic,
+      textured,
+      oscillators,
       meanDelta,
       meanCoherence: meanKappa,
       calmAreaFraction: calmCells / n,
       chaosAreaFraction: chaotic.area / n,
+      texturedAreaFraction: textured.area / n,
     };
     return this.last;
   }
@@ -229,7 +324,12 @@ export class FieldObserver {
     for (let i = 0; i < n; i++) {
       const k = this.coherence[i]!;
       const wasCalm = this.prevCalm[i] === 1;
-      this.calmMask[i] = wasCalm ? (k >= exit ? 1 : 0) : k >= enter ? 1 : 0;
+      // Confirmed oscillators are structure — exclude from calm regions.
+      if (this.oscMask[i]) {
+        this.calmMask[i] = 0;
+      } else {
+        this.calmMask[i] = wasCalm ? (k >= exit ? 1 : 0) : k >= enter ? 1 : 0;
+      }
       this.labels[i] = -1;
     }
 
@@ -251,6 +351,7 @@ export class FieldObserver {
       let sumYSin = 0;
       let sumD = 0;
       let sumK = 0;
+      let sumS = 0;
       let sumR = 0;
       let sumG = 0;
       let sumB = 0;
@@ -266,8 +367,9 @@ export class FieldObserver {
         sumXSin += Math.sin(angX);
         sumYCos += Math.cos(angY);
         sumYSin += Math.sin(angY);
-        sumD += this.delta[i]!;
+        sumD += this.deltaSmooth[i]!;
         sumK += this.coherence[i]!;
+        sumS += this.similarity[i]!;
         sumR += current.r[i]!;
         sumG += current.g[i]!;
         sumB += current.b[i]!;
@@ -312,11 +414,19 @@ export class FieldObserver {
         ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w;
       const comY =
         ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h;
+      const comConcX = Math.hypot(sumXCos, sumXSin) / area;
+      const comConcY = Math.hypot(sumYCos, sumYSin) / area;
+
+      const avgR = sumR / area;
+      const avgG = sumG / area;
+      const avgB = sumB / area;
 
       let minDx = 0;
       let maxDx = 0;
       let minDy = 0;
       let maxDy = 0;
+      // Second pass: extents and colour spread both need the finished means.
+      let sumSpreadSq = 0;
       for (let c = 0; c < cellBuf.length; c++) {
         const i = cellBuf[c]!;
         const x = i % w;
@@ -332,7 +442,17 @@ export class FieldObserver {
           if (dy < minDy) minDy = dy;
           if (dy > maxDy) maxDy = dy;
         }
+        const cd = rgbDelta(
+          current.r[i]!,
+          current.g[i]!,
+          current.b[i]!,
+          avgR,
+          avgG,
+          avgB,
+        );
+        sumSpreadSq += cd * cd;
       }
+      const colourSpread = Math.sqrt(sumSpreadSq / area);
 
       const width = Math.max(1, maxDx - minDx + 1);
       const height = Math.max(1, maxDy - minDy + 1);
@@ -348,13 +468,17 @@ export class FieldObserver {
         area,
         comX,
         comY,
+        comConcX,
+        comConcY,
         velX: 0,
         velY: 0,
         meanDelta: sumD / area,
         meanCoherence: sumK / area,
-        meanR: sumR / area,
-        meanG: sumG / area,
-        meanB: sumB / area,
+        meanSimilarity: sumS / area,
+        meanR: avgR,
+        meanG: avgG,
+        meanB: avgB,
+        colourSpread,
         minX,
         maxX,
         minY,
@@ -438,6 +562,20 @@ export class FieldObserver {
     }));
   }
 
+  /**
+   * Partition non-calm cells into chaotic (changing) vs textured (static detail).
+   * `buildChaotic` name retained for verify regex / history.
+   */
+  private buildRemainder(
+    coherent: CoherentRegion[],
+    current: RgbField,
+  ): { chaotic: ChaoticArea; textured: TexturedArea } {
+    return {
+      chaotic: this.buildChaotic(coherent),
+      textured: this.buildTextured(coherent, current),
+    };
+  }
+
   private buildChaotic(coherent: CoherentRegion[]): ChaoticArea {
     const n = this.width * this.height;
     const inCalm = new Uint8Array(n);
@@ -447,16 +585,20 @@ export class FieldObserver {
       }
     }
 
+    const chaosMin = FIELD_OBS.chaosDeltaMin;
     const cells: number[] = [];
     let sumD = 0;
     let sumK = 0;
+    let sumS = 0;
     let maxDelta = 0;
     for (let i = 0; i < n; i++) {
-      if (inCalm[i]) continue;
+      if (inCalm[i] || this.oscMask[i]) continue;
+      const d = this.deltaSmooth[i]!;
+      if (d < chaosMin) continue;
       cells.push(i);
-      const d = this.delta[i]!;
       sumD += d;
       sumK += this.coherence[i]!;
+      sumS += this.similarity[i]!;
       if (d > maxDelta) maxDelta = d;
     }
     const area = cells.length;
@@ -464,9 +606,198 @@ export class FieldObserver {
       area,
       meanDelta: area ? sumD / area : 0,
       meanCoherence: area ? sumK / area : 0,
+      meanSimilarity: area ? sumS / area : 0,
       maxDelta,
       cells: Uint32Array.from(cells),
     };
+  }
+
+  private buildTextured(
+    coherent: CoherentRegion[],
+    current: RgbField,
+  ): TexturedArea {
+    const n = this.width * this.height;
+    const inCalm = new Uint8Array(n);
+    for (const r of coherent) {
+      for (let i = 0; i < r.cells.length; i++) {
+        inCalm[r.cells[i]!] = 1;
+      }
+    }
+
+    const chaosMin = FIELD_OBS.chaosDeltaMin;
+    const cells: number[] = [];
+    let sumD = 0;
+    let sumK = 0;
+    let sumS = 0;
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    for (let i = 0; i < n; i++) {
+      if (inCalm[i] || this.oscMask[i]) continue;
+      const d = this.deltaSmooth[i]!;
+      if (d >= chaosMin) continue;
+      cells.push(i);
+      sumD += d;
+      sumK += this.coherence[i]!;
+      sumS += this.similarity[i]!;
+      sumR += current.r[i]!;
+      sumG += current.g[i]!;
+      sumB += current.b[i]!;
+    }
+    const area = cells.length;
+    const avgR = area ? sumR / area : 0;
+    const avgG = area ? sumG / area : 0;
+    const avgB = area ? sumB / area : 0;
+
+    // Second pass: colour spread needs the finished bag mean.
+    let sumSpreadSq = 0;
+    for (let c = 0; c < cells.length; c++) {
+      const i = cells[c]!;
+      const cd = rgbDelta(
+        current.r[i]!,
+        current.g[i]!,
+        current.b[i]!,
+        avgR,
+        avgG,
+        avgB,
+      );
+      sumSpreadSq += cd * cd;
+    }
+
+    return {
+      area,
+      meanDelta: area ? sumD / area : 0,
+      meanCoherence: area ? sumK / area : 0,
+      meanSimilarity: area ? sumS / area : 0,
+      meanR: avgR,
+      meanG: avgG,
+      meanB: avgB,
+      colourSpread: area ? Math.sqrt(sumSpreadSq / area) : 0,
+      cells: Uint32Array.from(cells),
+    };
+  }
+
+  private pushHistory(current: RgbField): void {
+    const slot = this.histWrite;
+    this.histR[slot]!.set(current.r);
+    this.histG[slot]!.set(current.g);
+    this.histB[slot]!.set(current.b);
+    this.histWrite = (this.histWrite + 1) % this.histLen;
+    if (this.histCount < this.histLen) this.histCount += 1;
+  }
+
+  private frameAt(age: number): {
+    r: Float32Array;
+    g: Float32Array;
+    b: Float32Array;
+  } | null {
+    if (age < 0 || age >= this.histCount) return null;
+    const idx = (this.histWrite - 1 - age + this.histLen) % this.histLen;
+    return {
+      r: this.histR[idx]!,
+      g: this.histG[idx]!,
+      b: this.histB[idx]!,
+    };
+  }
+
+  private updateOscillators(current: RgbField): void {
+    const n = this.width * this.height;
+    const maxP = FIELD_OBS.oscPeriodMax;
+    const eps = FIELD_OBS.oscMatchEps;
+    const dMin = FIELD_OBS.oscDeltaMin;
+    const confirm = FIELD_OBS.oscConfirmCycles;
+    const cur = this.frameAt(0);
+    if (!cur || this.histCount < 3) {
+      this.oscMask.fill(0);
+      return;
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (this.delta[i]! <= dMin) {
+        // Inactive — decay streak.
+        if (this.oscStreak[i]! > 0) this.oscStreak[i]!--;
+        if (this.oscStreak[i] === 0) this.oscPeriod[i] = 0;
+        this.oscMask[i] = 0;
+        continue;
+      }
+
+      let matched = 0;
+      for (let p = 2; p <= maxP; p++) {
+        const past = this.frameAt(p);
+        if (!past) break;
+        const d = rgbDelta(
+          cur.r[i]!,
+          cur.g[i]!,
+          cur.b[i]!,
+          past.r[i]!,
+          past.g[i]!,
+          past.b[i]!,
+        );
+        if (d < eps) {
+          matched = p;
+          break;
+        }
+      }
+
+      if (matched > 0) {
+        if (this.oscPeriod[i] === matched) {
+          this.oscStreak[i]!++;
+        } else {
+          this.oscPeriod[i] = matched;
+          this.oscStreak[i] = 1;
+        }
+      } else {
+        if (this.oscStreak[i]! > 0) this.oscStreak[i]!--;
+        if (this.oscStreak[i] === 0) this.oscPeriod[i] = 0;
+      }
+
+      const p = this.oscPeriod[i]!;
+      const need = confirm * Math.max(1, p);
+      this.oscMask[i] = p > 0 && this.oscStreak[i]! >= need ? 1 : 0;
+    }
+
+    // Silence unused binding warning for current (history already pushed).
+    void current;
+  }
+
+  private buildOscillatorGroups(current: RgbField): OscillatorGroup[] {
+    const n = this.width * this.height;
+    const byPeriod = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      if (!this.oscMask[i]) continue;
+      const p = this.oscPeriod[i]!;
+      let list = byPeriod.get(p);
+      if (!list) {
+        list = [];
+        byPeriod.set(p, list);
+      }
+      list.push(i);
+    }
+    const groups: OscillatorGroup[] = [];
+    for (const [period, cells] of byPeriod) {
+      let sumR = 0;
+      let sumG = 0;
+      let sumB = 0;
+      let sumD = 0;
+      for (const i of cells) {
+        sumR += current.r[i]!;
+        sumG += current.g[i]!;
+        sumB += current.b[i]!;
+        sumD += this.deltaSmooth[i]!;
+      }
+      const area = cells.length;
+      groups.push({
+        period,
+        area,
+        cells: Uint32Array.from(cells),
+        meanR: sumR / area,
+        meanG: sumG / area,
+        meanB: sumB / area,
+        meanDelta: sumD / area,
+      });
+    }
+    groups.sort((a, b) => a.period - b.period);
+    return groups;
   }
 }
 
@@ -538,10 +869,33 @@ function localSimilarity(
   return 1 / (1 + meanVar * 8);
 }
 
+/** One-pass 3×3 toroidal box blur of per-cell δ. */
+function blurDelta3x3(
+  src: Float32Array,
+  dst: Float32Array,
+  w: number,
+  h: number,
+): void {
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = (y + dy + h) % h;
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = (x + dx + w) % w;
+          sum += src[ny * w + nx]!;
+        }
+      }
+      dst[y * w + x] = sum / 9;
+    }
+  }
+}
+
 function emptyObservation(
   width: number,
   height: number,
   delta: Float32Array,
+  deltaSmooth: Float32Array,
   similarity: Float32Array,
   coherence: Float32Array,
 ): FieldObservation {
@@ -549,6 +903,7 @@ function emptyObservation(
     width,
     height,
     delta,
+    deltaSmooth,
     similarity,
     coherence,
     coherent: [],
@@ -556,12 +911,26 @@ function emptyObservation(
       area: width * height,
       meanDelta: 0,
       meanCoherence: 0,
+      meanSimilarity: 0,
       maxDelta: 0,
       cells: new Uint32Array(0),
     },
+    textured: {
+      area: 0,
+      meanDelta: 0,
+      meanCoherence: 0,
+      meanSimilarity: 0,
+      meanR: 0,
+      meanG: 0,
+      meanB: 0,
+      colourSpread: 0,
+      cells: new Uint32Array(0),
+    },
+    oscillators: [],
     meanDelta: 0,
     meanCoherence: 0,
     calmAreaFraction: 0,
     chaosAreaFraction: 1,
+    texturedAreaFraction: 0,
   };
 }

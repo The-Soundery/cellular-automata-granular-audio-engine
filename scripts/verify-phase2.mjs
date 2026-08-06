@@ -79,8 +79,8 @@ assert(
 );
 assert("overlap scales with κ", /meanCoherence/.test(schedSrc) && /0\.35 \+ 0\.65/.test(schedSrc));
 assert("calm packing rate", /calmPackRateHz|calmPackRateMin/.test(schedSrc));
-assert("calmPackRateMin widened for δ tracking", /calmPackRateMin:\s*0\.5/.test(schedSrc));
-assert("maxCalmConcurrent raised", /maxCalmConcurrent:\s*8/.test(schedSrc));
+assert("calmPackRateMin widened for δ tracking", /calmPackRateMin:\s*1\.0/.test(schedSrc));
+assert("maxCalmConcurrent raised", /maxCalmConcurrent:\s*64/.test(schedSrc));
 assert(
   "continuous envelope fracs on spawn",
   /attackFrac/.test(schedSrc) && /ATT_MIN/.test(schedSrc) && /ATT_MAX/.test(schedSrc),
@@ -106,7 +106,10 @@ assert(
 );
 assert("no latticeIndex in worklet", !/latticeIndex/.test(worklet));
 assert("no paintGrain lattice loop", !/paintGrain/.test(worklet));
-assert("UI budget meters", /st-budget/.test(controls) && /Calm g/.test(controls));
+assert(
+  "UI budget meters",
+  /st-budget/.test(controls) && /st-spend/.test(controls),
+);
 assert("UI sonic laws hint", /hue→sample|pan\/Y follow/.test(controls));
 
 async function runtimeScheduler() {
@@ -125,7 +128,7 @@ async function runtimeScheduler() {
   }
 
   const { FieldObserver } = fieldMod;
-  const { GrainScheduler, GRAIN_BUDGET } = schedMod;
+  const { GrainScheduler, GRAIN_BUDGET, SCHED } = schedMod;
   const w = 32;
   const h = 32;
   const n = w * h;
@@ -189,7 +192,7 @@ async function runtimeScheduler() {
             typeof e.sampleHalf === "number" &&
             e.sampleHalf > 0 &&
             e.durationSec >= 0.03 &&
-            e.durationSec <= 2.2 &&
+            e.durationSec <= 8.0 &&
             typeof e.q === "number" &&
             e.q > 0
           )
@@ -198,10 +201,10 @@ async function runtimeScheduler() {
         }
         if (
           !(
-            e.attackFrac >= 0.04 &&
+            e.attackFrac >= 0.02 &&
             e.attackFrac <= 0.3 &&
-            e.releaseFrac >= 0.12 &&
-            e.releaseFrac <= 0.34
+            e.releaseFrac >= 0.34 &&
+            e.releaseFrac <= 0.98
           )
         ) {
           envOk = false;
@@ -212,7 +215,7 @@ async function runtimeScheduler() {
         if (
           !(
             e.durationSec >= 0.03 &&
-            e.durationSec <= 2.2 &&
+            e.durationSec <= 8.0 &&
             typeof e.sampleCenter === "number" &&
             typeof e.q === "number"
           )
@@ -221,10 +224,10 @@ async function runtimeScheduler() {
         }
         if (
           !(
-            e.attackFrac >= 0.04 &&
+            e.attackFrac >= 0.02 &&
             e.attackFrac <= 0.3 &&
-            e.releaseFrac >= 0.12 &&
-            e.releaseFrac <= 0.34
+            e.releaseFrac >= 0.34 &&
+            e.releaseFrac <= 0.98
           )
         ) {
           envOk = false;
@@ -270,21 +273,35 @@ async function runtimeScheduler() {
 
   // Mostly-calm with a thin chaotic strip: chaos concurrent must stay near area share
   // (no leftover-budget donate + no 0.15 rate floor inflation).
-  const strip = makeField((r, g, b, i) => {
-    const y = (i / w) | 0;
-    if (y < 3) {
-      r[i] = ((i * 17) % 97) / 97;
-      g[i] = ((i * 31) % 89) / 89;
-      b[i] = ((i * 13) % 83) / 83;
-    } else {
-      r[i] = 0.2;
-      g[i] = 0.55;
-      b[i] = 0.85;
+  // V4.2: strip must flicker — static noise is textured, not chaotic.
+  function fillStrip(field, t) {
+    for (let i = 0; i < n; i++) {
+      const y = (i / w) | 0;
+      if (y < 3) {
+        const seed = (t + 1) * 9973 + i * 17;
+        field.r[i] = ((seed * 31) % 97) / 97;
+        field.g[i] = ((seed * 57) % 89) / 89;
+        field.b[i] = ((seed * 13) % 83) / 83;
+      } else {
+        field.r[i] = 0.2;
+        field.g[i] = 0.55;
+        field.b[i] = 0.85;
+      }
     }
-  });
+  }
+  const strip = makeField(() => {});
+  const stripPrev = makeField(() => {});
+  fillStrip(stripPrev, 0);
+  fillStrip(strip, 1);
   const stripFo = new FieldObserver(w, h);
-  stripFo.observe(strip, prev);
-  for (let t = 0; t < 12; t++) stripFo.observe(strip, strip);
+  stripFo.observe(strip, stripPrev);
+  for (let t = 0; t < 12; t++) {
+    stripPrev.r.set(strip.r);
+    stripPrev.g.set(strip.g);
+    stripPrev.b.set(strip.b);
+    fillStrip(strip, t + 2);
+    stripFo.observe(strip, stripPrev);
+  }
   const stripObs = stripFo.observation;
   const chaosShareCap = Math.max(
     1,
@@ -358,9 +375,19 @@ async function runtimeScheduler() {
     const batch = fullChaosSched.step(chaosFo.observation, a, now4);
     if (batch.chaosActive > peakFullChaos) peakFullChaos = batch.chaosActive;
   }
+  // Area-share fill under the δ-proportional rate scale (t = δ̄/deltaRateNorm).
+  // CPU rail must not bind; concurrency ≈ share × t when duration is short.
+  const deltaT = Math.min(
+    1,
+    Math.max(0, chaosObs.chaotic.meanDelta / SCHED.deltaRateNorm),
+  );
+  const chaosShareFloor = Math.max(
+    8,
+    Math.floor(GRAIN_BUDGET * chaosObs.chaosAreaFraction * deltaT * 0.85),
+  );
   assert(
-    `full-chaos concurrent fills share (peak ${peakFullChaos} ≥ 16)`,
-    peakFullChaos >= 16,
+    `full-chaos concurrent fills area share (peak ${peakFullChaos} ≥ ${chaosShareFloor}, δ̄=${chaosObs.chaotic.meanDelta.toFixed(3)} t=${deltaT.toFixed(2)})`,
+    peakFullChaos >= chaosShareFloor,
   );
 
   // Region tracks carry COM + grid size; calm grains carry spawn offset for direct follow.

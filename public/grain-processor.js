@@ -15,8 +15,8 @@ const GAIN_SMOOTH = 0.05;
 const TARGET_RMS = 0.12;
 const NORM_MIN = 0.25;
 const NORM_MAX = 3.0;
-/** Per-block coeffs: fast protect / slow recover. */
-const NORM_ATTACK = 0.25;
+/** Per-block coeffs: ~12 ms duck at 48 kHz/128 — fast enough to protect, slow enough not to pump. */
+const NORM_ATTACK = 0.06;
 const NORM_RELEASE = 0.004;
 const PRESCALE_SMOOTH = NORM_RELEASE;
 const BUDGET_VOICES = 64;
@@ -30,6 +30,14 @@ const FILT_FMIN = 80;
 const FILT_FMAX = 12000;
 /** Fallback Q when spawn omits q (scheduler always sends continuous q). */
 const Q_DEFAULT = 2.0;
+/** Reference Q for bandwidth-compensated gain — keeps absolute level familiar. */
+const Q_REF = 2.0;
+/** Reference cutoff for bandwidth-compensated gain (geometric centre of the Y range). */
+const FC_REF = Math.sqrt(FILT_FMIN * FILT_FMAX); // ≈ 980 Hz
+/** 0 = no cutoff-bandwidth compensation, 1 = full. Negotiable. */
+const SPECTRAL_TILT_COMP = 1.0;
+/** ∫₀¹ smoothstep(t)² dt — mean-square of attack/release ramp. */
+const ENV_RAMP_MS = 0.3714285714;
 
 class GrainVoice {
   constructor() {
@@ -73,6 +81,9 @@ class GrainVoice {
     this.a1 = 0;
     this.a2 = 0;
     this.a3 = 0;
+    this.k = 1;
+    this.bpGain = 1 / Q_REF;
+    this.envNorm = 1;
     this.sounding = false;
   }
 }
@@ -95,6 +106,8 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.statsEnergy = 0;
     this.statsSamples = 0;
     this.rrCursor = 0;
+    this.pendingResetBlocks = 0;
+    this.savedMasterGainTarget = 1;
 
     this.port.onmessage = (ev) => {
       const msg = ev.data;
@@ -107,20 +120,23 @@ class GrainProcessor extends AudioWorkletProcessor {
       } else if (msg.type === "events") {
         this.masterGainTarget =
           typeof msg.masterGain === "number" ? msg.masterGain : 1;
+        this.savedMasterGainTarget = this.masterGainTarget;
         this.spawnEvents(msg.events || []);
         if (msg.tracks && msg.tracks.length) this.applyTracks(msg.tracks);
       } else if (msg.type === "track") {
         if (msg.tracks && msg.tracks.length) this.applyTracks(msg.tracks);
       } else if (msg.type === "resetGrains" || msg.type === "resetVoices") {
+        // Fade master gain then clear voices — avoid instant silence click.
+        this.savedMasterGainTarget = this.masterGainTarget;
         this.masterGainTarget = 0;
-        this.masterGain = 0;
-        for (const v of this.voices) v.reset();
+        this.pendingResetBlocks = 10;
         this.statsTriggers = 0;
       } else if (msg.type === "clear") {
         this.pcm = null;
         this.length = 0;
         this.masterGainTarget = 0;
         this.masterGain = 0;
+        this.pendingResetBlocks = 0;
         for (const v of this.voices) v.reset();
       }
     };
@@ -148,13 +164,14 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.y = e.y || 0;
       voice.yNorm = clamp01(typeof e.yNorm === "number" ? e.yNorm : 0.5);
       voice.dir = e.direction < 0 ? -1 : 1;
-      voice.regime = e.regime === "calm" ? "calm" : "chaos";
+      // Unknown / texture / osc regimes use calm envelope defaults (not chaos).
+      voice.regime = e.regime === "chaos" ? "chaos" : e.regime || "calm";
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
       // Envelope shape frozen at spawn — not RGB-driven.
       const defA =
-        voice.regime === "calm" ? ENV_ATTACK_CALM : ENV_ATTACK_CHAOS;
+        voice.regime === "chaos" ? ENV_ATTACK_CHAOS : ENV_ATTACK_CALM;
       const defR =
-        voice.regime === "calm" ? ENV_RELEASE_CALM : ENV_RELEASE_CHAOS;
+        voice.regime === "chaos" ? ENV_RELEASE_CHAOS : ENV_RELEASE_CALM;
       voice.attackFrac = clamp01(
         typeof e.attackFrac === "number" ? e.attackFrac : defA,
       );
@@ -170,6 +187,11 @@ class GrainProcessor extends AudioWorkletProcessor {
       }
       voice.attackN = aN;
       voice.releaseN = rN;
+      // Envelope energy normalisation — after rescale so shape matches what plays.
+      const sustainN = Math.max(0, voice.duration - aN - rN);
+      const envMs =
+        (aN * ENV_RAMP_MS + sustainN + rN * ENV_RAMP_MS) / voice.duration;
+      voice.envNorm = 1 / Math.sqrt(Math.max(1e-6, envMs));
 
       voice.q = typeof e.q === "number" && e.q > 0 ? e.q : Q_DEFAULT;
 
@@ -217,7 +239,9 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.boundHi = voice.windowCenter + voice.windowHalf;
 
       // Start at midpoint of hue-locked window (frozen; no later chase).
-      voice.readPos = voice.windowCenter;
+      // readOffset ∈ [-1,1] decorrelates concurrent grains sharing a window.
+      const off = typeof e.readOffset === "number" ? e.readOffset : 0;
+      voice.readPos = voice.windowCenter + off * voice.windowHalf;
 
       this.updateFilterCoeffs(voice);
       this.statsTriggers++;
@@ -262,6 +286,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         return this.voices[idx];
       }
     }
+    // Overload: force ~3 ms release on oldest chaos voice; drop the incoming event.
     let oldest = null;
     let oldestAge = -1;
     for (const v of this.voices) {
@@ -270,7 +295,17 @@ class GrainProcessor extends AudioWorkletProcessor {
         oldest = v;
       }
     }
-    return oldest;
+    if (oldest && oldest.active) {
+      const releaseSamples = Math.max(
+        1,
+        Math.ceil(0.003 * this.sampleRate_),
+      );
+      const age = oldest.age;
+      oldest.duration = age + releaseSamples;
+      oldest.releaseN = releaseSamples;
+      if (oldest.attackN > age) oldest.attackN = Math.max(1, age);
+    }
+    return null;
   }
 
   updateFilterCoeffs(voice) {
@@ -293,6 +328,11 @@ class GrainProcessor extends AudioWorkletProcessor {
     voice.a1 = a1;
     voice.a2 = a2;
     voice.a3 = a3;
+    voice.k = k;
+    // Bandwidth compensation: through-RMS ∝ sqrt(fc/Q); flatten vs Q_REF/FC_REF.
+    voice.bpGain =
+      (Math.sqrt(q / Q_REF) / q) *
+      Math.pow(FC_REF / fc, 0.5 * SPECTRAL_TILT_COMP);
   }
 
   /** Analytic smoothstep envelope — no tables / no allocation. */
@@ -325,7 +365,7 @@ class GrainProcessor extends AudioWorkletProcessor {
     const v2 = voice.ic2eq + voice.a2 * voice.ic1eq + voice.a3 * v3;
     voice.ic1eq = 2 * v1 - voice.ic1eq;
     voice.ic2eq = 2 * v2 - voice.ic2eq;
-    return v1;
+    return v1 * voice.bpGain;
   }
 
   process(_inputs, outputs) {
@@ -385,7 +425,13 @@ class GrainProcessor extends AudioWorkletProcessor {
         const e = this.envelopeAt(voice);
         const raw = this.readPcm(voice.readPos);
         const band = this.bandpass(voice, raw);
-        const s = band * e * voice.amp * this.masterGain * this.preScale;
+        const s =
+          band *
+          e *
+          voice.envNorm *
+          voice.amp *
+          this.masterGain *
+          this.preScale;
 
         outL[i] += s * gL;
         if (outR !== outL) outR[i] += s * gR;
@@ -443,6 +489,19 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.statsSamples += n;
     this.blockCounter++;
     this.emitStats(sounding, active);
+
+    // After rendering a faded block, clear voices (reset was requested earlier).
+    // GAIN_SMOOTH alone leaves ~60% gain after 10 blocks; force a decisive
+    // decay so the hard clear lands below audibility (0.7^10 ≈ −31 dB).
+    if (this.pendingResetBlocks > 0) {
+      this.masterGain *= 0.7;
+      this.pendingResetBlocks -= 1;
+      if (this.pendingResetBlocks === 0) {
+        for (const v of this.voices) v.reset();
+        this.masterGain = 0;
+        this.masterGainTarget = 0;
+      }
+    }
     return true;
   }
 

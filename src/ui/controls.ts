@@ -1,4 +1,5 @@
 import { TYPE_U_SEED } from "../ca/typeU.ts";
+import { TEST_PATTERNS } from "../field/TestPatterns.ts";
 
 export interface ControlsHandlers {
   onApplyEquation: (eq: string) => void;
@@ -11,6 +12,7 @@ export interface ControlsHandlers {
   onToggleAudio: () => Promise<boolean>;
   onToggleRecord: () => Promise<boolean>;
   onToggleOverlay: () => boolean;
+  onSelectSimSource: (id: string) => void;
 }
 
 export interface AudioMeterStats {
@@ -26,9 +28,19 @@ export interface FieldMeterStats {
   regions: number;
   calmPct: number;
   chaosPct: number;
+  /** Textured / static fraction (Phase 4); optional until then. */
+  staticPct?: number;
+  /** Confirmed oscillator fraction (Phase 6). */
+  oscPct?: number;
   meanKappa: number;
   calmGrains: number;
   chaosGrains: number;
+  textureGrains?: number;
+  oscGrains?: number;
+  shareCalm?: number;
+  shareTexture?: number;
+  shareChaos?: number;
+  shareOsc?: number;
   budget: number;
   predictedActive: number;
 }
@@ -39,6 +51,7 @@ export interface ControlsApi {
   setAudioEnabled: (enabled: boolean) => void;
   setRecording: (recording: boolean) => void;
   setOverlayVisible: (visible: boolean) => void;
+  setSimSource: (id: string) => void;
   setStats: (s: {
     step: number;
     fps: number;
@@ -59,6 +72,15 @@ export function mountControls(
   root.className = "controls";
   root.innerHTML = `
     <div class="brand">CA Granular</div>
+    <label class="field">
+      <span>Sim</span>
+      <select id="sim-source">
+        <option value="utomata">Utomata (live CA)</option>
+        ${TEST_PATTERNS.map(
+          (p) => `<option value="${p.id}">${p.label}</option>`,
+        ).join("")}
+      </select>
+    </label>
     <label class="field">
       <span>Equation</span>
       <textarea id="eq" rows="3" spellcheck="false"></textarea>
@@ -95,11 +117,12 @@ export function mountControls(
       <dl class="stats stats-audio">
         <div><dt>Regions</dt><dd id="st-regions">—</dd></div>
         <div><dt>Calm %</dt><dd id="st-calm">—</dd></div>
+        <div><dt>Static %</dt><dd id="st-static">—</dd></div>
         <div><dt>Chaos %</dt><dd id="st-chaos">—</dd></div>
+        <div><dt>Osc %</dt><dd id="st-osc">—</dd></div>
         <div><dt>Mean κ</dt><dd id="st-kappa">—</dd></div>
         <div><dt>Budget</dt><dd id="st-budget">—</dd></div>
-        <div><dt>Calm g</dt><dd id="st-calm-g">—</dd></div>
-        <div><dt>Chaos g</dt><dd id="st-chaos-g">—</dd></div>
+        <div><dt>Spend</dt><dd id="st-spend">—</dd></div>
       </dl>
     </div>
     <div class="meter-block">
@@ -120,11 +143,16 @@ export function mountControls(
   parent.appendChild(root);
 
   const eqEl = root.querySelector("#eq") as HTMLTextAreaElement;
+  const simEl = root.querySelector("#sim-source") as HTMLSelectElement;
   const pauseBtn = root.querySelector("#pause") as HTMLButtonElement;
   const audioBtn = root.querySelector("#audio-toggle") as HTMLButtonElement;
   const recordBtn = root.querySelector("#record-toggle") as HTMLButtonElement;
   const overlayBtn = root.querySelector("#overlay-toggle") as HTMLButtonElement;
   eqEl.value = TYPE_U_SEED;
+
+  simEl.addEventListener("change", () => {
+    handlers.onSelectSimSource(simEl.value);
+  });
 
   root.querySelector("#apply")!.addEventListener("click", () => {
     handlers.onApplyEquation(eqEl.value);
@@ -196,6 +224,9 @@ export function mountControls(
     setOverlayVisible(visible: boolean) {
       overlayBtn.textContent = visible ? "Overlay: On" : "Overlay: Off";
     },
+    setSimSource(id: string) {
+      simEl.value = id;
+    },
     setStats(s) {
       (root.querySelector("#st-step") as HTMLElement).textContent = String(s.step);
       (root.querySelector("#st-fps") as HTMLElement).textContent =
@@ -208,29 +239,36 @@ export function mountControls(
       if (!f) {
         (root.querySelector("#st-regions") as HTMLElement).textContent = "—";
         (root.querySelector("#st-calm") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-static") as HTMLElement).textContent = "—";
         (root.querySelector("#st-chaos") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-osc") as HTMLElement).textContent = "—";
         (root.querySelector("#st-kappa") as HTMLElement).textContent = "—";
         (root.querySelector("#st-budget") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-calm-g") as HTMLElement).textContent = "—";
-        (root.querySelector("#st-chaos-g") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-spend") as HTMLElement).textContent = "—";
       } else {
         (root.querySelector("#st-regions") as HTMLElement).textContent = String(
           f.regions,
         );
         (root.querySelector("#st-calm") as HTMLElement).textContent =
           `${(f.calmPct * 100).toFixed(0)}%`;
+        (root.querySelector("#st-static") as HTMLElement).textContent =
+          typeof f.staticPct === "number"
+            ? `${(f.staticPct * 100).toFixed(0)}%`
+            : "—";
         (root.querySelector("#st-chaos") as HTMLElement).textContent =
           `${(f.chaosPct * 100).toFixed(0)}%`;
+        (root.querySelector("#st-osc") as HTMLElement).textContent =
+          typeof f.oscPct === "number"
+            ? `${(f.oscPct * 100).toFixed(0)}%`
+            : "—";
         (root.querySelector("#st-kappa") as HTMLElement).textContent =
           f.meanKappa.toFixed(3);
         (root.querySelector("#st-budget") as HTMLElement).textContent =
           `${f.predictedActive}/${f.budget}`;
-        (root.querySelector("#st-calm-g") as HTMLElement).textContent = String(
-          f.calmGrains,
-        );
-        (root.querySelector("#st-chaos-g") as HTMLElement).textContent = String(
-          f.chaosGrains,
-        );
+        const fmt = (a: number, s: number) =>
+          `${Math.round(a)}/${Math.round(s)}`;
+        (root.querySelector("#st-spend") as HTMLElement).textContent =
+          `c ${fmt(f.calmGrains, f.shareCalm ?? 0)} · s ${fmt(f.textureGrains ?? 0, f.shareTexture ?? 0)} · x ${fmt(f.chaosGrains, f.shareChaos ?? 0)} · o ${fmt(f.oscGrains ?? 0, f.shareOsc ?? 0)}`;
       }
 
       const m = s.meter;
