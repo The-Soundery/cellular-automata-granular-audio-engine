@@ -1,9 +1,23 @@
-Cellular Automata Granular Audio Engine — Implementation Filter (V4.1)
-Status: Sonic Laws LIVE + V4.1 Continuous Laws ear-validated (2026-08-02).
-North star: Creative Brief v4.txt (Sonic Laws + V4.1 amend).
-Branch: `v4.1` — ephemeral grains; perceptual hue→sample; X→pan; Y→per-grain bandpass.
-Verify: `npm run verify` + `scripts/listening-gate-sonic-laws.md` (re-run after big audio changes).
-Next: fine-tune negotiable constants — not architectural rewrites.
+Cellular Automata Granular Audio Engine — Implementation Filter (V4.3)
+Status: COMPLETE (harness-green 2026-08-05). Sonic Laws LIVE + V4.3 Loudness /
+  Spend / Stasis. Ear validation of V4.2/V4.3 character still outstanding — see
+  OPEN ISSUES below before "fixing" chaos level or material character.
+North star: Creative Brief v4.txt
+Entry for agents: this file first, then the Brief, then OPEN ISSUES.
+
+>> 2026-08-06: the V4.2/V4.3 ear validation has now been run. It found four
+>> defects and left six gate items untestable. The triage is in
+>> scripts/listening-gate-sonic-laws.md and the work order is
+>> IMPLEMENTATION_PLAN_V4.4.md — read its HANDOFF section before this file's
+>> OPEN ISSUES. OPEN ISSUE 1 below is SUPERSEDED: its δ ≈ 0.1 figure is wrong,
+>> live Utomata measures δ̄ 0.26–0.30. Plan phase 8a rewrites it. No engine
+>> code has changed yet.
+
+Historical detail: scripts/v4.3-implementation-log.md (do not re-execute the plan).
+Verify: `npm run build && npm run verify`
+  (= phase 0–4 scripts + investigate --stage 9 + render --stage 7)
+Manual ears: scripts/listening-gate-sonic-laws.md
+Scenarios: scripts/test-scenarios.md
 
 ------------------------------------------------------------------------------
 STOP — do not revive
@@ -18,30 +32,113 @@ STOP — do not revive
 - V3 identity (X→sample / RGB→envelope) without a new listening decision
 - 48-bin offline spectral bank (replaced by per-grain resonant bandpass)
 - Doppler / velocity→grain rate (pitch offsets beyond ±1) — rejected
+- Stratified spawn sites for calm/texture are sampling, not listening posts;
+  they are scoped to those two pools and must never be given persistence or
+  ownership. Do not apply stratification to chaos or osc.
+- Using mono fold-down `0.5*(L+R)` as the primary loudness measure — equal-power
+  pan makes centre grains read ~3 dB hot; primary RMS is sqrt(mean(L²+R²))
+- Treating CHAOS_EVENTS_MAX_HZ as a mix control — it is a CPU rail (4000) only;
+  concurrency comes from share / duration
+- Softening or deleting the segmentation ≤1 dB band to hide a meter bug
+- Re-asserting audio-domain Welch-mel flux ordering — at filled concurrency it
+  is near-backwards; event-domain Y/Q flux is the gate
 
 Archives (reference only): public/_obsolete/ (failed lattice path — do not revive)
+Superseded work orders (deleted from tree): IMPLEMENTATION_PLAN_V4.2/V4.3,
+  v4.2-implementation-log, audio-system-report — history lives in git + v4.3 log
+
+------------------------------------------------------------------------------
+OPEN ISSUES — read before changing chaos rate, Q, or material character
+------------------------------------------------------------------------------
+
+These are NOT harness failures. Automated gates are green. Do not "fix" them
+by fitting thresholds to saturated-δ test patterns.
+
+1. Chaos under-spend on real Utomata (δ ≈ 0.1)  — SUPERSEDED, see header.
+   The δ ≈ 0.1 premise is false. Measured live: chaos pool δ̄ 0.26–0.30,
+   t 0.75–0.87, under-spend ~1 dB not ~5 dB. Do not lower deltaRateNorm on
+   the strength of this entry. Retained verbatim below only so the correction
+   is traceable.
+   chaosPackRateHz multiplies by t = clamp01(meanDelta / 0.35).
+   Test patterns saturate δ so t = 1 and Gate 3 looks balanced. On real sims at
+   δ ≈ 0.1, t ≈ 0.29 → chaos spends under a third of its area share (~5 dB down).
+   Symptom: live CA chaos feels thin vs calm/texture despite area share meters.
+   Lever: SCHED.deltaRateNorm (0.35) and/or the t term in chaosPackRateHz.
+   Also serves as a bag crossfade — do not delete blindly. Measure on real
+   Utomata, not full-flicker / half-half.
+
+2. Frozen-and-detailed vs still-and-uniform character (complaint 3)
+   Headless: frozen-noise mean Q 1.32 < uniform-static 8.00 (PASS).
+   Open: whether they *read* as different materials to the ear at matched
+   loudness. Sim: frozen-noise vs uniform-static. If they sound the same,
+   spectralT→Q / material law needs listening, not a louder frozen field (D1).
+
+3. Percussive chaos + blinker envelope
+   Gate 5: rendered envelope crest +3.47 dB vs Phase 4; pool RMS ≤1 dB.
+   Open: do short chaos grains read as clicks not tones at listening level?
+   Osc/blinker envelope left at 0.04/0.2 on purpose — do not "harmonise".
+
+4. Creative Brief V4.3 doctrine addendum
+   Proposed text is in Creative Brief v4.txt (V4.3 section) and below. Owner
+   should accept/reject after listening — do not treat proposed lines as sacred
+   until then.
+
+5. Deferred: moving coherent structures (gliders as figure)
+   κ = similarity × stability → movers never form regions. Needs a fourth
+   regime. glider-swarm only improves via its calm background today (D3).
+
+6. Stage-5 chaos rate band is loose
+   full-flicker lower band 1200 Hz is ~44% below ideal 64/0.03 ≈ 2133.
+   Direct guard is avg active ∈ [55, 64]. A mild under-spend can hide in the
+   rate band — check concurrency first.
 
 ------------------------------------------------------------------------------
 Live pipeline
 ------------------------------------------------------------------------------
 
-Utomata → FrameObserver → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
-  → grain-processor (hue-locked wrap-aware window; per-grain bandpass; direct pan/Y follow;
-                     analytic envelope; asymmetric energy norm)
+Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
+  → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
+  → grain-processor (hue-locked window; bandwidth-compensated bandpass;
+                     envNorm after attack/release rescale; equal-power pan;
+                     direct pan/Y follow)
+
+Observation: calm / textured / chaotic / oscillators (remainder split).
+Scheduler: area-share concurrency; split material (timeOrder→dur/env,
+  spectralT→Q); stratified+dispersion sites (calm/texture); SPAWN_ANCHOR_R_MIN;
+  scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only.
+Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
+  mono 0.5*(L+R) reported secondary only.
 
 Key modules:
-- src/field/FieldObserver.ts — δ, s, κ, coherent regions, chaotic remainder (+ maxDelta)
-- src/field/GrainScheduler.ts — area-weighted budget, continuous material law, hue→sample LUT,
-                                region COM tracks
-- src/audio/spectral.ts — mono PCM + seam crossfade + centroid hue→sample LUT
-- public/grain-processor.js — ephemeral stereo playback + per-grain SVF + energy normalisation
-- src/ui/RegionOverlay.ts — region silhouettes + active grain dots (debug, not ears)
+- src/field/FieldObserver.ts, FrameObserver.ts, GrainScheduler.ts, TestPatterns.ts
+- src/audio/spectral.ts, public/grain-processor.js
+- src/ui/controls.ts (field % + active/share spend meter), RegionOverlay.ts
 
-Keep: src/ca/*, FrameObserver, spectral.ts, AudioEngine lifecycle, controls shell.
+Negotiable (not doctrine):
+- FIELD_OBS — chaosDeltaMin, osc_*, region colour eps, …
+- SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
+  REL_CHAOS 0.98, REL_CALM 0.34, Q_*, WINDOW_HALF_*,
+  maxCalmConcurrent/textureMaxConcurrent 64, calmPackRateMin 1.0,
+  CHAOS_EVENTS_MAX_HZ 4000, deltaRateNorm 0.35 (← chaos live-balance lever),
+  SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
+  SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
+- Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS
 
-Negotiable tuneables (not doctrine):
-- FIELD_OBS in FieldObserver.ts
-- SCHED / GRAIN_BUDGET in GrainScheduler.ts
-  (DUR_*/ATT_*/REL_*/Q_*/WINDOW_HALF_*_S, chaosPackRateMin, calmPackRateMin, rhythm_*)
-- SEAM_FADE_SEC / CENTROID_HOP_SEC / HUE_LUT_SIZE in spectral.ts
-- TARGET_RMS / NORM_* / FILT_FMIN/FMAX / MAX_GRAINS / ENV_* fallbacks in grain-processor.js
+Harnesses:
+- investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q)
+- render-scenarios.mjs — total-power RMS, crest, sites, block-RMS, cold-start;
+  audio flux reported not asserted
+
+------------------------------------------------------------------------------
+Proposed Brief addendum (pending owner listen / adopt)
+------------------------------------------------------------------------------
+
+- Neutrality is measured, not assumed. Any mapping axis that changes output
+  energy is a bug until proven flat. The engine compensates filter bandwidth;
+  it does not compensate the source spectrum.
+- Area share is spent, not merely allocated. Caps that prevent a pool from
+  reaching its share are loudness policy in disguise.
+- Two axes, two consequences: timeOrder → duration/envelope; similarity → Q.
+  That is what makes still-and-uniform ≠ still-and-detailed at matched level.
+- Sampling must not manufacture change. Stratified sites are re-derived every
+  frame from the measured area — not listening posts, never owned by a grain.
