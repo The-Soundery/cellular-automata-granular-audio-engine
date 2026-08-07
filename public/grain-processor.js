@@ -258,8 +258,8 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (const t of tracks) {
       if (typeof t.regionId !== "number") continue;
       byId.set(t.regionId, {
-        comX: t.comX ?? 0,
-        comY: t.comY ?? 0,
+        comX: t.anchorX ?? t.comX ?? 0,
+        comY: t.anchorY ?? t.comY ?? 0,
         w: Math.max(1, t.gridWidth || 1),
         h: Math.max(1, t.gridHeight || 1),
       });

@@ -141,7 +141,7 @@ export interface GrainSpawnEvent {
   releaseFrac: number;
   regime: GrainRegime;
   regionId: number;
-  /** Spawn offset from region COM (cells) — used for direct pan/Y follow. */
+  /** Spawn offset from region follow-anchor (cells) — used for direct pan/Y follow. */
   trackDx: number;
   trackDy: number;
   /**
@@ -156,8 +156,12 @@ export interface GrainSpawnEvent {
 /** Per-step region COM for direct pan/Y follow (no smoothing). */
 export interface RegionTrack {
   regionId: number;
+  /** True toroidal COM (kept for harness asserts; follow uses anchor). */
   comX: number;
   comY: number;
+  /** Spawn/follow anchor — grid centre when COM is meaningless in that axis. */
+  anchorX: number;
+  anchorY: number;
   gridWidth: number;
   gridHeight: number;
 }
@@ -319,10 +323,13 @@ export class GrainScheduler {
     }
 
     for (const region of obs.coherent) {
+      const anchor = regionAnchor(region, obs);
       tracks.push({
         regionId: region.id,
         comX: region.comX,
         comY: region.comY,
+        anchorX: anchor.x,
+        anchorY: anchor.y,
         gridWidth: obs.width,
         gridHeight: obs.height,
       });
@@ -389,6 +396,8 @@ export class GrainScheduler {
           slot,
           this.maskStamp,
           calmMaskStamp,
+          anchor.x,
+          anchor.y,
         );
         events.push(ev);
         this.active.push({
@@ -1030,6 +1039,22 @@ function wrap01(x: number): number {
   return ((x % 1) + 1) % 1;
 }
 
+/** Spawn/follow anchor: true COM when concentrated, else stable grid centre. */
+function regionAnchor(
+  region: CoherentRegion,
+  obs: FieldObservation,
+): { x: number; y: number } {
+  const x =
+    region.width >= obs.width || region.comConcX < SCHED.SPAWN_ANCHOR_R_MIN
+      ? (obs.width - 1) / 2
+      : region.comX;
+  const y =
+    region.height >= obs.height || region.comConcY < SCHED.SPAWN_ANCHOR_R_MIN
+      ? (obs.height - 1) / 2
+      : region.comY;
+  return { x, y };
+}
+
 function spawnCalm(
   region: CoherentRegion,
   obs: FieldObservation,
@@ -1043,6 +1068,8 @@ function spawnCalm(
   siteSlot = 0,
   mask: Uint32Array = EMPTY_MASK,
   maskStamp = 0,
+  anchorX = (obs.width - 1) / 2,
+  anchorY = (obs.height - 1) / 2,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -1054,21 +1081,6 @@ function spawnCalm(
     ci = cy * w + cx;
     readOffset = 0;
   } else {
-    // A region spread round the torus in an axis has no usable COM there: at
-    // full coverage the circular-mean sum is zero and atan2 returns noise, and
-    // just short of it the COM is set by the moving hole rather than by the
-    // mass. Any point on a torus is equivalent, so fall back to the grid
-    // centre, which is arbitrary but stable.
-    const anchorX =
-      region.width >= obs.width ||
-      region.comConcX < SCHED.SPAWN_ANCHOR_R_MIN
-        ? (obs.width - 1) / 2
-        : region.comX;
-    const anchorY =
-      region.height >= obs.height ||
-      region.comConcY < SCHED.SPAWN_ANCHOR_R_MIN
-        ? (obs.height - 1) / 2
-        : region.comY;
     // Shape-true: stratified slot site snapped onto the membership mask.
     const site = pickStratifiedSite(
       siteSlot,
@@ -1107,6 +1119,8 @@ function spawnCalm(
     scrubSec,
     readOffset,
     siteSlot,
+    anchorX,
+    anchorY,
   );
 }
 
@@ -1123,6 +1137,8 @@ function spawnCalmAt(
   scrubSec = 0,
   readOffset = 0,
   siteSlot = 0,
+  anchorX = (obs.width - 1) / 2,
+  anchorY = (obs.height - 1) / 2,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -1141,9 +1157,9 @@ function spawnCalmAt(
   );
   const sampleCenter = wrap01(lutCenter + scrubSec / bankDur);
 
-  // Toroidal offset from COM so pan/Y follow keeps relative placement in the mass.
-  const trackDx = toroidalOffset(cx, region.comX, w);
-  const trackDy = toroidalOffset(cy, region.comY, h);
+  // Offset from the same anchor used for spawn placement (not raw COM).
+  const trackDx = toroidalOffset(cx, anchorX, w);
+  const trackDy = toroidalOffset(cy, anchorY, h);
 
   return {
     x: cx,
