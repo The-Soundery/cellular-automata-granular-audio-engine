@@ -64,6 +64,8 @@ class GrainVoice {
     this.pan = 0;
     this.trackDx = 0;
     this.trackDy = 0;
+    /** Once set to ±1, pan holds at that extreme for the rest of the grain. */
+    this.panSaturated = 0;
     this.gainL = 1;
     this.gainR = 1;
     this.regime = "chaos";
@@ -204,6 +206,7 @@ class GrainProcessor extends AudioWorkletProcessor {
 
       voice.trackDx = typeof e.trackDx === "number" ? e.trackDx : 0;
       voice.trackDy = typeof e.trackDy === "number" ? e.trackDy : 0;
+      voice.panSaturated = 0;
       const pan =
         typeof e.pan === "number" ? Math.max(-1, Math.min(1, e.pan)) : 0;
       voice.pan = pan;
@@ -252,6 +255,11 @@ class GrainProcessor extends AudioWorkletProcessor {
    * Direct pan/Y follow: any voice with regionId snaps to COM + spawn offset.
    * Sample window stays frozen. No smoothing.
    */
+  /**
+   * Direct pan/Y follow: any voice with regionId snaps to anchor + spawn offset.
+   * Sample window stays frozen. No smoothing. Pan saturates at the torus seam
+   * instead of wrapping (avoids a one-frame +1→−1 flip).
+   */
   applyTracks(tracks) {
     /** @type {Map<number, {comX:number,comY:number,w:number,h:number}>} */
     const byId = new Map();
@@ -268,7 +276,18 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (!voice.active || voice.regionId < 0) continue;
       const t = byId.get(voice.regionId);
       if (!t) continue;
-      const x = wrapCoord(t.comX + voice.trackDx, t.w);
+      let x = t.comX + voice.trackDx;
+      if (voice.panSaturated < 0) {
+        x = 0;
+      } else if (voice.panSaturated > 0) {
+        x = t.w - 1;
+      } else if (x < 0) {
+        voice.panSaturated = -1;
+        x = 0;
+      } else if (x >= t.w) {
+        voice.panSaturated = 1;
+        x = t.w - 1;
+      }
       const y = wrapCoord(t.comY + voice.trackDy, t.h);
       voice.x = x;
       voice.y = y;
