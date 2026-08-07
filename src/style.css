@@ -60,6 +60,10 @@ body,
   image-rendering: crisp-edges;
 }
 
+.ca-wrap canvas[hidden] {
+  display: none;
+}
+
 .region-overlay {
   position: absolute !important;
   inset: 0;
