@@ -27,11 +27,13 @@ this one.
 
 H2. OPEN DECISIONS — the owner has NOT signed these off
 
-  D1. Replacing the four `checkDisp` range assertions in
-      `scripts/render-scenarios.mjs` with per-slot temporal stability
-      assertions. Phase 3 cannot start without this. The full argument for why
-      the existing assertion is wrong rather than inconvenient is in section
-      4a. Do not proceed by loosening the existing bound.
+  D1. SIGNED OFF by the owner 2026-08-07. Replacing the four `checkDisp` range
+      assertions in `scripts/render-scenarios.mjs` with per-slot temporal
+      stability assertions is approved, on the stated basis that the
+      replacement is strictly stronger. Phase 3 is unblocked. The approval
+      covers section 4b exactly and nothing else: do NOT loosen the existing
+      bound instead, and do NOT touch the assertions listed as "keep
+      unchanged" in 4b. If any of those fail, stop and report.
 
   D2. Q from region Y extent. Agreed in principle, deferred until after
       Phase 3, because it is meaningless while every grain spawns at the
@@ -363,7 +365,9 @@ Measured site sd 4.6/5.1 (section 1a). Pan lands inside ±0.15 and cutoff
 inside roughly 650–1470 Hz, so uniform fields read narrow, centred and
 spectrally thin.
 
->>> THIS PHASE IS BLOCKED ON OWNER SIGN-OFF. DO NOT PROCEED WITHOUT IT. <<<
+>>> SIGN-OFF GRANTED 2026-08-07. This phase is unblocked. The approval is for
+>>> the 4b replacement as written; it is not permission to adjust any other
+>>> assertion. R1 still applies to everything else. <<<
 
 4a. THE BLOCKING PROBLEM
 
@@ -744,16 +748,15 @@ not before.
 
     Phase 1  canvas hide            independent, do first (unblocks visual QA)
     Phase 2  COM anchor             independent
-    Phase 3  spawn dispersion       BLOCKED on owner sign-off (section 4a)
+    Phase 3  spawn dispersion       sign-off granted 2026-08-07, unblocked
     Phase 4  osc burst + duty       independent
     Phase 5  new sims               after 1 (needs reliable sim switching)
     Phase 6  overlay regimes        after 5 (new sims are what it visualises)
     Phase 7  per-pool meters        independent
     Phase 8  docs                   last
 
-Phases 1, 2, 4 and 7 can proceed immediately. Phase 3 waits for sign-off on
-replacing the four `checkDisp` range assertions with per-slot temporal
-stability assertions.
+All phases can proceed. Run them in the order listed; the only hard
+dependencies are 5-after-1 and 6-after-5.
 
 Final gate: `npm run build && npm run verify` green, then hand back to the
 owner for a full re-run of the listening gate.
