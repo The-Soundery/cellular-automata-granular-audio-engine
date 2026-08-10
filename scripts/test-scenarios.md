@@ -137,3 +137,55 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 - **Simulates:** Sparse gliders on a calm background.
 - **Audio:** background must not wander (dispersion ≤0.35/0.30).
 - **Assertions:** render stage 4 bg dispersion; investigate as available.
+
+## chaos-blob-2pct
+
+- **Simulates:** Uniform calm field + centred 18×18 (324 cells, 1.98%) of
+  fresh per-step random colour.
+- **Ground truth:** Chaos share rounds to 1; event rate ≈ share×t/duration ≈ 16/s
+  at saturated δ.
+- **Purpose:** Percussive-chaos question — does small-coverage chaos read as
+  discrete clicks? Listening instrument (V4.4); no verify assertions yet.
+
+## chaos-blob-10pct
+
+- **Simulates:** Same as 2pct with a 40×40 blob (1600 cells, 9.8%).
+- **Ground truth:** Chaos share 6; event rate ≈ 96/s — denser, expected to read
+  as a rattle not clicks.
+- **Purpose:** Bracket density arithmetic with chaos-blob-2pct. Listening
+  instrument (V4.4); no verify assertions yet.
+
+## hue-bands
+
+- **Simulates:** Eight static vertical bands, 16 columns each, band k at HSV
+  hue = k×0.02, sat 0.8, value 0.8.
+- **Ground truth:** Adjacent-band RGB distance vs `regionColourEps` (0.12)
+  decides whether bands merge or split.
+- **Purpose:** Read off where the colour gate actually splits calm masses.
+  Print RGB distance + region count; no verify assertions yet.
+
+## pulse-calm
+
+- **Simulates:** Uniform calm colour; every 30th step HSV value jumps for 2
+  steps then returns (period 1.0 s).
+- **Ground truth:** Period inside `rhythmMinSec`..`rhythmMaxSec` with a clear
+  dip for `RHYTHM_DIP`; expect detected periodSec ≈ 1.0 and confidence ≥ 0.72.
+- **Purpose:** "Pulsing calm can phase grain fires with visible change" —
+  breathing-uniform's 3 s period is out of range. Listening instrument (V4.4).
+
+## identity-quadrants
+
+- **Simulates:** Four static quadrants at matched luminance — left grey
+  (sat 0), right saturated; upper/lower halves.
+- **Ground truth:** Isolates identity axes — sat→window half-width, X→pan,
+  Y→cutoff — without loudness confounding.
+- **Purpose:** One-listen identity check. Listening instrument (V4.4).
+
+## osc-field
+
+- **Simulates:** Whole grid alternates between two distinct colours every step
+  (period 2).
+- **Ground truth:** One large period-2 oscillator group (~100% of field),
+  share ~55 — the pathological live case from the V4.4 baseline.
+- **Purpose:** Harness coverage for Phase 4's whole-share osc burst at the
+  extreme. Listening instrument (V4.4); pulse-mod assert applies when present.

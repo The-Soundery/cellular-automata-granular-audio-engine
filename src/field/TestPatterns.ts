@@ -365,6 +365,127 @@ export const TEST_PATTERNS: TestPattern[] = [
       }
     },
   },
+  {
+    id: "chaos-blob-2pct",
+    label: "Chaos blob 2%",
+    fill(field, step) {
+      fillUniform(field, 0.2, 0.55, 0.85);
+      const rng = mulberry32(71000 + step);
+      const { width: w, height: h } = field;
+      const bw = 18;
+      const bh = 18;
+      const x0 = ((w - bw) / 2) | 0;
+      const y0 = ((h - bh) / 2) | 0;
+      for (let y = y0; y < y0 + bh; y++) {
+        for (let x = x0; x < x0 + bw; x++) {
+          const i = y * w + x;
+          field.r[i] = rng();
+          field.g[i] = rng();
+          field.b[i] = rng();
+        }
+      }
+    },
+  },
+  {
+    id: "chaos-blob-10pct",
+    label: "Chaos blob 10%",
+    fill(field, step) {
+      fillUniform(field, 0.2, 0.55, 0.85);
+      const rng = mulberry32(72000 + step);
+      const { width: w, height: h } = field;
+      const bw = 40;
+      const bh = 40;
+      const x0 = ((w - bw) / 2) | 0;
+      const y0 = ((h - bh) / 2) | 0;
+      for (let y = y0; y < y0 + bh; y++) {
+        for (let x = x0; x < x0 + bw; x++) {
+          const i = y * w + x;
+          field.r[i] = rng();
+          field.g[i] = rng();
+          field.b[i] = rng();
+        }
+      }
+    },
+  },
+  {
+    id: "hue-bands",
+    label: "Hue bands (8)",
+    fill(field) {
+      const { width: w, height: h } = field;
+      const bandW = (w / 8) | 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const k = Math.min(7, (x / bandW) | 0);
+          const [r, g, b] = hsv2rgb(k * 0.02, 0.8, 0.8);
+          const i = y * w + x;
+          field.r[i] = r;
+          field.g[i] = g;
+          field.b[i] = b;
+        }
+      }
+    },
+  },
+  {
+    id: "pulse-calm",
+    label: "Pulse calm (1 Hz)",
+    fill(field, step) {
+      // Steady colour; every 30th step HSV value bumps for 2 steps then
+      // returns — period 1.0 s inside rhythmMinSec..rhythmMaxSec. The bump
+      // must stay below chaosDeltaMin after EMA so the calm region (and its
+      // rhythm clock) survive the impulse; a large jump wipes the field to
+      // chaos and deletes the clock.
+      const phase = ((step % 30) + 30) % 30;
+      const v = phase < 2 ? 0.58 : 0.5;
+      const [r, g, b] = hsv2rgb(0.58, 0.75, v);
+      fillUniform(field, r, g, b);
+    },
+  },
+  {
+    id: "identity-quadrants",
+    label: "Identity quadrants",
+    fill(field) {
+      // Matched Rec.709 luminance ≈ 0.55 so loudness stays out of the listen.
+      // Grey (s=0) vs saturated; upper vs lower half → cutoff; left/right → pan.
+      const { width: w, height: h } = field;
+      const midX = (w / 2) | 0;
+      const midY = (h / 2) | 0;
+      const grey = 0.55;
+      // Saturated red-orange and teal at Y≈0.55.
+      const satTR: [number, number, number] = [0.92, 0.48, 0.22];
+      const satBR: [number, number, number] = [0.18, 0.72, 0.62];
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          const upper = y < midY;
+          const left = x < midX;
+          let r: number;
+          let g: number;
+          let b: number;
+          if (left) {
+            r = grey;
+            g = grey;
+            b = grey;
+          } else if (upper) {
+            [r, g, b] = satTR;
+          } else {
+            [r, g, b] = satBR;
+          }
+          field.r[i] = r;
+          field.g[i] = g;
+          field.b[i] = b;
+        }
+      }
+    },
+  },
+  {
+    id: "osc-field",
+    label: "Oscillator field (period 2)",
+    fill(field, step) {
+      const on = step % 2 === 0;
+      if (on) fillUniform(field, 0.9, 0.25, 0.2);
+      else fillUniform(field, 0.2, 0.3, 0.9);
+    },
+  },
 ];
 
 /** Render a pattern step into an RGBA byte buffer (for the app path). */
