@@ -549,12 +549,33 @@ Laws clarified or added:
 
 OPEN — do not "fix" from saturated-δ harness alone (see Filter):
 
-- Live chaos thinness: chaosPackRateHz × clamp01(δ̄/0.35) under-spends at
-  δ≈0.1. Lever: deltaRateNorm / that scale term. Measure on real Utomata.
+- Live chaos thinness: CLOSED — measured δ̄ 0.26–0.30 → t 0.75–0.87 (~1 dB
+  under-spend), not the old δ≈0.1 / ~5 dB claim. Do not lower deltaRateNorm.
 - Whether frozen-noise vs uniform-static read as different materials.
 - Whether short chaos reads as clicks; whether blinkers still sound right.
+  Density brackets: chaos-blob-2pct / chaos-blob-10pct.
 
 Proposed doctrine lines above (1–4) are for owner adopt/reject after listening.
+
+
+------------------------------------------------------------------------------
+V4.4 — IMPLEMENTED (2026-08-10, pending listening re-pass)
+------------------------------------------------------------------------------
+
+Work order: IMPLEMENTATION_PLAN_V4.4.md. Harness-green after Phases 1–7.
+
+PROPOSED doctrine addenda (pending owner listen / adopt — same status as the
+V4.3 proposed lines):
+
+- Percussiveness is a coverage consequence, not an envelope setting.
+  Event rate is share ÷ duration, so spending a large area share always
+  produces a dense event stream. Chaos reads as discrete events only at
+  small coverage. Shortening grains raises the event rate and makes this
+  worse, not better.
+
+- For a pulsed pool the area share is spent AT THE PULSE. Peak concurrency
+  equals share; average concurrency is share × duty. A rhythm has silence
+  by definition, and that silence is not an unspent share.
 
 
 ------------------------------------------------------------------------------

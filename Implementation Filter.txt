@@ -9,9 +9,10 @@ Entry for agents: this file first, then the Brief, then OPEN ISSUES.
 >> defects and left six gate items untestable. The triage is in
 >> scripts/listening-gate-sonic-laws.md and the work order is
 >> IMPLEMENTATION_PLAN_V4.4.md — read its HANDOFF section before this file's
->> OPEN ISSUES. OPEN ISSUE 1 below is SUPERSEDED: its δ ≈ 0.1 figure is wrong,
->> live Utomata measures δ̄ 0.26–0.30. Plan phase 8a rewrites it. No engine
->> code has changed yet.
+>> OPEN ISSUES. OPEN ISSUE 1 below is CLOSED: live Utomata measures δ̄
+>> 0.26–0.30 (not δ ≈ 0.1). V4.4 Phases 1–7 implement the plan fixes and
+>> listening instruments; Phase 8 corrects these docs. Owner re-listen of the
+>> listening gate is still outstanding.
 
 Historical detail: scripts/v4.3-implementation-log.md (do not re-execute the plan).
 Verify: `npm run build && npm run verify`
@@ -54,18 +55,15 @@ OPEN ISSUES — read before changing chaos rate, Q, or material character
 These are NOT harness failures. Automated gates are green. Do not "fix" them
 by fitting thresholds to saturated-δ test patterns.
 
-1. Chaos under-spend on real Utomata (δ ≈ 0.1)  — SUPERSEDED, see header.
-   The δ ≈ 0.1 premise is false. Measured live: chaos pool δ̄ 0.26–0.30,
-   t 0.75–0.87, under-spend ~1 dB not ~5 dB. Do not lower deltaRateNorm on
-   the strength of this entry. Retained verbatim below only so the correction
-   is traceable.
-   chaosPackRateHz multiplies by t = clamp01(meanDelta / 0.35).
-   Test patterns saturate δ so t = 1 and Gate 3 looks balanced. On real sims at
-   δ ≈ 0.1, t ≈ 0.29 → chaos spends under a third of its area share (~5 dB down).
-   Symptom: live CA chaos feels thin vs calm/texture despite area share meters.
-   Lever: SCHED.deltaRateNorm (0.35) and/or the t term in chaosPackRateHz.
-   Also serves as a bag crossfade — do not delete blindly. Measure on real
-   Utomata, not full-flicker / half-half.
+1. Chaos under-spend on real Utomata — CLOSED (measured 2026-08-06).
+   The claim "on real sims at δ ≈ 0.1, t ≈ 0.29, chaos spends under a third
+   of its area share (~5 dB down)" does not hold. Measured across five live
+   Utomata runs the chaos pool sits at δ̄ 0.26–0.30, so t is 0.75–0.87 and the
+   under-spend is about 1 dB. Do not lower `deltaRateNorm` on the strength of
+   the old figure. UI now surfaces chaos δ̄ / t on the Field observation panel
+   (V4.4 Phase 7). Historical wrong premise retained only for traceability:
+   chaosPackRateHz multiplies by t = clamp01(meanDelta / 0.35); test patterns
+   saturate δ so t = 1.
 
 2. Frozen-and-detailed vs still-and-uniform character (complaint 3)
    Headless: frozen-noise mean Q 1.32 < uniform-static 8.00 (PASS).
@@ -76,7 +74,12 @@ by fitting thresholds to saturated-δ test patterns.
 3. Percussive chaos + blinker envelope
    Gate 5: rendered envelope crest +3.47 dB vs Phase 4; pool RMS ≤1 dB.
    Open: do short chaos grains read as clicks not tones at listening level?
-   Osc/blinker envelope left at 0.04/0.2 on purpose — do not "harmonise".
+   Density finding (V4.4): at ~60% chaos coverage the share ÷ duration
+   arithmetic forces roughly 600 events/s, which no envelope can make
+   discrete. Percussiveness is a coverage consequence — listen on
+   `chaos-blob-2pct` (share ~1–2, sparse) vs `chaos-blob-10pct` (share ~6–7,
+   denser rattle). Osc/blinker envelope left at 0.04/0.2 on purpose — do not
+   "harmonise". Blinker duty now OSC_DUTY 0.35 with whole-share bursts.
 
 4. Creative Brief V4.3 doctrine addendum
    Proposed text is in Creative Brief v4.txt (V4.3 section) and below. Owner
