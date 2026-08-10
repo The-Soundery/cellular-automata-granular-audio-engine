@@ -407,6 +407,17 @@ every frame of a frozen field.
       ACROSS FRAMES must be ≤ 0.01
   Spread ACROSS slots becomes unbounded.
 
+  AMENDED BY OWNER 2026-08-10: moving-bar is EXCLUDED from this assertion.
+  Its background mask has a moving hole (the bar), so slots near the bar's
+  path legitimately snap a few cells aside when it passes (measured max
+  per-slot pan sd ~0.02–0.03, e.g. x 83↔87 on the frames the bar crosses).
+  That is sound reacting to real field change, which the stasis law permits;
+  the check's premise (frozen field) does not hold on this sim. The real CA
+  never produces a fixed background — everything is one moving layer — so the
+  scenario is not representative of the case the check guards. The three
+  frozen-mask sims pass at sd exactly 0 and fully cover sampler stasis. Do
+  not re-add moving-bar here or widen its bound.
+
 This is stronger than the current check: it catches a region that wanders
 inside a narrow band, which passes 0.35 today. Follow the existing per-slot
 pattern already used for "frozen-noise per-slot sampleCenter spread ≤ 0.005".

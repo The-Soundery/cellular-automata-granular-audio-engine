@@ -309,6 +309,9 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
   let calmActiveSum = 0;
   let chaosActiveSum = 0;
   let textureActiveSum = 0;
+  /** Dominant-pool per-slot pan/yNorm series (temporal stability). */
+  /** @type {Map<number, {pans:number[], ys:number[]}>} */
+  const slotSeries = new Map();
 
   for (let step = 0; step < STEPS; step++) {
     const batch = steps[step];
@@ -321,6 +324,36 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
     });
     const rendered = renderBlocks(proc, BLOCKS_PER_STEP, mode);
     const stepIdx = step + 1;
+
+    // Slot stability is collected over the whole run so each slot can fire ≥2×
+    // (grain period ≈ 8 s; measure window alone is only 7 s).
+    {
+      let domKey = null;
+      let domArea = 0;
+      for (const r of batch.coherent) {
+        if (r.area > domArea) {
+          domArea = r.area;
+          domKey = r.id;
+        }
+      }
+      if (batch.texturedArea > 0 && batch.texturedArea > domArea) {
+        domKey = -2;
+      }
+      for (const e of batch.events) {
+        if (e.regime !== "calm" && e.regime !== "texture") continue;
+        if (typeof e.siteSlot !== "number") continue;
+        const poolKey = e.regime === "texture" ? -2 : e.regionId;
+        if (poolKey !== domKey) continue;
+        let s = slotSeries.get(e.siteSlot);
+        if (!s) {
+          s = { pans: [], ys: [] };
+          slotSeries.set(e.siteSlot, s);
+        }
+        s.pans.push(e.pan);
+        s.ys.push(e.yNorm);
+      }
+    }
+
     if (stepIdx >= MEASURE_FROM) {
       measureChunks.push(rendered.samples);
       measurePowerChunks.push(rendered.framePower);
@@ -416,6 +449,24 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
   const blockRmsStd = computeBlockRmsStdFromPower(totalPower, FS);
   const spectralFlux = meanSpectralFlux(totalSamples, FS);
 
+  let slotPanSdMax = 0;
+  let slotYSdMax = 0;
+  let slotMulti = 0;
+  for (const s of slotSeries.values()) {
+    if (s.pans.length < 2) continue;
+    slotMulti++;
+    const sd = (arr) => {
+      const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+      return Math.sqrt(
+        arr.reduce((acc, x) => acc + (x - m) ** 2, 0) / arr.length,
+      );
+    };
+    const panSd = sd(s.pans);
+    const ySd = sd(s.ys);
+    if (panSd > slotPanSdMax) slotPanSdMax = panSd;
+    if (ySd > slotYSdMax) slotYSdMax = ySd;
+  }
+
   return {
     pool,
     mode,
@@ -451,6 +502,9 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
       Number.isFinite(domYMin) && Number.isFinite(domYMax)
         ? domYMax - domYMin
         : 0,
+    slotPanSdMax,
+    slotYSdMax,
+    slotMulti,
     blockRmsStd,
     spectralFlux,
     eventsMeasured,
@@ -902,6 +956,9 @@ for (const pattern of TEST_PATTERNS) {
   console.log(
     `  sites      distinct calm+tex=${total.distinctSites}  largest-pool=${total.largestPoolSites}  blockRmsStd=${total.blockRmsStd.toFixed(2)} dB  spectralFlux=${total.spectralFlux.toFixed(4)}`,
   );
+  console.log(
+    `  slotStab   multi=${total.slotMulti}  maxPanSd=${total.slotPanSdMax.toFixed(4)}  maxYSd=${total.slotYSdMax.toFixed(4)}`,
+  );
   console.log("");
   results.set(pattern.id, { total, byPool, pattern });
 }
@@ -989,16 +1046,32 @@ console.log("");
       ? r.byPool.calm
       : r.byPool.texture;
   };
-  // Plan gate (i) names the *region*, not the pool: "moving-bar (bg region)",
-  // "glider-swarm (calm bg)". Measure the largest-area calm/texture pool per
-  // step — for single-region scenarios this is identical to the pool total.
-  const checkDisp = (id, panMax, yMax) => {
+  // Temporal stability per stratified slot (replaces range-bound checkDisp).
+  // Spread across slots is unbounded; a given slot must not wander.
+  const checkSlotStable = (id) => {
     const r = results.get(id);
     if (!r) return;
-    assertLe(4, id, `pan spread ≤${panMax}`, r.total.domPanSpread, panMax);
-    if (yMax != null) {
-      assertLe(4, id, `yNorm spread ≤${yMax}`, r.total.domYSpread, yMax);
-    }
+    assertGe(
+      4,
+      id,
+      "dominant-pool slots with ≥2 hits (stasis sample)",
+      r.total.slotMulti,
+      8,
+    );
+    assertLe(
+      4,
+      id,
+      "per-slot pan sd ≤0.01",
+      r.total.slotPanSdMax,
+      0.01,
+    );
+    assertLe(
+      4,
+      id,
+      "per-slot yNorm sd ≤0.01",
+      r.total.slotYSdMax,
+      0.01,
+    );
   };
   const checkDispMin = (id, panMin, yMin) => {
     const r = results.get(id);
@@ -1014,10 +1087,13 @@ console.log("");
     }
   };
 
-  checkDisp("uniform-static", 0.35, 0.3);
-  checkDisp("breathing-uniform", 0.35, 0.3);
-  checkDisp("glider-swarm", 0.35, 0.3);
-  checkDisp("moving-bar", 0.35, 0.3);
+  // moving-bar is deliberately excluded (owner decision 2026-08-10): its mask
+  // has a moving hole, so slots near the bar's path legitimately snap a few
+  // cells aside when it passes — sound reacting to real field change, not
+  // sampler wander. The three frozen-mask sims cover stasis exactly (sd 0).
+  checkSlotStable("uniform-static");
+  checkSlotStable("breathing-uniform");
+  checkSlotStable("glider-swarm");
   checkDispMin("frozen-noise", 0.7, 0.7);
   checkDispMin("gradient-static", 0.7, null);
 

@@ -94,8 +94,10 @@ export const SCHED = {
   SCRUB_RATE_MAX: 1.0,
   /** Colour spread at which spawn sites use the region's full extent. */
   SPAWN_SPREAD_FULL: 0.12,
-  /** Floor on spawn dispersion — a perfectly uniform region still breathes. */
-  SPAWN_SPREAD_MIN: 0.08,
+  /** Floor on spawn dispersion — at 0.5 the 2-sigma envelope
+   * (SPAWN_SLOT_Z_MAX) equals the region's half-extent, so a uniform region
+   * samples its full extent and no more. */
+  SPAWN_SPREAD_MIN: 0.5,
   /** Clamp on the per-slot Gaussian radius, in sigmas. */
   SPAWN_SLOT_Z_MAX: 2,
   /** Ring-search radius cap when a slot's target is outside the mask. */
