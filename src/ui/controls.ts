@@ -33,6 +33,11 @@ export interface FieldMeterStats {
   /** Confirmed oscillator fraction (Phase 6). */
   oscPct?: number;
   meanKappa: number;
+  /** Per-pool mean δ and chaos spend term (V4.4 Phase 7). */
+  chaosMeanDelta?: number;
+  chaosT?: number;
+  calmMeanDelta?: number;
+  staticMeanDelta?: number;
   calmGrains: number;
   chaosGrains: number;
   textureGrains?: number;
@@ -106,6 +111,12 @@ export function mountControls(
       <button type="button" id="record-toggle">Record</button>
       <button type="button" id="overlay-toggle">Overlay: On</button>
     </div>
+    <div class="overlay-legend" aria-label="Overlay regime colours">
+      <span class="leg-swatch leg-calm"></span><span>Calm</span>
+      <span class="leg-swatch leg-tex"></span><span>Static</span>
+      <span class="leg-swatch leg-chaos"></span><span>Chaos</span>
+      <span class="leg-swatch leg-osc"></span><span>Osc</span>
+    </div>
     <dl class="stats">
       <div><dt>Step</dt><dd id="st-step">0</dd></div>
       <div><dt>FPS</dt><dd id="st-fps">0</dd></div>
@@ -121,6 +132,10 @@ export function mountControls(
         <div><dt>Chaos %</dt><dd id="st-chaos">—</dd></div>
         <div><dt>Osc %</dt><dd id="st-osc">—</dd></div>
         <div><dt>Mean κ</dt><dd id="st-kappa">—</dd></div>
+        <div><dt>Chaos δ̄</dt><dd id="st-chaos-delta">—</dd></div>
+        <div><dt>Chaos t</dt><dd id="st-chaos-t">—</dd></div>
+        <div><dt>Calm δ̄</dt><dd id="st-calm-delta">—</dd></div>
+        <div><dt>Static δ̄</dt><dd id="st-static-delta">—</dd></div>
         <div><dt>Budget</dt><dd id="st-budget">—</dd></div>
         <div><dt>Spend</dt><dd id="st-spend">—</dd></div>
       </dl>
@@ -243,6 +258,11 @@ export function mountControls(
         (root.querySelector("#st-chaos") as HTMLElement).textContent = "—";
         (root.querySelector("#st-osc") as HTMLElement).textContent = "—";
         (root.querySelector("#st-kappa") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-chaos-delta") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-chaos-t") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-calm-delta") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-static-delta") as HTMLElement).textContent =
+          "—";
         (root.querySelector("#st-budget") as HTMLElement).textContent = "—";
         (root.querySelector("#st-spend") as HTMLElement).textContent = "—";
       } else {
@@ -263,6 +283,20 @@ export function mountControls(
             : "—";
         (root.querySelector("#st-kappa") as HTMLElement).textContent =
           f.meanKappa.toFixed(3);
+        (root.querySelector("#st-chaos-delta") as HTMLElement).textContent =
+          typeof f.chaosMeanDelta === "number"
+            ? f.chaosMeanDelta.toFixed(3)
+            : "—";
+        (root.querySelector("#st-chaos-t") as HTMLElement).textContent =
+          typeof f.chaosT === "number" ? f.chaosT.toFixed(2) : "—";
+        (root.querySelector("#st-calm-delta") as HTMLElement).textContent =
+          typeof f.calmMeanDelta === "number"
+            ? f.calmMeanDelta.toFixed(3)
+            : "—";
+        (root.querySelector("#st-static-delta") as HTMLElement).textContent =
+          typeof f.staticMeanDelta === "number"
+            ? f.staticMeanDelta.toFixed(3)
+            : "—";
         (root.querySelector("#st-budget") as HTMLElement).textContent =
           `${f.predictedActive}/${f.budget}`;
         const fmt = (a: number, s: number) =>

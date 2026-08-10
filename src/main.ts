@@ -9,6 +9,7 @@ import { FieldObserver, type FieldObservation } from "./field/FieldObserver.ts";
 import {
   GrainScheduler,
   MASTER_GAIN,
+  SCHED,
   type GrainEventBatch,
 } from "./field/GrainScheduler.ts";
 import {
@@ -17,7 +18,11 @@ import {
   type TestPattern,
 } from "./field/TestPatterns.ts";
 import { AudioEngine, type RecordingResult } from "./audio/AudioEngine.ts";
-import { mountControls, type AudioMeterStats } from "./ui/controls.ts";
+import {
+  mountControls,
+  type AudioMeterStats,
+  type FieldMeterStats,
+} from "./ui/controls.ts";
 import { RegionOverlay } from "./ui/RegionOverlay.ts";
 import "./style.css";
 
@@ -70,6 +75,12 @@ let lastObservedStep = -1;
 let audioStatus = "idle";
 let lastMeterUiAt = 0;
 let smoothMeter: AudioMeterStats | null = null;
+let smoothFieldDelta: {
+  chaosMeanDelta: number;
+  chaosT: number;
+  calmMeanDelta: number;
+  staticMeanDelta: number;
+} | null = null;
 let overlayVisible = true;
 let defaultSourcePromise: Promise<void> | null = null;
 /** null = live Utomata; else active synthetic pattern. */
@@ -358,6 +369,77 @@ function pushStats(forceMeter = false) {
     meter = null;
   }
 
+  let field: FieldMeterStats | null = null;
+  if (lastObs) {
+    let calmMeanDelta = 0;
+    let calmArea = 0;
+    for (const r of lastObs.coherent) {
+      calmMeanDelta += r.meanDelta * r.area;
+      calmArea += r.area;
+    }
+    calmMeanDelta = calmArea > 0 ? calmMeanDelta / calmArea : 0;
+    const chaosMeanDelta = lastObs.chaotic.meanDelta;
+    const chaosT = Math.min(
+      1,
+      Math.max(0, chaosMeanDelta / SCHED.deltaRateNorm),
+    );
+    const staticMeanDelta = lastObs.textured.meanDelta;
+    const rawDelta = {
+      chaosMeanDelta,
+      chaosT,
+      calmMeanDelta,
+      staticMeanDelta,
+    };
+    if (due || forceMeter || !smoothFieldDelta) {
+      if (!smoothFieldDelta || forceMeter) {
+        smoothFieldDelta = { ...rawDelta };
+      } else {
+        smoothFieldDelta = {
+          chaosMeanDelta: ema(
+            smoothFieldDelta.chaosMeanDelta,
+            rawDelta.chaosMeanDelta,
+          ),
+          chaosT: ema(smoothFieldDelta.chaosT, rawDelta.chaosT),
+          calmMeanDelta: ema(
+            smoothFieldDelta.calmMeanDelta,
+            rawDelta.calmMeanDelta,
+          ),
+          staticMeanDelta: ema(
+            smoothFieldDelta.staticMeanDelta,
+            rawDelta.staticMeanDelta,
+          ),
+        };
+      }
+      if (!audio.isReady && due) lastMeterUiAt = now;
+    }
+    field = {
+      regions: lastObs.coherent.length,
+      calmPct: lastObs.calmAreaFraction,
+      chaosPct: lastObs.chaosAreaFraction,
+      staticPct: lastObs.texturedAreaFraction,
+      oscPct:
+        lastObs.oscillators.reduce((sum, g) => sum + g.area, 0) /
+        (lastObs.width * lastObs.height),
+      meanKappa: lastObs.meanCoherence,
+      chaosMeanDelta: smoothFieldDelta!.chaosMeanDelta,
+      chaosT: smoothFieldDelta!.chaosT,
+      calmMeanDelta: smoothFieldDelta!.calmMeanDelta,
+      staticMeanDelta: smoothFieldDelta!.staticMeanDelta,
+      calmGrains: lastBatch?.calmActive ?? 0,
+      chaosGrains: lastBatch?.chaosActive ?? 0,
+      textureGrains: lastBatch?.textureActive ?? 0,
+      oscGrains: lastBatch?.oscActive ?? 0,
+      shareCalm: lastBatch?.shares.calm ?? 0,
+      shareTexture: lastBatch?.shares.texture ?? 0,
+      shareChaos: lastBatch?.shares.chaos ?? 0,
+      shareOsc: lastBatch?.shares.osc ?? 0,
+      budget: lastBatch?.budget ?? scheduler.budget,
+      predictedActive: lastBatch?.predictedActive ?? 0,
+    };
+  } else {
+    smoothFieldDelta = null;
+  }
+
   if (due || forceMeter || !audio.isReady) {
     controls.setStats({
       step: activePattern ? syntheticStep : host.getStep(),
@@ -365,28 +447,7 @@ function pushStats(forceMeter = false) {
       energy: lastObs?.meanDelta ?? 0,
       audio: audioStatus,
       meter,
-      field: lastObs
-        ? {
-            regions: lastObs.coherent.length,
-            calmPct: lastObs.calmAreaFraction,
-            chaosPct: lastObs.chaosAreaFraction,
-            staticPct: lastObs.texturedAreaFraction,
-            oscPct:
-              lastObs.oscillators.reduce((sum, g) => sum + g.area, 0) /
-              (lastObs.width * lastObs.height),
-            meanKappa: lastObs.meanCoherence,
-            calmGrains: lastBatch?.calmActive ?? 0,
-            chaosGrains: lastBatch?.chaosActive ?? 0,
-            textureGrains: lastBatch?.textureActive ?? 0,
-            oscGrains: lastBatch?.oscActive ?? 0,
-            shareCalm: lastBatch?.shares.calm ?? 0,
-            shareTexture: lastBatch?.shares.texture ?? 0,
-            shareChaos: lastBatch?.shares.chaos ?? 0,
-            shareOsc: lastBatch?.shares.osc ?? 0,
-            budget: lastBatch?.budget ?? scheduler.budget,
-            predictedActive: lastBatch?.predictedActive ?? 0,
-          }
-        : null,
+      field,
       gainBarMax: MASTER_GAIN * 2,
     });
   }
