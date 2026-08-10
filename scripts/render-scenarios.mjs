@@ -312,6 +312,8 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
   /** Dominant-pool per-slot pan/yNorm series (temporal stability). */
   /** @type {Map<number, {pans:number[], ys:number[]}>} */
   const slotSeries = new Map();
+  /** Per-step total-power RMS (linear) over the measure window — pulse mod. */
+  const stepRms = [];
 
   for (let step = 0; step < STEPS; step++) {
     const batch = steps[step];
@@ -355,6 +357,11 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
     }
 
     if (stepIdx >= MEASURE_FROM) {
+      let e = 0;
+      for (let i = 0; i < rendered.framePower.length; i++) {
+        e += rendered.framePower[i];
+      }
+      stepRms.push(Math.sqrt(e / Math.max(1, rendered.framePower.length)));
       measureChunks.push(rendered.samples);
       measurePowerChunks.push(rendered.framePower);
       if (rendered.peak > measurePeak) measurePeak = rendered.peak;
@@ -505,6 +512,7 @@ function replayScenario(Processor, pcm, mode, recorded, pool) {
     slotPanSdMax,
     slotYSdMax,
     slotMulti,
+    stepRms,
     blockRmsStd,
     spectralFlux,
     eventsMeasured,
@@ -1137,6 +1145,43 @@ console.log("");
     if (id === "half-half" || id === "two-blobs-merge") continue;
     assertLe(4, id, "blockRmsStd ≤1.5dB", r.total.blockRmsStd, 1.5);
   }
+
+  // Phase 4 S4 — block-RMS modulation depth at the oscillator pulse rate.
+  // Raw mode (no AGC): this is the intentional percussive crest, not
+  // normaliser pumping. Bound leaves headroom above post-change measured
+  // depth on blinker-fast/slow (~0.2–0.5 dB all-pool); osc-only is much
+  // deeper by design. Fail closed if all-pool pulse depth explodes.
+  const pulseFoldDepthDb = (stepRms, periodSteps) => {
+    if (!stepRms?.length || periodSteps < 2) return 0;
+    const fold = new Array(periodSteps).fill(0);
+    const foldN = new Array(periodSteps).fill(0);
+    for (let i = 0; i < stepRms.length; i++) {
+      const b = i % periodSteps;
+      fold[b] += stepRms[i];
+      foldN[b] += 1;
+    }
+    let mx = -Infinity;
+    let mn = Infinity;
+    for (let b = 0; b < periodSteps; b++) {
+      const v = fold[b] / Math.max(1, foldN[b]);
+      if (v > mx) mx = v;
+      if (v < mn) mn = v;
+    }
+    return db(mx) - db(mn);
+  };
+  const checkPulseMod = (id, periodSteps, maxDb) => {
+    const r = results.get(id);
+    if (!r) return;
+    const depth = pulseFoldDepthDb(r.total.stepRms, periodSteps);
+    const oscDepth = pulseFoldDepthDb(r.byPool.osc.stepRms, periodSteps);
+    console.log(
+      `  pulseMod  ${id}: all ${depth.toFixed(2)} dB  osc-only ${oscDepth.toFixed(2)} dB  (period ${periodSteps} steps)`,
+    );
+    assertLe(4, id, `pulse fold depth ≤${maxDb}dB`, depth, maxDb);
+  };
+  checkPulseMod("blinker-fast", 2, 3.0);
+  checkPulseMod("blinker-slow", 6, 3.0);
+  if (results.has("osc-field")) checkPulseMod("osc-field", 2, 6.0);
 
   // Audio Welch-mel flux: REPORT ONLY. At filled concurrency the ordering is
   // near-backwards (64 short chaos grains average into a smoother wash than 64

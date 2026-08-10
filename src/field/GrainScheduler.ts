@@ -86,8 +86,19 @@ export const SCHED = {
   rhythmWashFloor: 0.5,
   /** Autocorr must dip below this between minLag and a qualifying peak. */
   RHYTHM_DIP: 0.15,
-  /** Max grains per oscillator pulse burst. */
-  oscBurstMax: 3,
+  /**
+   * CPU rail only, never a mix control — mirrors CHAOS_EVENTS_MAX_HZ.
+   * Burst size is the area share; the loop's budget + share guards are the
+   * real ceilings. Kept at GRAIN_BUDGET so STOP-list greps still resolve.
+   */
+  oscBurstMax: GRAIN_BUDGET,
+  /**
+   * Oscillator pulse duty: duration = max(DUR_MIN, OSC_DUTY × periodSec).
+   * At period 2 the raw value is 0.35×66.7ms = 23ms, which floors to DUR_MIN
+   * 30ms (duty 0.45) so a fast oscillator does not collapse to a spike train.
+   * Peak concurrency = share; average ≈ share × duty.
+   */
+  OSC_DUTY: 0.35,
   /** EMA for oscillator phase histogram buckets. */
   oscPhaseEma: 0.2,
   /** File-seconds advanced per real second at full activity (inter-grain scrub). */
@@ -478,17 +489,18 @@ export class GrainScheduler {
 
       if (bucket !== firePhase) continue;
 
-      const nBurst = Math.max(
-        1,
-        Math.min(SCHED.oscBurstMax, share),
-      );
+      // Fire the whole share as one composite hit; share + budget guards (S1)
+      // are the real ceilings — oscBurstMax is a CPU rail only.
+      // Snapshot osc active before the loop: grains are pushed to both
+      // `active` and `events`, so counting both live would double-count and
+      // cap the burst at share/2 (which silently matched the old oscBurstMax=3).
+      const nBurst = Math.max(1, Math.min(SCHED.oscBurstMax, share));
+      const oscActiveBefore = countActiveRegime(this.active, "osc");
       let burst = 0;
       while (
         burst < nBurst &&
         this.active.length < this.budget &&
-        countActiveRegime(this.active, "osc") +
-          countEventsRegime(events, "osc") <
-          share
+        oscActiveBefore + countEventsRegime(events, "osc") < share
       ) {
         const ev = spawnOsc(
           group,
@@ -908,7 +920,7 @@ function spawnOsc(
   rgb: RgbField,
   amplitude: number,
   bankDur: number,
-  dtSec: number,
+  _dtSec: number,
   hueLut: Float32Array,
 ): GrainSpawnEvent {
   const w = obs.width;
@@ -925,7 +937,8 @@ function spawnOsc(
   const delta = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? group.meanDelta;
   const nCells = obs.width * obs.height;
   const mat = grainMaterial(similarity, delta, 0, 0, nCells);
-  const durationSec = (0.8 * group.period) / SCHED.stepsPerSec;
+  const periodSec = group.period / SCHED.stepsPerSec;
+  const durationSec = Math.max(SCHED.DUR_MIN, SCHED.OSC_DUTY * periodSec);
   const { sampleCenter, sampleHalf } = sampleWindowFromColour(
     r,
     g,
@@ -944,7 +957,9 @@ function spawnOsc(
     direction: 1,
     sampleCenter,
     sampleHalf,
-    startOffsetSec: Math.random() * dtSec * 0.25,
+    // Onset spread inside the perceptual fusion window (~20–30 ms), capped
+    // at 15 ms so a large simultaneous burst still reads as one attack.
+    startOffsetSec: Math.random() * Math.min(0.15 * periodSec, 0.015),
     q: mat.q,
     yNorm: 1 - y / Math.max(1, h - 1),
     pan: panFromX(x, w),
