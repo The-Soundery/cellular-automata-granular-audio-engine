@@ -3,12 +3,14 @@ import type { AudioStats } from "../audio/AudioEngine.ts";
 import { GRID_SIZE } from "../ca/UtomataHost.ts";
 
 /**
- * Debug visualisation: observational region cell silhouettes with bright edges.
+ * Debug visualisation: regime base layer + observational calm silhouettes.
  * Not listening posts / lattice ears. No AABB rectangles.
  */
 export class RegionOverlay {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  private readonly regimeImage: ImageData;
+  private readonly regimeBuf: Uint8ClampedArray;
 
   constructor(parent: HTMLElement) {
     this.canvas = document.createElement("canvas");
@@ -19,6 +21,8 @@ export class RegionOverlay {
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("2d context unavailable");
     this.ctx = ctx;
+    this.regimeImage = ctx.createImageData(GRID_SIZE, GRID_SIZE);
+    this.regimeBuf = this.regimeImage.data;
   }
 
   clear(): void {
@@ -45,6 +49,9 @@ export class RegionOverlay {
     const scaleY = GRID_SIZE / h;
     const cellW = Math.max(1, scaleX);
     const cellH = Math.max(1, scaleY);
+
+    this.paintRegimeLayer(obs, w, h);
+    ctx.putImageData(this.regimeImage, 0, 0);
 
     for (const r of obs.coherent) {
       const hue = (r.id * 47) % 360;
@@ -96,6 +103,52 @@ export class RegionOverlay {
         ctx.arc(x, y, g.sounding ? 2.4 : 1.4, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+  }
+
+  /** One ImageData put — textured / chaotic / oscillator cells only. */
+  private paintRegimeLayer(obs: FieldObservation, w: number, h: number): void {
+    const buf = this.regimeBuf;
+    buf.fill(0);
+    const sx = GRID_SIZE / w;
+    const sy = GRID_SIZE / h;
+
+    const paint = (
+      cells: Uint32Array,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      for (let i = 0; i < cells.length; i++) {
+        const ci = cells[i]!;
+        const cx = ci % w;
+        const cy = (ci / w) | 0;
+        const x0 = Math.floor(cx * sx);
+        const y0 = Math.floor(cy * sy);
+        const x1 = Math.max(x0 + 1, Math.floor((cx + 1) * sx));
+        const y1 = Math.max(y0 + 1, Math.floor((cy + 1) * sy));
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const o = (y * GRID_SIZE + x) * 4;
+            buf[o] = r;
+            buf[o + 1] = g;
+            buf[o + 2] = b;
+            buf[o + 3] = a;
+          }
+        }
+      }
+    };
+
+    // Dim fills so the CA stays readable beneath.
+    if (obs.textured.cells.length) {
+      paint(obs.textured.cells, 150, 150, 155, 55);
+    }
+    if (obs.chaotic.cells.length) {
+      paint(obs.chaotic.cells, 190, 95, 55, 60);
+    }
+    for (const g of obs.oscillators) {
+      if (g.cells.length) paint(g.cells, 55, 130, 190, 60);
     }
   }
 }
