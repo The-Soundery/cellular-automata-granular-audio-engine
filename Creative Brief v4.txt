@@ -1,27 +1,33 @@
-Cellular Automata Granular Audio Engine — Creative Brief (V4 … V4.4)
+Cellular Automata Granular Audio Engine — Creative Brief (V4 … V5)
 Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
 Supersedes prior V3 identity mapping (X→sample / RGB→envelope).
-Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn architecture.
+V5 supersedes V4.4 1D hue→centroid LUT / mono bank / absolute Y bandpass.
+Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn window architecture.
 Source: Sonic Laws session (2026-07-31); V4 listening remap (2026-08-01);
         V4.1 Continuous Laws ear-validated (2026-08-02);
         V4.2 Recognition & Coupling harness-verified (2026-08-04);
         V4.3 Loudness / Spend / Stasis harness-green (2026-08-05),
         ear-validated with V4.4 (2026-08-11);
-        V4.4 defect fixes + listening instruments COMPLETE (2026-08-11).
+        V4.4 defect fixes + listening instruments COMPLETE (2026-08-11);
+        V5 Polar Material + Stereo Identity (2026-08-11).
 
 ------------------------------------------------------------------------------
 HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-11)
 ------------------------------------------------------------------------------
 
 Agent entry: `Implementation Filter.txt` (pipeline, STOP list, deferred items).
-North star: this Brief. Gate records: `scripts/v4.4-implementation-log.md`
-(and historical `scripts/v4.3-implementation-log.md`). Listening checklist
-signed off: `scripts/listening-gate-sonic-laws.md`.
+North star: this Brief. Work order: `IMPLEMENTATION_PLAN_V5.md`.
+Gate records: `scripts/v5-implementation-log.md` (active);
+  historical `scripts/v4.4-implementation-log.md`, `scripts/v4.3-implementation-log.md`.
+Listening: `scripts/listening-gate-v5.md` (V5 ears); V4.4 checklist closed.
 
-Identity (listening-validated through V4.4):
+Identity (V5):
 
-  Hue(RGB) → sample position (centroid-ordered LUT) · saturation → window width
-  X → stereo pan · Y → spectrum (per-grain bandpass) · envelope from κ/δ order
+  HSV → polar material plane (hue angle · sat radius · value band)
+  saturation → window half-width · regime soft-bias (calm→sustained, chaos→transient)
+  X → stereo pan + source L/R channel mix (both follow region-bound grains)
+  Y → bandpass offset relative to chosen segment centroid
+  sample window frozen at spawn
 
 DO NOT continue or refine:
 
@@ -31,18 +37,19 @@ DO NOT continue or refine:
 - Luminance → volume / presence-as-loudness as the fix for motion
 - Plans that ask “what should this point in space sound like?”
 - Mid-grain modulation of the sample scrub window to “chase” a region
-  (causes audio glitches; forbidden). Direct pan / Y-spectrum follow for
-  region-bound grains is allowed (no smoothing).
+  (causes audio glitches; forbidden). Direct pan / Y-spectrum / channel-mix
+  follow for region-bound grains is allowed (no smoothing).
 - Reviving X→sample / RGB→envelope without a new listening decision
 - Reviving the 48-bin offline spectral bank
+- Reviving 1D hue→centroid LUT as the sole material axis (superseded by V5 polar)
 - Doppler / velocity→grain rate (pitch offsets beyond ±1)
 - Caps that prevent a pool from spending its area share (loudness policy)
 - Treating CHAOS_EVENTS_MAX_HZ as a mix knob (CPU rail only)
 - Lowering deltaRateNorm against the closed live-chaos under-spend claim
 
 Next work (only if deliberately opened): deferred fourth regime for moving
-figures; optional Q←Y-extent doctrine rewrite; negotiable constant fine-tune.
-Not architectural rewrites of the Sonic Laws.
+figures; optional Q←Y-extent doctrine rewrite; negotiable constant fine-tune;
+Prev/Next/Random equation greyscale family (separate from V5 identity).
 
 
 ------------------------------------------------------------------------------
@@ -109,9 +116,9 @@ One-sentence axiom:
   The CA field is observed as coherence regions and chaotic areas; each area’s
   share of a finite grain pool is proportional to its size; within that share,
   change and coherence set rate, length, and overlap; grain identity at spawn
-  is hue→sample, X→pan, Y→spectrum; sample window freezes at spawn while
-  region-bound grains directly follow pan/Y with their region; loudness is
-  globally neutral.
+  is HSV→polar material, X→pan+channel-mix, Y→relative spectrum; sample window
+  freezes at spawn while region-bound grains directly follow pan/Y/channel-mix
+  with their region; loudness is globally neutral.
 
 
 1. Grains are ephemeral carriers of identity
@@ -125,22 +132,27 @@ One-sentence axiom:
 
    From the spawn cell (or calm spawn site):
 
-   - Hue(RGB) → sample position / locked scrub window in the source
-                (similar colours scrub similar *sounding* areas via a
-                spectral-centroid-ordered sample map) — FROZEN at spawn
+   - HSV → sample position / locked scrub window via a polar descriptor plane
+           (hue = angle on a centroid-ranked circle; saturation = radius from
+           centre so grey still reaches material via value; value = energy
+           band). Soft regime bias prefers sustained material for calm/texture
+           and transient material for chaos/osc — FROZEN at spawn
    - Saturation → window half-width in seconds (grey = diffuse / wide;
                   saturated = focused / tight) — FROZEN at spawn
-   - X        → stereo pan (−1 left … +1 right) — initial at spawn; while a
-                grain belongs to a region it directly follows that region’s
-                motion in pan (spawn offset from COM preserved)
-   - Y        → frequency / spectral position (continuous bandpass cutoff)
+   - X        → stereo pan (−1 left … +1 right) AND source L/R channel mix
+                (left of grid hears left of recording). Initial at spawn;
+                while a grain belongs to a region it directly follows that
+                region’s motion in pan and channel mix (spawn offset preserved)
+   - Y        → bandpass cutoff as an offset around the chosen segment’s
+                spectral centroid (relative, not absolute 80–12 kHz)
                 — same direct region follow
    - Envelope / duration / filter Q → continuous functions of κ/δ (and calm
                 area/fill) at spawn — not binary calm|chaos presets, not RGB
 
    Colour chooses where in the source the grain listens. Spatial X places the
-   grain in the stereo field. Colour must never set loudness, allocation, or
-   topology. Luminance is not volume. Playback rate stays ±1 (no Doppler).
+   grain in the stereo field and selects which source channel feeds the
+   grain. Colour must never set loudness, allocation, or topology. Luminance
+   is not volume. Playback rate stays ±1 (no Doppler).
 
 
 3. Field observation (how we see regimes)
@@ -581,6 +593,25 @@ ADOPTED doctrine addenda:
 - For a pulsed pool the area share is spent AT THE PULSE. Peak concurrency
   equals share; average concurrency is share × duty. A rhythm has silence
   by definition, and that silence is not an unspent share.
+
+
+------------------------------------------------------------------------------
+V5 — Polar Material + Stereo Identity (2026-08-11)
+------------------------------------------------------------------------------
+
+Work order: IMPLEMENTATION_PLAN_V5.md. Gate record:
+`scripts/v5-implementation-log.md`. Listening: `scripts/listening-gate-v5.md`.
+
+ADOPTED doctrine addenda:
+
+- Material selection is a polar HSV query into a full-coverage segment map
+  (centroid angle, stationarity radius, energy band), not a 1D hue LUT.
+- Source stereo is retained. X crossfades L↔R of the source and sets pan;
+  both follow region-bound grains. Sample window still never chases.
+- Y is relative to the chosen material’s centroid so filter and material
+  choice do not cancel each other.
+- Calm hearing attacks is a mapping bug when stationarity bias is available;
+  soft regime preference is part of identity, not a loudness or share tweak.
 
 
 ------------------------------------------------------------------------------

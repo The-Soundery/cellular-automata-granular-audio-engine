@@ -306,15 +306,17 @@ export class AudioEngine {
 
   private sendSource(bank: SpectralBank): void {
     if (!this.node) return;
-    const pcmCopy = bank.pcm.slice();
+    const pcmL = bank.pcmL.slice();
+    const pcmR = bank.pcmR.slice();
     this.node.port.postMessage(
       {
         type: "source",
         sampleRate: bank.sampleRate,
         length: bank.length,
-        pcm: pcmCopy.buffer,
+        pcmL: pcmL.buffer,
+        pcmR: pcmR.buffer,
       },
-      [pcmCopy.buffer],
+      [pcmL.buffer, pcmR.buffer],
     );
   }
 }

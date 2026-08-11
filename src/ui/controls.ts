@@ -46,6 +46,10 @@ export interface FieldMeterStats {
   shareTexture?: number;
   shareChaos?: number;
   shareOsc?: number;
+  /** Mean HSV saturation of the current field (diagnostic). */
+  meanSat?: number;
+  /** Circular hue concentration reverse: 0 = one hue, 1 = hues all around. */
+  hueSpread?: number;
   budget: number;
   predictedActive: number;
 }
@@ -136,6 +140,8 @@ export function mountControls(
         <div><dt>Chaos t</dt><dd id="st-chaos-t">—</dd></div>
         <div><dt>Calm δ̄</dt><dd id="st-calm-delta">—</dd></div>
         <div><dt>Static δ̄</dt><dd id="st-static-delta">—</dd></div>
+        <div><dt>Mean sat</dt><dd id="st-mean-sat">—</dd></div>
+        <div><dt>Hue spread</dt><dd id="st-hue-spread">—</dd></div>
         <div><dt>Budget</dt><dd id="st-budget">—</dd></div>
         <div><dt>Spend</dt><dd id="st-spend">—</dd></div>
       </dl>
@@ -152,7 +158,7 @@ export function mountControls(
         <div><dt>Sounding</dt><dd id="st-sounding">—</dd></div>
         <div><dt>Events/s</dt><dd id="st-trigs">—</dd></div>
       </dl>
-      <p class="meter-hint">Sonic Laws V4 — hue→sample (frozen) · pan/Y follow region · neutral loudness</p>
+      <p class="meter-hint">Sonic Laws V5 — HSV polar material (frozen window) · pan/Y/L-R follow · neutral loudness</p>
     </div>
   `;
   parent.appendChild(root);
@@ -263,6 +269,8 @@ export function mountControls(
         (root.querySelector("#st-calm-delta") as HTMLElement).textContent = "—";
         (root.querySelector("#st-static-delta") as HTMLElement).textContent =
           "—";
+        (root.querySelector("#st-mean-sat") as HTMLElement).textContent = "—";
+        (root.querySelector("#st-hue-spread") as HTMLElement).textContent = "—";
         (root.querySelector("#st-budget") as HTMLElement).textContent = "—";
         (root.querySelector("#st-spend") as HTMLElement).textContent = "—";
       } else {
@@ -297,6 +305,10 @@ export function mountControls(
           typeof f.staticMeanDelta === "number"
             ? f.staticMeanDelta.toFixed(3)
             : "—";
+        (root.querySelector("#st-mean-sat") as HTMLElement).textContent =
+          typeof f.meanSat === "number" ? f.meanSat.toFixed(2) : "—";
+        (root.querySelector("#st-hue-spread") as HTMLElement).textContent =
+          typeof f.hueSpread === "number" ? f.hueSpread.toFixed(2) : "—";
         (root.querySelector("#st-budget") as HTMLElement).textContent =
           `${f.predictedActive}/${f.budget}`;
         const fmt = (a: number, s: number) =>

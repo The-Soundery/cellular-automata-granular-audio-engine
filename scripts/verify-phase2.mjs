@@ -110,7 +110,10 @@ assert(
   "UI budget meters",
   /st-budget/.test(controls) && /st-spend/.test(controls),
 );
-assert("UI sonic laws hint", /hue→sample|pan\/Y follow/.test(controls));
+assert(
+  "UI sonic laws hint",
+  /polar material|hue→sample|pan\/Y/.test(controls),
+);
 
 async function runtimeScheduler() {
   let fieldMod;

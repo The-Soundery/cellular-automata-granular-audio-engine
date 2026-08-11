@@ -45,6 +45,28 @@ function parseStage(argv) {
 
 const STAGE = parseStage(process.argv.slice(2));
 
+/** Polar segments spanning the file so HSV axes move sampleCenter in tests. */
+function makeTestMaterialSegments(n = 64) {
+  const segs = [];
+  const denom = Math.max(1, n - 1);
+  for (let i = 0; i < n; i++) {
+    const t = i / denom;
+    // Band decorrelated from angle so hue-drift is not pinned by value.
+    const band = ((i * 7) % n) / denom;
+    const stationarity = 0.15 + 0.7 * ((i % 5) / 4);
+    segs.push({
+      pos: t,
+      centroidHz: 120 * Math.pow(50, t),
+      stationarity,
+      energy: 1,
+      angle: t,
+      radius: 0.7 + 0.3 * stationarity,
+      band,
+    });
+  }
+  return segs;
+}
+
 function makeField() {
   return {
     width: W,
@@ -120,6 +142,8 @@ function runScenario(pattern) {
   const obs = new FieldObserver(W, H);
   const sched = new GrainScheduler();
   sched.setSourceDurationSec(30);
+  // Synthetic polar map so HSV axes reach distinct file positions in headless runs.
+  sched.setMaterialSegments(makeTestMaterialSegments(64));
 
   let prev = makeField();
   let cur = makeField();
@@ -680,10 +704,10 @@ for (const q of [0.8, 2, 4, 8]) {
   }
 }
 
-// Gate 4(iv) — sampleCenter drift (event domain; flux cannot see the hue axis)
+// Gate 4(iv) — sampleCenter drift (event domain; V5 polar HSV)
 {
   const r = results.get("frozen-noise");
-  // δ=0 ⇒ hue fixed per cell and scrubSec never advances. Global spread is large
+  // δ=0 ⇒ HSV fixed per cell and scrubSec never advances. Global spread is large
   // (many hues across stratified sites); stasis is per siteSlot.
   assertGe(
     4,
@@ -702,12 +726,13 @@ for (const q of [0.8, 2, 4, 8]) {
 }
 {
   const r = results.get("hue-drift");
-  // Floor = ½ × 0.0006 × stepsPerSec × windowSec (plan Gate 4(iv))
+  // Saturated uniform hue walk moves polar angle → sampleCenter (V5).
+  // Floor = ½ × hue-rate × stepsPerSec × windowSec (same geometric bound).
   const floor = 0.5 * 0.0006 * 30 * r.measureWindowSec;
   assertGe(
     4,
     "hue-drift",
-    `calm sampleCenter spread ≥ ${floor.toFixed(4)} (½·0.0006·30·${r.measureWindowSec.toFixed(2)}s)`,
+    `calm sampleCenter spread ≥ ${floor.toFixed(4)} (½·0.0006·30·${r.measureWindowSec.toFixed(2)}s, V5 polar)`,
     r.calmSampleCenterSpread,
     floor,
   );

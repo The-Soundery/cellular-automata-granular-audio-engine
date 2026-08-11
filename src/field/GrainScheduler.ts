@@ -8,8 +8,11 @@ import type {
 import { FIELD_OBS } from "./FieldObserver.ts";
 import type { RgbField } from "./FrameObserver.ts";
 import {
-  identityHueSampleLut,
-  sampleCenterFromHue,
+  identitySpectralBank,
+  queryMaterialFromHsv,
+  rgbToHsv,
+  type MaterialSegment,
+  type RegimeMaterialBias,
 } from "../audio/spectral.ts";
 
 /** Negotiable physical budget — raise after listening + CPU check. */
@@ -46,6 +49,8 @@ export const SCHED = {
   WINDOW_HALF_MAX_S: 0.8,
   /** Absolute floor on window half-width (seconds) — avoids degenerate ping-pong. */
   WINDOW_HALF_ABS_MIN_S: 0.005,
+  /** Y offset span in octaves around the chosen segment centroid (± half). */
+  Y_OCTAVE_SPAN: 4,
   /** Legacy calm Hz band — packing rate supersedes for calm wash. */
   calmRateMinHz: 0.8,
   calmRateMaxHz: 6,
@@ -146,6 +151,10 @@ export interface GrainSpawnEvent {
   q: number;
   /** Spectral position [0,1] at spawn; follows region while alive. */
   yNorm: number;
+  /** Chosen material centroid (Hz); Y offsets the bandpass around this. */
+  materialCentroidHz: number;
+  /** Source L/R mix [0,1] from X (0=left); follows region while alive. */
+  channelMix: number;
   /** Stereo pan [-1,1] at spawn; follows region while alive. */
   pan: number;
   /** Envelope attack as fraction of duration (frozen at spawn). */
@@ -254,8 +263,8 @@ export class GrainScheduler {
   private maskStampValue = 1;
   /** Source file duration (seconds) for window-in-seconds law. */
   private sourceDurationSec = 1;
-  /** Perceptual hue→sample LUT (centroid-sorted); identity until a source loads. */
-  private hueSampleLut: Float32Array = identityHueSampleLut();
+  /** Polar material segments; identity mid-file until a source loads. */
+  private segments: MaterialSegment[] = identitySpectralBank().segments;
 
   constructor(budget = GRAIN_BUDGET) {
     this.budget = budget;
@@ -265,8 +274,14 @@ export class GrainScheduler {
     this.sourceDurationSec = Math.max(1e-3, durationSec);
   }
 
-  setHueSampleLut(lut: Float32Array): void {
-    this.hueSampleLut = lut.length >= 2 ? lut : identityHueSampleLut();
+  setMaterialSegments(segments: MaterialSegment[]): void {
+    this.segments =
+      segments.length > 0 ? segments : identitySpectralBank().segments;
+  }
+
+  /** @deprecated Use setMaterialSegments — kept for call-site migration. */
+  setHueSampleLut(_lut: Float32Array): void {
+    /* no-op under V5 polar map */
   }
 
   reset(): void {
@@ -404,7 +419,7 @@ export class GrainScheduler {
           mat,
           bankDur,
           dtSec,
-          this.hueSampleLut,
+          this.segments,
           clock!.scrubSec,
           slot,
           this.maskStamp,
@@ -509,7 +524,7 @@ export class GrainScheduler {
           amp,
           bankDur,
           dtSec,
-          this.hueSampleLut,
+          this.segments,
         );
         events.push(ev);
         this.active.push({
@@ -552,7 +567,7 @@ export class GrainScheduler {
           texMat,
           bankDur,
           dtSec,
-          this.hueSampleLut,
+          this.segments,
           this.textureScrubSec,
           texSlot,
           this.maskStamp,
@@ -596,7 +611,7 @@ export class GrainScheduler {
         amp,
         bankDur,
         dtSec,
-        this.hueSampleLut,
+        this.segments,
       );
       events.push(ev);
       this.active.push({
@@ -921,7 +936,7 @@ function spawnOsc(
   amplitude: number,
   bankDur: number,
   _dtSec: number,
-  hueLut: Float32Array,
+  segments: MaterialSegment[],
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -939,13 +954,8 @@ function spawnOsc(
   const mat = grainMaterial(similarity, delta, 0, 0, nCells);
   const periodSec = group.period / SCHED.stepsPerSec;
   const durationSec = Math.max(SCHED.DUR_MIN, SCHED.OSC_DUTY * periodSec);
-  const { sampleCenter, sampleHalf } = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    hueLut,
-  );
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "transient");
+  const yNorm = 1 - y / Math.max(1, h - 1);
   return {
     x,
     y,
@@ -955,13 +965,15 @@ function spawnOsc(
     durationSec,
     amplitude,
     direction: 1,
-    sampleCenter,
-    sampleHalf,
+    sampleCenter: win.sampleCenter,
+    sampleHalf: win.sampleHalf,
     // Onset spread inside the perceptual fusion window (~20–30 ms), capped
     // at 15 ms so a large simultaneous burst still reads as one attack.
     startOffsetSec: Math.random() * Math.min(0.15 * periodSec, 0.015),
     q: mat.q,
-    yNorm: 1 - y / Math.max(1, h - 1),
+    yNorm,
+    materialCentroidHz: win.centroidHz,
+    channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
     // Owner likes how blinkers sound — leave this envelope alone; do not
     // harmonise with the continuous ATT/REL law.
@@ -983,7 +995,7 @@ function spawnTexture(
   mat: GrainMaterial,
   bankDur: number,
   dtSec: number,
-  hueLut: Float32Array,
+  segments: MaterialSegment[],
   scrubSec = 0,
   siteSlot = 0,
   mask: Uint32Array = EMPTY_MASK,
@@ -1018,14 +1030,9 @@ function spawnTexture(
   const r = rgb.r[ci] ?? textured.meanR;
   const g = rgb.g[ci] ?? textured.meanG;
   const b = rgb.b[ci] ?? textured.meanB;
-  const { sampleCenter: lutCenter, sampleHalf } = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    hueLut,
-  );
-  const sampleCenter = wrap01(lutCenter + scrubSec / bankDur);
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "sustained");
+  const sampleCenter = wrap01(win.sampleCenter + scrubSec / bankDur);
+  const yNorm = 1 - y / Math.max(1, h - 1);
   return {
     x,
     y,
@@ -1036,10 +1043,12 @@ function spawnTexture(
     amplitude,
     direction: 1,
     sampleCenter,
-    sampleHalf,
+    sampleHalf: win.sampleHalf,
     startOffsetSec: Math.random() * dtSec,
     q: mat.q,
-    yNorm: 1 - y / Math.max(1, h - 1),
+    yNorm,
+    materialCentroidHz: win.centroidHz,
+    channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
     attackFrac: mat.attackFrac,
     releaseFrac: mat.releaseFrac,
@@ -1080,7 +1089,7 @@ function spawnCalm(
   mat: GrainMaterial,
   bankDur: number,
   dtSec: number,
-  hueLut: Float32Array,
+  segments: MaterialSegment[],
   scrubSec = 0,
   siteSlot = 0,
   mask: Uint32Array = EMPTY_MASK,
@@ -1089,12 +1098,11 @@ function spawnCalm(
   anchorY = (obs.height - 1) / 2,
 ): GrainSpawnEvent {
   const w = obs.width;
-  const h = obs.height;
   let ci: number;
   let readOffset: number;
   if (region.cells.length === 0) {
     const cx = Math.floor(region.comX) % w;
-    const cy = Math.floor(region.comY) % h;
+    const cy = Math.floor(region.comY) % obs.height;
     ci = cy * w + cx;
     readOffset = 0;
   } else {
@@ -1108,7 +1116,7 @@ function spawnCalm(
       region.width / 2,
       region.height / 2,
       w,
-      h,
+      obs.height,
       mask,
       maskStamp,
     );
@@ -1132,7 +1140,7 @@ function spawnCalm(
     bankDur,
     dtSec,
     ci,
-    hueLut,
+    segments,
     scrubSec,
     readOffset,
     siteSlot,
@@ -1150,7 +1158,7 @@ function spawnCalmAt(
   bankDur: number,
   dtSec: number,
   ci: number,
-  hueLut: Float32Array,
+  segments: MaterialSegment[],
   scrubSec = 0,
   readOffset = 0,
   siteSlot = 0,
@@ -1165,14 +1173,9 @@ function spawnCalmAt(
   const r = rgb.r[ci] ?? region.meanR;
   const g = rgb.g[ci] ?? region.meanG;
   const b = rgb.b[ci] ?? region.meanB;
-  const { sampleCenter: lutCenter, sampleHalf } = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    hueLut,
-  );
-  const sampleCenter = wrap01(lutCenter + scrubSec / bankDur);
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "sustained");
+  const sampleCenter = wrap01(win.sampleCenter + scrubSec / bankDur);
+  const yNorm = 1 - cy / Math.max(1, h - 1);
 
   // Offset from the same anchor used for spawn placement (not raw COM).
   const trackDx = toroidalOffset(cx, anchorX, w);
@@ -1188,10 +1191,12 @@ function spawnCalmAt(
     amplitude,
     direction: region.velX < -SCHED.velDirEps ? -1 : 1,
     sampleCenter,
-    sampleHalf,
+    sampleHalf: win.sampleHalf,
     startOffsetSec: Math.random() * dtSec,
     q: mat.q,
-    yNorm: 1 - cy / Math.max(1, h - 1),
+    yNorm,
+    materialCentroidHz: win.centroidHz,
+    channelMix: channelMixFromX(cx, w),
     pan: panFromX(cx, w),
     attackFrac: mat.attackFrac,
     releaseFrac: mat.releaseFrac,
@@ -1211,7 +1216,7 @@ function spawnChaos(
   amplitude: number,
   bankDur: number,
   dtSec: number,
-  hueLut: Float32Array,
+  segments: MaterialSegment[],
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -1225,13 +1230,8 @@ function spawnChaos(
   const delta = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? chaotic.meanDelta;
   const nCells = w * h;
   const mat = grainMaterial(similarity, delta, 0, 0, nCells);
-  const { sampleCenter, sampleHalf } = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    hueLut,
-  );
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "transient");
+  const yNorm = 1 - y / Math.max(1, h - 1);
 
   return {
     x,
@@ -1242,11 +1242,13 @@ function spawnChaos(
     durationSec: mat.durationSec,
     amplitude,
     direction: 1,
-    sampleCenter,
-    sampleHalf,
+    sampleCenter: win.sampleCenter,
+    sampleHalf: win.sampleHalf,
     startOffsetSec: Math.random() * dtSec,
     q: mat.q,
-    yNorm: 1 - y / Math.max(1, h - 1),
+    yNorm,
+    materialCentroidHz: win.centroidHz,
+    channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
     attackFrac: mat.attackFrac,
     releaseFrac: mat.releaseFrac,
@@ -1273,54 +1275,51 @@ function pickChaosCell(chaotic: ChaoticArea, obs: FieldObservation): number {
   return last;
 }
 
-/** Hue [0,1] from RGB; undefined hue (grey) → 0.5. */
+/** Hue [0,1] from RGB; undefined hue (grey) → 0.5 (legacy helper). */
 export function rgbToHueNorm(r: number, g: number, b: number): number {
-  const rr = clamp01(r);
-  const gg = clamp01(g);
-  const bb = clamp01(b);
-  const max = Math.max(rr, gg, bb);
-  const min = Math.min(rr, gg, bb);
-  const d = max - min;
-  if (d < 1e-6) return 0.5;
-  let h = 0;
-  if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
-  else if (max === gg) h = ((bb - rr) / d + 2) / 6;
-  else h = ((rr - gg) / d + 4) / 6;
-  return clamp01(h);
+  const { h, s } = rgbToHsv(r, g, b);
+  return s < 1e-6 ? 0.5 : h;
 }
 
-/** HSV saturation → window half-width in seconds; hue → perceptual centre. */
+/**
+ * HSV → polar material centre + sat→window half-width.
+ * regimeBias soft-prefers sustained or transient segments.
+ */
 function sampleWindowFromColour(
   r: number,
   g: number,
   b: number,
   bankDur: number,
-  hueLut: Float32Array,
-): { sampleCenter: number; sampleHalf: number } {
-  const rr = clamp01(r);
-  const gg = clamp01(g);
-  const bb = clamp01(b);
-  const max = Math.max(rr, gg, bb);
-  const min = Math.min(rr, gg, bb);
-  const sat = (max - min) / Math.max(1e-4, max);
+  segments: MaterialSegment[],
+  regimeBias: RegimeMaterialBias,
+): { sampleCenter: number; sampleHalf: number; centroidHz: number } {
+  const { h, s, v } = rgbToHsv(r, g, b);
   const halfSec = lerp(
     SCHED.WINDOW_HALF_MIN_S,
     SCHED.WINDOW_HALF_MAX_S,
-    1 - sat,
+    1 - s,
   );
-  const hue = rgbToHueNorm(rr, gg, bb);
-  const sampleCenter = sampleCenterFromHue(hueLut, hue);
+  const mat = queryMaterialFromHsv(segments, h, s, v, regimeBias);
   const absFloor = SCHED.WINDOW_HALF_ABS_MIN_S / Math.max(1e-3, bankDur);
   const sampleHalf = Math.min(
     0.49,
     Math.max(absFloor, halfSec / Math.max(1e-3, bankDur)),
   );
-  return { sampleCenter, sampleHalf: Math.max(1e-4, sampleHalf) };
+  return {
+    sampleCenter: mat.sampleCenter,
+    sampleHalf: Math.max(1e-4, sampleHalf),
+    centroidHz: mat.centroidHz,
+  };
 }
 
 function panFromX(x: number, width: number): number {
   const t = x / Math.max(1, width - 1);
   return Math.max(-1, Math.min(1, t * 2 - 1));
+}
+
+/** Source L/R mix from grid X: 0 = left channel, 1 = right. */
+export function channelMixFromX(x: number, width: number): number {
+  return clamp01(x / Math.max(1, width - 1));
 }
 
 const EMPTY_MASK = new Uint32Array(0);

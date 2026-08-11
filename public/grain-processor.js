@@ -1,10 +1,11 @@
 /**
- * AudioWorklet — ephemeral grains (V4.1 Continuous Laws).
+ * AudioWorklet — ephemeral grains (V5 Polar Material + Stereo Identity).
  *
  * Sample window / ping-pong bounds freeze at spawn (no scrub chase).
- * Any grain with a regionId directly follows that region's COM for pan + Y
- * (spawn offset preserved). No smoothing. Envelope frozen at spawn.
- * Y→spectrum via per-grain resonant bandpass over raw PCM.
+ * Any grain with a regionId directly follows that region's COM for pan, Y,
+ * and source L/R channelMix (spawn offset preserved). No smoothing.
+ * Envelope frozen at spawn. Y→spectrum is a relative offset around the
+ * chosen material centroid. Stereo source read via channelMix.
  * Energy normalisation keeps loudness roughly neutral (asymmetric).
  */
 
@@ -25,9 +26,11 @@ const ENV_ATTACK_CHAOS = 0.06;
 const ENV_RELEASE_CHAOS = 0.15;
 const ENV_ATTACK_CALM = 0.22;
 const ENV_RELEASE_CALM = 0.28;
-/** Y→cutoff exponential range (Hz). */
+/** Absolute safety floor/ceiling for bandpass (Hz). */
 const FILT_FMIN = 80;
 const FILT_FMAX = 12000;
+/** Y offset span in octaves around material centroid (± half of this). */
+const Y_OCTAVE_SPAN = 4;
 /** Fallback Q when spawn omits q (scheduler always sends continuous q). */
 const Q_DEFAULT = 2.0;
 /** Reference Q for bandwidth-compensated gain — keeps absolute level familiar. */
@@ -55,6 +58,8 @@ class GrainVoice {
     this.windowCenter = 0;
     this.windowHalf = 1;
     this.yNorm = 0.5;
+    this.materialCentroidHz = FC_REF;
+    this.channelMix = 0.5;
     this.r = 0.5;
     this.g = 0.5;
     this.b = 0.5;
@@ -66,6 +71,10 @@ class GrainVoice {
     this.trackDy = 0;
     /** Once set to ±1, pan holds at that extreme for the rest of the grain. */
     this.panSaturated = 0;
+    /** Last follow-anchor; used so COM wraps move the grain by +1, not ±width. */
+    this.lastAnchorX = 0;
+    this.lastAnchorY = 0;
+    this.hasFollowAnchor = false;
     this.gainL = 1;
     this.gainR = 1;
     this.regime = "chaos";
@@ -94,6 +103,10 @@ class GrainProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     /** @type {Float32Array | null} */
+    this.pcmL = null;
+    /** @type {Float32Array | null} */
+    this.pcmR = null;
+    /** Legacy alias — points at left (or mono) for length checks. */
     this.pcm = null;
     this.length = 0;
     this.sampleRate_ = sampleRate;
@@ -117,8 +130,21 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (msg.type === "source") {
         this.sampleRate_ = msg.sampleRate || sampleRate;
         this.length = msg.length || 0;
-        this.pcm = msg.pcm ? new Float32Array(msg.pcm) : null;
-        if (!this.length && this.pcm) this.length = this.pcm.length;
+        if (msg.pcmL && msg.pcmR) {
+          this.pcmL = new Float32Array(msg.pcmL);
+          this.pcmR = new Float32Array(msg.pcmR);
+          this.pcm = this.pcmL;
+        } else if (msg.pcm) {
+          // Mono fallback — duplicate into both channels.
+          this.pcmL = new Float32Array(msg.pcm);
+          this.pcmR = this.pcmL.slice();
+          this.pcm = this.pcmL;
+        } else {
+          this.pcmL = null;
+          this.pcmR = null;
+          this.pcm = null;
+        }
+        if (!this.length && this.pcmL) this.length = this.pcmL.length;
       } else if (msg.type === "events") {
         this.masterGainTarget =
           typeof msg.masterGain === "number" ? msg.masterGain : 1;
@@ -135,6 +161,8 @@ class GrainProcessor extends AudioWorkletProcessor {
         this.statsTriggers = 0;
       } else if (msg.type === "clear") {
         this.pcm = null;
+        this.pcmL = null;
+        this.pcmR = null;
         this.length = 0;
         this.masterGainTarget = 0;
         this.masterGain = 0;
@@ -145,7 +173,7 @@ class GrainProcessor extends AudioWorkletProcessor {
   }
 
   spawnEvents(list) {
-    if (!this.pcm || this.length < 2) return;
+    if (!this.pcmL || this.length < 2) return;
     const len = this.length;
     for (const e of list) {
       const voice = this.allocVoice();
@@ -165,6 +193,13 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.x = e.x || 0;
       voice.y = e.y || 0;
       voice.yNorm = clamp01(typeof e.yNorm === "number" ? e.yNorm : 0.5);
+      voice.materialCentroidHz =
+        typeof e.materialCentroidHz === "number" && e.materialCentroidHz > 0
+          ? e.materialCentroidHz
+          : FC_REF;
+      voice.channelMix = clamp01(
+        typeof e.channelMix === "number" ? e.channelMix : 0.5,
+      );
       voice.dir = e.direction < 0 ? -1 : 1;
       // Unknown / texture / osc regimes use calm envelope defaults (not chaos).
       voice.regime = e.regime === "chaos" ? "chaos" : e.regime || "calm";
@@ -252,13 +287,14 @@ class GrainProcessor extends AudioWorkletProcessor {
   }
 
   /**
-   * Direct pan/Y follow: any voice with regionId snaps to COM + spawn offset.
+   * Direct pan/Y/channelMix follow: any voice with regionId tracks the
+   * region's anchor by the shortest toroidal step (spawn offset preserved).
    * Sample window stays frozen. No smoothing.
-   */
-  /**
-   * Direct pan/Y follow: any voice with regionId snaps to anchor + spawn offset.
-   * Sample window stays frozen. No smoothing. Pan saturates at the torus seam
-   * instead of wrapping (avoids a one-frame +1→−1 flip).
+   *
+   * Pan saturates at the torus seam instead of wrapping (avoids a one-frame
+   * +1→−1 flip). Follow uses anchor *deltas*, not absolute `anchor+trackDx`,
+   * so when the COM itself wraps 127→0 the grain steps by +1 instead of
+   * jumping by −width and falsely latching panSaturated.
    */
   applyTracks(tracks) {
     /** @type {Map<number, {comX:number,comY:number,w:number,h:number}>} */
@@ -276,24 +312,41 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (!voice.active || voice.regionId < 0) continue;
       const t = byId.get(voice.regionId);
       if (!t) continue;
-      let x = t.comX + voice.trackDx;
+
+      const dx = voice.hasFollowAnchor
+        ? toroidalDelta(t.comX, voice.lastAnchorX, t.w)
+        : 0;
+      const dy = voice.hasFollowAnchor
+        ? toroidalDelta(t.comY, voice.lastAnchorY, t.h)
+        : 0;
+      voice.lastAnchorX = t.comX;
+      voice.lastAnchorY = t.comY;
+      voice.hasFollowAnchor = true;
+
+      let x;
       if (voice.panSaturated < 0) {
         x = 0;
       } else if (voice.panSaturated > 0) {
         x = t.w - 1;
-      } else if (x < 0) {
-        voice.panSaturated = -1;
-        x = 0;
-      } else if (x >= t.w) {
-        voice.panSaturated = 1;
-        x = t.w - 1;
+      } else {
+        x = voice.x + dx;
+        if (x < 0) {
+          voice.panSaturated = -1;
+          x = 0;
+        } else if (x >= t.w) {
+          voice.panSaturated = 1;
+          x = t.w - 1;
+        }
       }
-      const y = wrapCoord(t.comY + voice.trackDy, t.h);
+      const y = wrapCoord(voice.y + dy, t.h);
       voice.x = x;
       voice.y = y;
       voice.pan = panFromX(x, t.w);
       voice.yNorm = 1 - y / Math.max(1, t.h - 1);
+      voice.channelMix = clamp01(x / Math.max(1, t.w - 1));
       applyEqualPowerPan(voice, voice.pan);
+      // Relative Y follows region — refresh filter coeffs next process block.
+      voice.fcNorm = -1;
     }
   }
 
@@ -330,15 +383,28 @@ class GrainProcessor extends AudioWorkletProcessor {
   updateFilterCoeffs(voice) {
     const y = clamp01(voice.yNorm);
     const q = Math.max(0.5, voice.q);
-    if (Math.abs(y - voice.fcNorm) < 1e-6 && Math.abs(q - voice.filtQ) < 1e-6) {
+    const cent = Math.max(
+      FILT_FMIN,
+      voice.materialCentroidHz || FC_REF,
+    );
+    if (
+      Math.abs(y - voice.fcNorm) < 1e-6 &&
+      Math.abs(q - voice.filtQ) < 1e-6 &&
+      Math.abs(cent - (voice._lastCent || 0)) < 1e-3
+    ) {
       return;
     }
     voice.fcNorm = y;
     voice.filtQ = q;
+    voice._lastCent = cent;
     const fs = this.sampleRate_;
-    let fc = FILT_FMIN * Math.pow(FILT_FMAX / FILT_FMIN, y);
+    // Relative Y: ± Y_OCTAVE_SPAN/2 octaves around the material centroid.
+    const oct = (y - 0.5) * Y_OCTAVE_SPAN;
+    let fc = cent * Math.pow(2, oct);
     const fcMax = 0.45 * fs;
+    if (fc < FILT_FMIN) fc = FILT_FMIN;
     if (fc > fcMax) fc = fcMax;
+    if (fc > FILT_FMAX) fc = FILT_FMAX;
     const g = Math.tan((Math.PI * fc) / fs);
     const k = 1 / q;
     const a1 = 1 / (1 + g * (g + k));
@@ -372,10 +438,13 @@ class GrainProcessor extends AudioWorkletProcessor {
     return 1;
   }
 
-  readPcm(pos) {
+  readPcm(pos, channelMix = 0.5) {
     const len = this.length;
     const idx = wrapIndex(Math.round(pos), len);
-    return this.pcm[idx] || 0;
+    const l = this.pcmL ? this.pcmL[idx] || 0 : 0;
+    const r = this.pcmR ? this.pcmR[idx] || 0 : l;
+    const t = clamp01(channelMix);
+    return l * (1 - t) + r * t;
   }
 
   bandpass(voice, v0) {
@@ -399,7 +468,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (outR !== outL) outR[i] = 0;
     }
 
-    if (!this.pcm || this.length < 2) {
+    if (!this.pcmL || this.length < 2) {
       this.emitStats(0, 0);
       return true;
     }
@@ -442,7 +511,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         }
 
         const e = this.envelopeAt(voice);
-        const raw = this.readPcm(voice.readPos);
+        const raw = this.readPcm(voice.readPos, voice.channelMix);
         const band = this.bandpass(voice, raw);
         const s =
           band *
@@ -588,6 +657,14 @@ function softClip(x) {
 
 function wrapCoord(v, period) {
   return ((v % period) + period) % period;
+}
+
+/** Shortest signed step from `from` to `to` on a torus of length `period`. */
+function toroidalDelta(to, from, period) {
+  let d = to - from;
+  if (d > period * 0.5) d -= period;
+  if (d < -period * 0.5) d += period;
+  return d;
 }
 
 function panFromX(x, width) {

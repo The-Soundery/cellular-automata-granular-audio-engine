@@ -1,20 +1,20 @@
-Cellular Automata Granular Audio Engine — Implementation Filter (V4.4)
-Status: V4.4 COMPLETE — harness-green 2026-08-10/11; owner listening signed off
-  2026-08-11. Sonic Laws LIVE + V4.3 Loudness/Spend/Stasis + V4.4 defect fixes.
-North star: Creative Brief v4.txt
+Cellular Automata Granular Audio Engine — Implementation Filter (V5)
+Status: V5 CODE COMPLETE — harness-green 2026-08-11; owner ears open
+  (`scripts/listening-gate-v5.md`). V4.4 COMPLETE (ears signed off 2026-08-11).
+North star: Creative Brief v4.txt (includes V5 addendum)
 Entry for agents: this file first, then the Brief, then
-  `scripts/v4.4-implementation-log.md` (gate record). Listening checklist
-  (closed): `scripts/listening-gate-sonic-laws.md`.
+  `IMPLEMENTATION_PLAN_V5.md` and `scripts/v5-implementation-log.md`.
+  Historical: `scripts/v4.4-implementation-log.md`.
+  Listening: `scripts/listening-gate-v5.md` (V5); V4.4 checklist closed.
 
->> 2026-08-11: V4.4 Phases 1–8 are committed on branch `v4.1`. Do not
->> re-execute IMPLEMENTATION_PLAN_V4.4.md. Listening gate and ear-open issues
->> (Filter 1–4) are CLOSED. Do not lower deltaRateNorm.
+>> V4.4 Phases 1–8 are committed. Do not re-execute IMPLEMENTATION_PLAN_V4.4.md.
+>> Do not lower deltaRateNorm.
+>> V5 polar/stereo/relative-Y is live in code; complete listening-gate-v5.md.
 
 Historical detail: scripts/v4.3-implementation-log.md (do not re-execute).
 V4.4 gate record: scripts/v4.4-implementation-log.md
 Verify: `npm run build && npm run verify`
   (= phase 0–4 scripts + investigate --stage 9 + render --stage 7)
-Manual ears (signed off): scripts/listening-gate-sonic-laws.md
 Scenarios: scripts/test-scenarios.md
 
 ------------------------------------------------------------------------------
@@ -26,9 +26,11 @@ STOP — do not revive
 - Voice ownership / structure tracking / fieldOrder scoring
 - Rebake-on-change or “dumb paint of frozen scrub positions”
 - Mid-grain sample-window scrub chase of moving regions
-  (direct pan / Y-spectrum follow for region-bound grains is allowed)
+  (direct pan / Y-spectrum / channel-mix follow for region-bound grains is allowed)
 - V3 identity (X→sample / RGB→envelope) without a new listening decision
 - 48-bin offline spectral bank (replaced by per-grain resonant bandpass)
+- 1D hue→centroid LUT as the sole material axis (superseded by V5 polar map)
+- Mono fold-down of the source as the only playback buffer (analysis may use mono)
 - Doppler / velocity→grain rate (pitch offsets beyond ±1) — rejected
 - Stratified spawn sites for calm/texture are sampling, not listening posts;
   they are scoped to those two pools and must never be given persistence or
@@ -83,20 +85,26 @@ Still deferred / harness notes:
    full-flicker lower band 1200 Hz is ~44% below ideal 64/0.03 ≈ 2133.
    Direct guard is avg active ∈ [55, 64]. Check concurrency before rate.
 
+7. Deferred (separate from V5): Prev/Next/Random Type-U variations emit
+   scalar greyscale fields. Owner pastes coloured equations; mapping must
+   work for grey and colour. Do not block V5 on equation-family rewrite.
+
 ------------------------------------------------------------------------------
 Live pipeline
 ------------------------------------------------------------------------------
 
 Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
   → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
-  → grain-processor (hue-locked window; bandwidth-compensated bandpass;
+  → grain-processor (polar HSV window; stereo L/R by channelMix;
+                     relative Y bandpass; bandwidth-compensated;
                      envNorm after attack/release rescale; equal-power pan;
-                     direct pan/Y follow)
+                     direct pan/Y/channelMix follow)
 
 Observation: calm / textured / chaotic / oscillators (remainder split).
 Scheduler: area-share concurrency; split material (timeOrder→dur/env,
   spectralT→Q); stratified+dispersion sites (calm/texture); SPAWN_ANCHOR_R_MIN;
-  scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only.
+  scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only; HSV→polar material query
+  with regime stationarity bias.
 Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
   mono 0.5*(L+R) reported secondary only.
 
@@ -112,7 +120,8 @@ Negotiable (not doctrine):
   maxCalmConcurrent/textureMaxConcurrent 64, calmPackRateMin 1.0,
   CHAOS_EVENTS_MAX_HZ 4000, deltaRateNorm 0.35 (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
-  SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
+  SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax, Y_OCTAVE_SPAN
+- Spectral — CENTROID_HOP_SEC, analysis FFT, polar weight / regime bias
 - Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS
 
 Harnesses:
@@ -121,7 +130,7 @@ Harnesses:
   audio flux reported not asserted
 
 ------------------------------------------------------------------------------
-Adopted Brief doctrine (V4.3 + V4.4)
+Adopted Brief doctrine (V4.3 + V4.4 + V5)
 ------------------------------------------------------------------------------
 
 - Neutrality is measured, not assumed. Any mapping axis that changes output
@@ -136,3 +145,6 @@ Adopted Brief doctrine (V4.3 + V4.4)
 - Percussiveness is a coverage consequence (share ÷ duration), not an
   envelope tweak. A pulsed pool spends its share at the pulse; silence
   between hits is not an unspent share.
+- V5: HSV polar material + stereo channel mix + relative Y. Soft regime
+  stationarity bias is identity, not share policy. Window stays frozen;
+  channel mix may follow with pan.

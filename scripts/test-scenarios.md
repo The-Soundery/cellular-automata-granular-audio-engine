@@ -1,6 +1,9 @@
-# Test Scenarios — V4.3 Harness
+# Test Scenarios — V5 Harness (polar material)
 
 Shared synthetic patterns live in `src/field/TestPatterns.ts`.
+Headless runs inject a synthetic polar segment map so HSV axes move
+`sampleCenter` without loading a WAV (see `makeTestMaterialSegments` in the
+investigate/render scripts). Live app uses `buildSpectralBank` on the upload.
 
 **Agent note:** these patterns often *saturate* δ. Passing rates/balance here
 does **not** prove chaos is balanced on real Utomata (see Implementation
@@ -13,11 +16,13 @@ Filter → live chaos δ̄ / `deltaRateNorm` / `t = δ̄/0.35`).
 2. **Audio harness** — `node scripts/render-scenarios.mjs --stage N`  
    Offline worklet: primary RMS = √mean(L²+R²); mono reported secondary;
    crest, sites, block-RMS, cold-start. Audio Welch-mel flux reported only.
+   Source is sent as stereo L/R (mono duplicated).
 
 In-app: Sim select. Grid 128×128 @ 30 steps/s. Default measure: last 7 s of 14 s
 (frozen-noise longer for per-slot sampleCenter; breathing-uniform 13 s).
 
 Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
+Listening: `scripts/listening-gate-v5.md`.
 
 ---
 
@@ -36,10 +41,10 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 - **Simulates:** Uniform field, hue rotates slowly (~55 s full cycle).
 - **Ground truth:** Still one calm mass; tiny continuous δ; not rhythmic.
 - **Observer:** calm% ≈ 100.
-- **Audio:** calm packing; sampleCenter drifts with hue; flux near static
-  (hue cannot move a flat source's spectrum).
-- **Assertions:** investigate stage 4(iv) sampleCenter spread ≥½·0.0006·30·window;
-  stage 6 pulse-burst ≤1; render flux ×2 ≤ flicker.
+- **Audio (V5):** calm packing; sampleCenter drifts with polar hue angle;
+  flux near static on a flat source spectrum.
+- **Assertions:** investigate stage 4(iv) sampleCenter spread ≥½·0.0006·30·window
+  (V5 polar hue); stage 6 pulse-burst ≤1; render flux ×2 ≤ flicker.
 
 ## frozen-noise
 

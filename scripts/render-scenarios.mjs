@@ -104,6 +104,28 @@ function dbSpread(values) {
   return Math.max(...dbs) - Math.min(...dbs);
 }
 
+/** Polar segments spanning the file so HSV axes move sampleCenter in tests. */
+function makeTestMaterialSegments(n = 64) {
+  const segs = [];
+  const denom = Math.max(1, n - 1);
+  for (let i = 0; i < n; i++) {
+    const t = i / denom;
+    // Band decorrelated from angle so hue-drift is not pinned by value.
+    const band = ((i * 7) % n) / denom;
+    const stationarity = 0.15 + 0.7 * ((i % 5) / 4);
+    segs.push({
+      pos: t,
+      centroidHz: 120 * Math.pow(50, t),
+      stationarity,
+      energy: 1,
+      angle: t,
+      radius: 0.7 + 0.3 * stationarity,
+      band,
+    });
+  }
+  return segs;
+}
+
 function makeField() {
   return {
     width: W,
@@ -128,11 +150,15 @@ function send(proc, msg) {
 }
 
 function loadSource(proc, pcm) {
+  // Mono test sources → duplicate into L/R (V5 stereo bank).
+  const pcmL = pcm instanceof Float32Array ? pcm : new Float32Array(pcm);
+  const pcmR = pcmL.slice();
   send(proc, {
     type: "source",
     sampleRate: FS,
-    length: pcm.length,
-    pcm,
+    length: pcmL.length,
+    pcmL,
+    pcmR,
   });
   proc.masterGain = 1;
   proc.masterGainTarget = 1;
@@ -229,6 +255,7 @@ function recordScenario(pattern) {
   const obs = new FieldObserver(W, H);
   const sched = new GrainScheduler();
   sched.setSourceDurationSec(SOURCE_DUR_SEC);
+  sched.setMaterialSegments(makeTestMaterialSegments(64));
 
   let prev = makeField();
   let cur = makeField();
@@ -740,6 +767,7 @@ async function runColdStart(Processor, pattern, pcm) {
   const fieldObs = new FieldObserver(W, H);
   const sched = new GrainScheduler();
   sched.setSourceDurationSec(SOURCE_DUR_SEC);
+  sched.setMaterialSegments(makeTestMaterialSegments(64));
 
   const proc = new Processor();
   loadSource(proc, pcm);

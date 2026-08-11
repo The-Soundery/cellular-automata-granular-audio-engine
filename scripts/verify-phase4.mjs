@@ -1,6 +1,7 @@
 /**
  * Phase 4 — Sonic Laws listening / contract gate (automated portion).
- * Manual listening checklist: scripts/listening-gate-sonic-laws.md
+ * Manual listening checklist (V5): scripts/listening-gate-v5.md
+ * Historical V4.4: scripts/listening-gate-sonic-laws.md
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -22,7 +23,8 @@ const brief = readFileSync(join(root, "Creative Brief v4.txt"), "utf8");
 const worklet = readFileSync(join(root, "public/grain-processor.js"), "utf8");
 const sched = readFileSync(join(root, "src/field/GrainScheduler.ts"), "utf8");
 const main = readFileSync(join(root, "src/main.ts"), "utf8");
-const gate = join(root, "scripts/listening-gate-sonic-laws.md");
+const gateV5 = join(root, "scripts/listening-gate-v5.md");
+const gateV44 = join(root, "scripts/listening-gate-sonic-laws.md");
 
 assert("Sonic Laws in brief", /Sonic Laws \(authoritative\)/.test(brief));
 assert("freeze-at-spawn in brief", /Freeze at spawn/.test(brief));
@@ -30,16 +32,21 @@ assert(
   "brief allows direct pan/Y region follow",
   /directly follow|Allowed to track directly/i.test(brief),
 );
+assert(
+  "brief documents V5 polar / stereo / channel-mix follow",
+  /polar/i.test(brief) && /channel mix/i.test(brief),
+);
 assert("brief has no velocity-hybrid", !/velocity-hybrid/i.test(brief));
 assert(
   "brief forbids sample scrub chase",
   /sample scrub window|Sample \/ scrub window/i.test(brief),
 );
-assert("listening gate doc present", existsSync(gate));
-const gateSrc = readFileSync(gate, "utf8");
+assert("listening gate V5 doc present", existsSync(gateV5));
+assert("listening gate V4.4 archive present", existsSync(gateV44));
+const gateSrc = readFileSync(gateV5, "utf8");
 assert(
-  "listening gate allows direct pan/Y follow",
-  /directly follow|pan \/ spectrum directly/i.test(gateSrc),
+  "listening gate V5 covers polar / stereo / relative Y",
+  /polar/i.test(gateSrc) && /stereo/i.test(gateSrc) && /relative/i.test(gateSrc),
 );
 assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/.test(main) && /scheduler\.step/.test(main) && /sendEvents/.test(main));
 assert(
@@ -64,8 +71,28 @@ assert("live worklet is not lattice archive", !/latticeIndex/.test(worklet));
 const spectral = readFileSync(join(root, "src/audio/spectral.ts"), "utf8");
 const audioSrc = readFileSync(join(root, "src/audio/AudioEngine.ts"), "utf8");
 assert("source prep has seam crossfade", /SEAM_FADE/.test(spectral));
-assert("source prep has perceptual hue LUT", /hueSampleLut/.test(spectral) && /spectralCentroid|buildHueSampleLut/.test(spectral));
-assert("scheduler uses perceptual sample center", /sampleCenterFromHue/.test(sched));
+assert(
+  "source prep has polar HSV material map",
+  /queryMaterialFromHsv/.test(spectral) &&
+    /buildPolarSegments|MaterialSegment/.test(spectral) &&
+    /stationarity/.test(spectral),
+);
+assert(
+  "scheduler uses polar material query",
+  /queryMaterialFromHsv/.test(sched) && /setMaterialSegments/.test(sched),
+);
+assert(
+  "source prep is stereo (pcmL/pcmR)",
+  /pcmL/.test(spectral) && /pcmR/.test(spectral),
+);
+assert(
+  "worklet reads stereo via channelMix",
+  /channelMix/.test(worklet) && /pcmL/.test(worklet) && /pcmR/.test(worklet),
+);
+assert(
+  "worklet Y is relative to material centroid",
+  /materialCentroidHz/.test(worklet) && /Y_OCTAVE_SPAN/.test(worklet),
+);
 assert("source prep has no 48-bin bank", !/SPECTRAL_BIN_COUNT/.test(spectral) && !/bins:\s*Float32Array/.test(spectral));
 assert("source message has no bins", !/msg\.bins/.test(worklet) && !/\bbins:/.test(audioSrc));
 assert("per-grain filter present", /ic1eq/.test(worklet));
@@ -80,4 +107,4 @@ if (failed) {
   console.error(`\nPhase 4 verify: ${failed} failure(s)`);
   process.exit(1);
 }
-console.log("\nPhase 4 verify: passed (automated). Complete manual checklist in listening-gate-sonic-laws.md");
+console.log("\nPhase 4 verify: passed (automated). Complete manual checklist in listening-gate-v5.md");

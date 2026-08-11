@@ -4,7 +4,7 @@ import {
   randomVariation,
   variationAt,
 } from "./ca/typeU.ts";
-import { FrameObserver } from "./field/FrameObserver.ts";
+import { FrameObserver, type RgbField } from "./field/FrameObserver.ts";
 import { FieldObserver, type FieldObservation } from "./field/FieldObserver.ts";
 import {
   GrainScheduler,
@@ -18,6 +18,7 @@ import {
   type TestPattern,
 } from "./field/TestPatterns.ts";
 import { AudioEngine, type RecordingResult } from "./audio/AudioEngine.ts";
+import { rgbToHsv } from "./audio/spectral.ts";
 import {
   mountControls,
   type AudioMeterStats,
@@ -140,7 +141,7 @@ function syncSourceDuration(): void {
   const bank = audio.getBank();
   if (!bank) return;
   scheduler.setSourceDurationSec(bank.durationSec);
-  scheduler.setHueSampleLut(bank.hueSampleLut);
+  scheduler.setMaterialSegments(bank.segments);
 }
 
 async function ensureDefaultSource(): Promise<void> {
@@ -412,6 +413,7 @@ function pushStats(forceMeter = false) {
       }
       if (!audio.isReady && due) lastMeterUiAt = now;
     }
+    const colourDiag = fieldColourDiagnostics(frameObserver.current);
     field = {
       regions: lastObs.coherent.length,
       calmPct: lastObs.calmAreaFraction,
@@ -425,6 +427,8 @@ function pushStats(forceMeter = false) {
       chaosT: smoothFieldDelta!.chaosT,
       calmMeanDelta: smoothFieldDelta!.calmMeanDelta,
       staticMeanDelta: smoothFieldDelta!.staticMeanDelta,
+      meanSat: colourDiag.meanSat,
+      hueSpread: colourDiag.hueSpread,
       calmGrains: lastBatch?.calmActive ?? 0,
       chaosGrains: lastBatch?.chaosActive ?? 0,
       textureGrains: lastBatch?.textureActive ?? 0,
@@ -497,6 +501,32 @@ function tick() {
 
   pushStats();
   requestAnimationFrame(tick);
+}
+
+/** Diagnostic: mean saturation + hue spread (1 − mean resultant length). */
+function fieldColourDiagnostics(field: RgbField): {
+  meanSat: number;
+  hueSpread: number;
+} {
+  const n = field.width * field.height;
+  let sumSat = 0;
+  let sumC = 0;
+  let sumS = 0;
+  let coloured = 0;
+  for (let i = 0; i < n; i++) {
+    const { h, s } = rgbToHsv(field.r[i]!, field.g[i]!, field.b[i]!);
+    sumSat += s;
+    if (s > 0.05) {
+      const ang = h * Math.PI * 2;
+      sumC += Math.cos(ang);
+      sumS += Math.sin(ang);
+      coloured += 1;
+    }
+  }
+  const meanSat = sumSat / Math.max(1, n);
+  if (coloured < 1) return { meanSat, hueSpread: 0 };
+  const R = Math.hypot(sumC / coloured, sumS / coloured);
+  return { meanSat, hueSpread: Math.max(0, Math.min(1, 1 - R)) };
 }
 
 requestAnimationFrame(tick);
