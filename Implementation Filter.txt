@@ -1,20 +1,19 @@
-Cellular Automata Granular Audio Engine — Implementation Filter (V4.3)
-Status: COMPLETE (harness-green 2026-08-05). Sonic Laws LIVE + V4.3 Loudness /
-  Spend / Stasis. Ear validation of V4.2/V4.3 character still outstanding — see
-  OPEN ISSUES below before "fixing" chaos level or material character.
+Cellular Automata Granular Audio Engine — Implementation Filter (V4.4)
+Status: V4.4 CODE COMPLETE (harness-green 2026-08-10/11). Sonic Laws LIVE +
+  V4.3 Loudness/Spend/Stasis + V4.4 defect fixes and listening instruments.
+  Owner ear re-pass outstanding — see OPEN ISSUES and listening gate.
 North star: Creative Brief v4.txt
-Entry for agents: this file first, then the Brief, then OPEN ISSUES.
+Entry for agents: this file first, then `scripts/v4.4-implementation-log.md`
+  (handoff + measured findings), then the Brief, then OPEN ISSUES, then
+  `scripts/listening-gate-sonic-laws.md` for the unchecked ear checklist.
 
->> 2026-08-06: the V4.2/V4.3 ear validation has now been run. It found four
->> defects and left six gate items untestable. The triage is in
->> scripts/listening-gate-sonic-laws.md and the work order is
->> IMPLEMENTATION_PLAN_V4.4.md — read its HANDOFF section before this file's
->> OPEN ISSUES. OPEN ISSUE 1 below is CLOSED: live Utomata measures δ̄
->> 0.26–0.30 (not δ ≈ 0.1). V4.4 Phases 1–7 implement the plan fixes and
->> listening instruments; Phase 8 corrects these docs. Owner re-listen of the
->> listening gate is still outstanding.
+>> 2026-08-11: V4.4 Phases 1–8 are committed on branch `v4.1`. Do not re-execute
+>> IMPLEMENTATION_PLAN_V4.4.md. Continue with the listening gate unchecked
+>> items and the Gate leftovers listed in the V4.4 implementation log.
+>> OPEN ISSUE 1 is CLOSED (live δ̄ 0.26–0.30). Do not lower deltaRateNorm.
 
-Historical detail: scripts/v4.3-implementation-log.md (do not re-execute the plan).
+Historical detail: scripts/v4.3-implementation-log.md (do not re-execute).
+V4.4 gate record: scripts/v4.4-implementation-log.md
 Verify: `npm run build && npm run verify`
   (= phase 0–4 scripts + investigate --stage 9 + render --stage 7)
 Manual ears: scripts/listening-gate-sonic-laws.md

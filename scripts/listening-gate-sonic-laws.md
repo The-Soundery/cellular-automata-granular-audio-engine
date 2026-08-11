@@ -1,24 +1,30 @@
 # Listening gate — Sonic Laws (manual)
 
-**Status:** V4.1 Continuous Laws ear-validated (2026-08-02).
-V4.2/V4.3 owner listening pass 2026-08-06 — triaged below.
+**Status:** V4.4 code complete (harness-green). Owner re-listen outstanding.
+V4.1 Continuous Laws ear-validated (2026-08-02).
+V4.2/V4.3 owner listening pass 2026-08-06 — defects fixed in V4.4; returned
+below as unchecked. Gate leftovers and measured findings:
+`scripts/v4.4-implementation-log.md`.
 
 North star: `Creative Brief v4.txt`.
-Agent map: `Implementation Filter.txt` (OPEN ISSUES).
+Agent map: `Implementation Filter.txt` → `scripts/v4.4-implementation-log.md`.
 Automated: `npm run verify` (investigate stage 9 + render stage 7).
 
 Use this checklist with ears + the region overlay after Enable Audio.
 
 Items settled by reading or measuring the code are marked `(code)` and are no
-longer ear questions. Items the code shows are **broken** are under Defects;
-items no sim can currently test are under Blocked. Neither belongs in an ear
-pass until cleared.
+longer ear questions. Unchecked `[ ]` items are the active ear pass — do not
+check them for the owner.
 
 ## Setup
 
 - [x] App boots; CA visible; Field observation meters move
+- [ ] Field observation shows Chaos δ̄, Chaos t, Calm δ̄, Static δ̄ (V4.4 Phase 7);
+      on settled live Utomata expect chaos δ̄ 0.26–0.30 and t 0.75–0.87
 - [x] Enable Audio loads default source without errors
 - [x] Overlay shows cell silhouettes with bright edges; Overlay On/Off works
+- [ ] Overlay regime colours (static grey / chaos warm / osc cool) + legend
+      readable under the CA (V4.4 Phase 6)
 - [x] Spend meter shows `c a/s · s a/s · x a/s · o a/s` (active/share), not just %
 
 ## Freeze-at-spawn (sample) + pan/Y track
@@ -29,8 +35,9 @@ pass until cleared.
       once and nothing writes them again; `applyTracks` touches only
       x, y, pan, yNorm and the pan gains.
 - [x] Region grains' pan / spectrum directly follow the region (no lag/smoothing)
-      — (code) `applyTracks` snaps to COM + spawn offset with no filtering.
-      *What* it follows is wrong for low-concentration regions — see Defect 2.
+      — (code) `applyTracks` snaps to **anchor** + spawn offset (V4.4 Phase 2);
+      low-concentration axes hold at grid centre. Pan saturates at torus seam
+      (Phase 2f) instead of wrapping.
 - [x] Chaos-bag grains keep spawn pan/Y (no region id)
       — (code) `spawnChaos` sets `regionId: -1`; `applyTracks` skips
       `regionId < 0`.
@@ -41,16 +48,17 @@ pass until cleared.
 - [x] Solid single colour → soft attack, overlap, sustained (not one lonely grain)
 - [ ] Frozen noise (Sim: frozen-noise) → slow textured wash, not chaos rattle;
       sites feel stable; **distinct character from uniform-static** at same level
-- [x] Area share spent: Spend meter active ≈ share for calm / static / chaos
-      — (code) calm, texture and chaos all reach share. The **osc** pool does
-      not — see Defect 4.
+- [ ] Uniform-static / hue-drift feel spatially wide (V4.4 Phase 3 dispersion);
+      not narrow-centred (Gate 3iv)
+- [x] Area share spent: Spend meter active ≈ share for calm / static / chaos / osc
+      — (code) V4.4 Phase 4: osc fires whole share per pulse at OSC_DUTY 0.35
 - [x] Order→disorder sweep glides through materials — not a two-mood snap
 - [x] Paused / static heterogeneous field → near-silence; sound resumes with change
 
 Chaos grain length is settled by measurement, not ears — (code) 30.0 ms at
 saturated δ (0.60 ms attack, 29.4 ms release, no sustain), and 49–75 ms at the
 live Utomata chaos mean. Whether that *reads* as percussive is a density
-question, not an envelope question, and needs the small-chaos sim (Blocked).
+question — listen on `chaos-blob-2pct` / `chaos-blob-10pct`.
 
 ## Real Utomata chaos balance — SETTLED (code)
 
@@ -134,8 +142,9 @@ in Filter OPEN ISSUE 1 does not hold for live Utomata. Do not lower
 
 ## Pass
 
-Re-run the unchecked items above after V4.4. Items still under Still blocked
-or Open doctrine are not ear-pass blockers for the rest.
+Work the unchecked `[ ]` items above with ears. Measured gate leftovers and
+sim findings for the next agent are in `scripts/v4.4-implementation-log.md`.
+Items under Still blocked or Open doctrine are not ear-pass blockers for the rest.
 
 Do not revive lattice / ownership / 48-bin bank / Doppler /
 mono-as-primary-RMS / chaos Hz as mix policy.
