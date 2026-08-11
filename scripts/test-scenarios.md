@@ -4,7 +4,7 @@ Shared synthetic patterns live in `src/field/TestPatterns.ts`.
 
 **Agent note:** these patterns often *saturate* δ. Passing rates/balance here
 does **not** prove chaos is balanced on real Utomata (see Implementation
-Filter → OPEN ISSUES → `deltaRateNorm` / `t = δ̄/0.35`).
+Filter → live chaos δ̄ / `deltaRateNorm` / `t = δ̄/0.35`).
 
 ## Two harnesses
 

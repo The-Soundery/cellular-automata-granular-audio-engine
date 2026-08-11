@@ -1,21 +1,24 @@
-Cellular Automata Granular Audio Engine — Creative Brief (V4 … V4.3)
+Cellular Automata Granular Audio Engine — Creative Brief (V4 … V4.4)
 Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
 Supersedes prior V3 identity mapping (X→sample / RGB→envelope).
 Keeps V3 ephemeral-grain / area-budget / freeze-at-spawn architecture.
 Source: Sonic Laws session (2026-07-31); V4 listening remap (2026-08-01);
         V4.1 Continuous Laws ear-validated (2026-08-02);
         V4.2 Recognition & Coupling harness-verified (2026-08-04);
-        V4.3 Loudness / Spend / Stasis harness-green (2026-08-05)
-        — PENDING owner listening validation (see V4.3 section + Filter OPEN ISSUES).
+        V4.3 Loudness / Spend / Stasis harness-green (2026-08-05),
+        ear-validated with V4.4 (2026-08-11);
+        V4.4 defect fixes + listening instruments COMPLETE (2026-08-11).
 
 ------------------------------------------------------------------------------
-HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-05)
+HANDOFF — READ BEFORE CONTINUING DEVELOPMENT (2026-08-11)
 ------------------------------------------------------------------------------
 
-Agent entry: `Implementation Filter.txt` (pipeline, STOP list, OPEN ISSUES).
-North star: this Brief. Historical gates: `scripts/v4.3-implementation-log.md`.
+Agent entry: `Implementation Filter.txt` (pipeline, STOP list, deferred items).
+North star: this Brief. Gate records: `scripts/v4.4-implementation-log.md`
+(and historical `scripts/v4.3-implementation-log.md`). Listening checklist
+signed off: `scripts/listening-gate-sonic-laws.md`.
 
-Identity (listening-validated V4.1; V4.2/V4.3 character pending ears):
+Identity (listening-validated through V4.4):
 
   Hue(RGB) → sample position (centroid-ordered LUT) · saturation → window width
   X → stereo pan · Y → spectrum (per-grain bandpass) · envelope from κ/δ order
@@ -35,9 +38,11 @@ DO NOT continue or refine:
 - Doppler / velocity→grain rate (pitch offsets beyond ±1)
 - Caps that prevent a pool from spending its area share (loudness policy)
 - Treating CHAOS_EVENTS_MAX_HZ as a mix knob (CPU rail only)
+- Lowering deltaRateNorm against the closed live-chaos under-spend claim
 
-Next work: owner listening + negotiable fine-tune (especially live chaos
-balance via deltaRateNorm) — not architectural rewrites.
+Next work (only if deliberately opened): deferred fourth regime for moving
+figures; optional Q←Y-extent doctrine rewrite; negotiable constant fine-tune.
+Not architectural rewrites of the Sonic Laws.
 
 
 ------------------------------------------------------------------------------
@@ -423,7 +428,8 @@ LIVE PIPELINE
                        per-grain bandpass; analytic envelope; onset jitter;
                        direct pan/Y follow; asymmetric energy normalisation)
 
-Listening gate: scripts/listening-gate-sonic-laws.md (V4.1 ear-validated 2026-08-02).
+Listening gate: scripts/listening-gate-sonic-laws.md (V4.1 2026-08-02; V4.4
+full re-pass signed off 2026-08-11).
 Next: fine-tune negotiable constants only.
 
 Do not revive V2 StructureTracker / allocator / interestingness scoring.
@@ -448,12 +454,12 @@ FILT_FMIN/FMAX; CENTROID_HOP_SEC; worklet NORM_* / TARGET_RMS.
 
 
 ------------------------------------------------------------------------------
-V4.2 Recognition & Coupling — IMPLEMENTED (2026-08-04, pending listening)
+V4.2 Recognition & Coupling — COMPLETE (harness 2026-08-04; ears with V4.4 2026-08-11)
 ------------------------------------------------------------------------------
 
 Harness-verified against synthetic ground-truth scenarios
-(scripts/investigate-scenarios.mjs, `npm run verify`); ear validation by the
-owner is still outstanding. Motivating findings: a frozen noise field read as
+(scripts/investigate-scenarios.mjs, `npm run verify`); ear-validated with the
+V4.4 listening sign-off. Motivating findings: a frozen noise field read as
 100% chaos firing 67 grains/s; per-grain bandpass gain scaled with Q (+18 dB
 at Q=8), breaking loudness neutrality.
 
@@ -513,11 +519,12 @@ time-stretch audibility on evolving simulations; Reset/overload declicks.
 
 
 ------------------------------------------------------------------------------
-V4.3 Loudness / Spend / Stasis — IMPLEMENTED (2026-08-05, pending listening)
+V4.3 Loudness / Spend / Stasis — COMPLETE (harness 2026-08-05; ears 2026-08-11)
 ------------------------------------------------------------------------------
 
 Harness-green: `npm run verify` (investigate stage 9 + render stage 7).
 Detail: `scripts/v4.3-implementation-log.md`. Agent map: Implementation Filter.
+Doctrine lines 1–4 below: ADOPTED (owner listening 2026-08-11).
 
 Laws clarified or added:
 
@@ -532,8 +539,8 @@ Laws clarified or added:
 
 3. Two axes, two consequences. timeOrder (stability + extent) → duration and
    envelope; spatial similarity → Q. Still-and-uniform and still-and-detailed
-   must differ in material at matched loudness (mean-Q gate: frozen 1.32 vs
-   uniform 8.00 — character is ear-only).
+   differ in material at matched loudness (mean-Q gate: frozen 1.32 vs
+   uniform 8.00; ear-confirmed).
 
 4. Sampling must not manufacture change. Calm/texture spawn sites are
    stratified and dispersion-weighted from measured colourSpread; circular
@@ -547,25 +554,23 @@ Laws clarified or added:
    REL_CHAOS 0.98, DUR_MIN 0.03); calm end stays sustained. Osc/blinker
    envelope left at 0.04/0.2.
 
-OPEN — do not "fix" from saturated-δ harness alone (see Filter):
+Closed by measurement + ears (do not reopen without new evidence):
 
-- Live chaos thinness: CLOSED — measured δ̄ 0.26–0.30 → t 0.75–0.87 (~1 dB
-  under-spend), not the old δ≈0.1 / ~5 dB claim. Do not lower deltaRateNorm.
-- Whether frozen-noise vs uniform-static read as different materials.
-- Whether short chaos reads as clicks; whether blinkers still sound right.
-  Density brackets: chaos-blob-2pct / chaos-blob-10pct.
-
-Proposed doctrine lines above (1–4) are for owner adopt/reject after listening.
+- Live chaos thinness: δ̄ 0.26–0.30 → t 0.75–0.87 (~1 dB under-spend). Do not
+  lower deltaRateNorm.
+- frozen-noise vs uniform-static read as different materials.
+- Sparse chaos (chaos-blob-2pct) reads percussive; denser coverage
+  (chaos-blob-10pct) reads as a rattle; blinker pulses remain discrete.
 
 
 ------------------------------------------------------------------------------
-V4.4 — IMPLEMENTED (2026-08-10, pending listening re-pass)
+V4.4 — COMPLETE (code 2026-08-10/11; ears 2026-08-11)
 ------------------------------------------------------------------------------
 
-Work order: IMPLEMENTATION_PLAN_V4.4.md. Harness-green after Phases 1–7.
+Work order: IMPLEMENTATION_PLAN_V4.4.md (historical). Gate record:
+`scripts/v4.4-implementation-log.md`. Listening checklist signed off.
 
-PROPOSED doctrine addenda (pending owner listen / adopt — same status as the
-V4.3 proposed lines):
+ADOPTED doctrine addenda:
 
 - Percussiveness is a coverage consequence, not an envelope setting.
   Event rate is share ÷ duration, so spending a large area share always

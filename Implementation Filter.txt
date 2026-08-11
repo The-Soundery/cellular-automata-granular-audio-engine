@@ -1,22 +1,20 @@
 Cellular Automata Granular Audio Engine — Implementation Filter (V4.4)
-Status: V4.4 CODE COMPLETE (harness-green 2026-08-10/11). Sonic Laws LIVE +
-  V4.3 Loudness/Spend/Stasis + V4.4 defect fixes and listening instruments.
-  Owner ear re-pass outstanding — see OPEN ISSUES and listening gate.
+Status: V4.4 COMPLETE — harness-green 2026-08-10/11; owner listening signed off
+  2026-08-11. Sonic Laws LIVE + V4.3 Loudness/Spend/Stasis + V4.4 defect fixes.
 North star: Creative Brief v4.txt
-Entry for agents: this file first, then `scripts/v4.4-implementation-log.md`
-  (handoff + measured findings), then the Brief, then OPEN ISSUES, then
-  `scripts/listening-gate-sonic-laws.md` for the unchecked ear checklist.
+Entry for agents: this file first, then the Brief, then
+  `scripts/v4.4-implementation-log.md` (gate record). Listening checklist
+  (closed): `scripts/listening-gate-sonic-laws.md`.
 
->> 2026-08-11: V4.4 Phases 1–8 are committed on branch `v4.1`. Do not re-execute
->> IMPLEMENTATION_PLAN_V4.4.md. Continue with the listening gate unchecked
->> items and the Gate leftovers listed in the V4.4 implementation log.
->> OPEN ISSUE 1 is CLOSED (live δ̄ 0.26–0.30). Do not lower deltaRateNorm.
+>> 2026-08-11: V4.4 Phases 1–8 are committed on branch `v4.1`. Do not
+>> re-execute IMPLEMENTATION_PLAN_V4.4.md. Listening gate and ear-open issues
+>> (Filter 1–4) are CLOSED. Do not lower deltaRateNorm.
 
 Historical detail: scripts/v4.3-implementation-log.md (do not re-execute).
 V4.4 gate record: scripts/v4.4-implementation-log.md
 Verify: `npm run build && npm run verify`
   (= phase 0–4 scripts + investigate --stage 9 + render --stage 7)
-Manual ears: scripts/listening-gate-sonic-laws.md
+Manual ears (signed off): scripts/listening-gate-sonic-laws.md
 Scenarios: scripts/test-scenarios.md
 
 ------------------------------------------------------------------------------
@@ -48,51 +46,42 @@ Superseded work orders (deleted from tree): IMPLEMENTATION_PLAN_V4.2/V4.3,
   v4.2-implementation-log, audio-system-report — history lives in git + v4.3 log
 
 ------------------------------------------------------------------------------
-OPEN ISSUES — read before changing chaos rate, Q, or material character
+OPEN / DEFERRED — read before changing chaos rate, Q, or regimes
 ------------------------------------------------------------------------------
 
-These are NOT harness failures. Automated gates are green. Do not "fix" them
-by fitting thresholds to saturated-δ test patterns.
+These are NOT harness failures and are NOT listening-gate leftovers.
+Automated gates and the V4.4 ear pass are green. Do not "fix" remaining
+items by fitting thresholds to saturated-δ test patterns.
 
-1. Chaos under-spend on real Utomata — CLOSED (measured 2026-08-06).
-   The claim "on real sims at δ ≈ 0.1, t ≈ 0.29, chaos spends under a third
-   of its area share (~5 dB down)" does not hold. Measured across five live
-   Utomata runs the chaos pool sits at δ̄ 0.26–0.30, so t is 0.75–0.87 and the
-   under-spend is about 1 dB. Do not lower `deltaRateNorm` on the strength of
-   the old figure. UI now surfaces chaos δ̄ / t on the Field observation panel
-   (V4.4 Phase 7). Historical wrong premise retained only for traceability:
-   chaosPackRateHz multiplies by t = clamp01(meanDelta / 0.35); test patterns
-   saturate δ so t = 1.
+CLOSED (do not reopen without new evidence):
 
-2. Frozen-and-detailed vs still-and-uniform character (complaint 3)
-   Headless: frozen-noise mean Q 1.32 < uniform-static 8.00 (PASS).
-   Open: whether they *read* as different materials to the ear at matched
-   loudness. Sim: frozen-noise vs uniform-static. If they sound the same,
-   spectralT→Q / material law needs listening, not a louder frozen field (D1).
+1. Chaos under-spend on real Utomata — CLOSED (measured 2026-08-06; ear
+   confirmed Gate 7 2026-08-11). Live chaos δ̄ 0.26–0.30 → t 0.75–0.87
+   (~1 dB under-spend). The old “δ ≈ 0.1 / ~5 dB” premise was wrong. Do not
+   lower `deltaRateNorm`. UI surfaces chaos δ̄ / t on the Field panel.
 
-3. Percussive chaos + blinker envelope
-   Gate 5: rendered envelope crest +3.47 dB vs Phase 4; pool RMS ≤1 dB.
-   Open: do short chaos grains read as clicks not tones at listening level?
-   Density finding (V4.4): at ~60% chaos coverage the share ÷ duration
-   arithmetic forces roughly 600 events/s, which no envelope can make
-   discrete. Percussiveness is a coverage consequence — listen on
-   `chaos-blob-2pct` (share ~1–2, sparse) vs `chaos-blob-10pct` (share ~6–7,
-   denser rattle). Osc/blinker envelope left at 0.04/0.2 on purpose — do not
-   "harmonise". Blinker duty now OSC_DUTY 0.35 with whole-share bursts.
+2. Frozen-and-detailed vs still-and-uniform — CLOSED (ear 2026-08-11).
+   Headless mean Q frozen 1.32 < uniform 8.00; owner confirmed distinct
+   materials at matched loudness (`frozen-noise` vs `uniform-static`).
 
-4. Creative Brief V4.3 doctrine addendum
-   Proposed text is in Creative Brief v4.txt (V4.3 section) and below. Owner
-   should accept/reject after listening — do not treat proposed lines as sacred
-   until then.
+3. Percussive chaos + blinker envelope — CLOSED (ear 2026-08-11).
+   Sparse chaos (`chaos-blob-2pct`) reads percussive; denser coverage
+   (`chaos-blob-10pct`) reads as a rattle. Blinker / osc whole-share pulses
+   with silence between hits. Envelope 0.04/0.2 left alone — do not
+   “harmonise”. Percussiveness is a coverage consequence (share ÷ duration).
+
+4. Creative Brief V4.3 / V4.4 doctrine addenda — ADOPTED (owner 2026-08-11).
+   Lines live in Creative Brief v4.txt (V4.3 §1–4 and V4.4 addenda).
+
+Still deferred / harness notes:
 
 5. Deferred: moving coherent structures (gliders as figure)
    κ = similarity × stability → movers never form regions. Needs a fourth
-   regime. glider-swarm only improves via its calm background today (D3).
+   regime. glider-swarm only improves via its calm background today.
 
 6. Stage-5 chaos rate band is loose
    full-flicker lower band 1200 Hz is ~44% below ideal 64/0.03 ≈ 2133.
-   Direct guard is avg active ∈ [55, 64]. A mild under-spend can hide in the
-   rate band — check concurrency first.
+   Direct guard is avg active ∈ [55, 64]. Check concurrency before rate.
 
 ------------------------------------------------------------------------------
 Live pipeline
@@ -132,7 +121,7 @@ Harnesses:
   audio flux reported not asserted
 
 ------------------------------------------------------------------------------
-Proposed Brief addendum (pending owner listen / adopt)
+Adopted Brief doctrine (V4.3 + V4.4)
 ------------------------------------------------------------------------------
 
 - Neutrality is measured, not assumed. Any mapping axis that changes output
@@ -144,3 +133,6 @@ Proposed Brief addendum (pending owner listen / adopt)
   That is what makes still-and-uniform ≠ still-and-detailed at matched level.
 - Sampling must not manufacture change. Stratified sites are re-derived every
   frame from the measured area — not listening posts, never owned by a grain.
+- Percussiveness is a coverage consequence (share ÷ duration), not an
+  envelope tweak. A pulsed pool spends its share at the pulse; silence
+  between hits is not an unspent share.

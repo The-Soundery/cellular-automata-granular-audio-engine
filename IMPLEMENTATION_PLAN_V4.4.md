@@ -1,30 +1,28 @@
 Cellular Automata Granular Audio Engine — Implementation Plan V4.4
-Status: EXECUTED (code complete 2026-08-10/11). Harness-green. Owner listening
-  re-pass outstanding — see `scripts/v4.4-implementation-log.md`.
+Status: COMPLETE (code 2026-08-10/11; owner listening signed off 2026-08-11).
+  Historical work order only — do not re-execute.
 North star: `Creative Brief v4.txt`
-Agent entry: `Implementation Filter.txt`, then `scripts/v4.4-implementation-log.md`,
-  then this file only if you need the original work-order text.
-Ear record: `scripts/listening-gate-sonic-laws.md` (unchecked = still to listen)
+Agent entry: `Implementation Filter.txt`, then `scripts/v4.4-implementation-log.md`.
+Ear record: `scripts/listening-gate-sonic-laws.md` (all items passed 2026-08-11)
 Verify: `npm run build && npm run verify`
 
 This plan fixed four measured defects, unblocked six listening-gate items by
 adding the sims they need, and corrected wrong statements in the project
-docs. It deliberately did **not** change the Q law — see Deferred.
+docs. It deliberately did **not** change the Q law — see Deferred (§10).
 
 ==============================================================================
 HANDOFF — READ FIRST IF YOU ARE A NEW AGENT ON THIS WORK
 ==============================================================================
 
-H0. V4.4 CODE IS DONE (2026-08-11)
+H0. V4.4 IS COMPLETE (2026-08-11)
 
-Do **not** re-implement Phases 1–8. Branch `v4.1` holds the commits. Read
-`scripts/v4.4-implementation-log.md` for measured gate outputs, known findings
-(pulse-calm confidence, hue-bands merge, chaos-blob share drift, glider-swarm
-slot-sd note), and the owner ear checklist leftovers.
+Do **not** re-implement Phases 1–8. Branch `v4.1` holds the commits. Owner
+ear pass signed off — Gate leftovers and listening-gate items are closed.
+Measured findings stay in `scripts/v4.4-implementation-log.md`.
 
-Your job, if continuing: help the owner through
-`scripts/listening-gate-sonic-laws.md` unchecked items. Do not check boxes for
-them. Do not weaken assertions (R1). Do not implement Deferred (§10).
+Do not weaken assertions (R1). Do not implement Deferred (§10) unless the
+owner deliberately opens that work. Remaining Filter deferred items: fourth
+regime for movers; loose stage-5 chaos rate band.
 
 H1. WHERE THINGS STOOD BEFORE EXECUTION (historical)
 
@@ -46,20 +44,17 @@ H2. OPEN DECISIONS — owner sign-offs during V4.4
       AMENDED 2026-08-10: moving-bar is EXCLUDED from checkSlotStable (mask
       hole snap is real field change, not sampler wander).
 
-  D2. Q from region Y extent. Agreed in principle, deferred until after
-      Phase 3, because it is meaningless while every grain spawns at the
-      region centre and because Phase 3 may deliver most of what it is after.
-      Section 10a lists the three questions it must answer. Do not implement
-      it in V4.4. Still deferred after V4.4 code complete.
+  D2. Q from region Y extent. Still deferred (section 10a). Phase 3
+      dispersion + ear pass closed without changing the Q law. Do not
+      implement unless the owner opens that doctrine rewrite.
 
-  D3. The osc envelope fractions (0.04 / 0.2). The owner previously liked
-      them and has now questioned whether blinkers read as rhythmic. Phase 4
-      left them alone on purpose so the duration change can be judged
-      first. Raise it separately after Gate 4 ear listen.
+  D3. Osc envelope fractions (0.04 / 0.2). Left alone in Phase 4; Gate 4
+      ear pass (2026-08-11) accepted discrete whole-share pulses without
+      changing the envelope. Do not “harmonise”.
 
-  D4. The pan wrap at the torus seam (section 3f). Saturate was implemented
-      in its own commit (`Saturate pan at the torus seam…`) so it can be
-      reverted alone if the owner prefers the wrap.
+  D4. Pan wrap at the torus seam (section 3f). Saturate shipped in its own
+      commit (`Saturate pan at the torus seam…`) so it can be reverted alone
+      if wrap is preferred.
 
 H3. TWO CORRECTIONS MADE DURING THAT SESSION — do not re-derive from the
     old numbers
@@ -779,5 +774,5 @@ not before.
 All phases can proceed. Run them in the order listed; the only hard
 dependencies are 5-after-1 and 6-after-5.
 
-Final gate: `npm run build && npm run verify` green, then hand back to the
-owner for a full re-run of the listening gate.
+Final gate (met): `npm run build && npm run verify` green; owner listening
+signed off 2026-08-11 (`scripts/listening-gate-sonic-laws.md`).
