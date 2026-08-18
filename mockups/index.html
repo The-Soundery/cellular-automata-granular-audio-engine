@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockups A B C</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #1c1c1c; color: #cfcfcf; font-family: "Share Tech Mono", monospace; }
+  body { padding: 24px 28px 48px; }
+  h1 { font-family: VT323, monospace; font-size: 28px; font-weight: 400; letter-spacing: 0.08em; margin-bottom: 6px; }
+  p { color: #7a7a7a; font-size: 12px; line-height: 1.5; max-width: 72ch; margin-bottom: 28px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  section { border: 1px solid #3a3a3a; }
+  section h2 {
+    font-family: VT323, monospace; font-size: 18px; font-weight: 400;
+    letter-spacing: 0.12em; padding: 10px 12px; border-bottom: 1px solid #3a3a3a; color: #cfcfcf;
+  }
+  section h2 span { color: #7a7a7a; font-size: 12px; letter-spacing: 0; margin-left: 8px; font-family: "Share Tech Mono", monospace; }
+  nav { display: flex; flex-wrap: wrap; gap: 1px; background: #3a3a3a; }
+  nav a {
+    flex: 1; min-width: 25%; text-align: center; padding: 10px 8px;
+    background: #1c1c1c; color: #7a7a7a; text-decoration: none; font-size: 11px; letter-spacing: 0.08em;
+  }
+  nav a:hover { color: #cfcfcf; }
+  iframe {
+    display: block; width: 100%; height: 52vh; min-height: 360px;
+    border: 0; border-top: 1px solid #3a3a3a; background: #111;
+  }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } iframe { height: 70vh; } }
+</style>
+</head>
+<body>
+  <h1>CHOSEN HYBRID</h1>
+  <p>
+    A corners + B brackets + B readout above the field + B telescope with larger neighbors.
+    One Explore button. Click a neighbor to travel. Click the centre sim (or the lit Explore icon) to settle back to main.
+    Nothing from C. Colour only in the CA.
+  </p>
+  <div class="grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 36px;">
+    <section>
+      <h2>MAIN <span>settle here</span></h2>
+      <nav>
+        <a href="chosen/main.html">MAIN</a>
+        <a href="chosen/explore.html">EXPLORE</a>
+        <a href="chosen/overlay.html">OVERLAY</a>
+        <a href="chosen/data.html">DATA</a>
+      </nav>
+      <iframe src="chosen/main.html" title="Chosen main"></iframe>
+    </section>
+    <section>
+      <h2>EXPLORE <span>telescope</span></h2>
+      <nav>
+        <a href="chosen/explore.html">OPEN</a>
+      </nav>
+      <iframe src="chosen/explore.html" title="Chosen explore"></iframe>
+    </section>
+  </div>
+  <h1>ARCHIVES</h1>
+  <p>A / B / C from the first round. C is out.</p>
+  <div class="grid">
+    <section>
+      <h2>A <span>four corners</span></h2>
+      <nav>
+        <a href="a/focus.html">FOCUS</a>
+        <a href="a/explore.html">EXPLORE</a>
+        <a href="a/focus-overlay.html">OVERLAY</a>
+        <a href="a/data.html">DATA</a>
+      </nav>
+      <iframe src="a/focus.html" title="A focus"></iframe>
+    </section>
+    <section>
+      <h2>B <span>telescope</span></h2>
+      <nav>
+        <a href="b/focus.html">FOCUS</a>
+        <a href="b/explore.html">EXPLORE</a>
+        <a href="b/focus-overlay.html">OVERLAY</a>
+        <a href="b/data.html">DATA</a>
+      </nav>
+      <iframe src="b/focus.html" title="B focus"></iframe>
+    </section>
+    <section>
+      <h2>C <span>cell grid</span></h2>
+      <nav>
+        <a href="c/focus.html">FOCUS</a>
+        <a href="c/explore.html">EXPLORE</a>
+        <a href="c/focus-overlay.html">OVERLAY</a>
+        <a href="c/data.html">DATA</a>
+      </nav>
+      <iframe src="c/focus.html" title="C focus"></iframe>
+    </section>
+  </div>
+</body>
+</html>

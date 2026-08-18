@@ -1,40 +1,37 @@
 import type { FieldObservation } from "../field/FieldObserver.ts";
 import { FIELD_OBS } from "../field/FieldObserver.ts";
 import type { AudioStats } from "../audio/AudioEngine.ts";
-import { GRID_SIZE } from "../ca/UtomataHost.ts";
 
 /** One colour per regime — diagnosis, not region identity. */
-const CALM_RGB = [196, 163, 90] as const;
-const TEX_RGB = [150, 150, 155] as const;
-const CHAOS_RGB = [230, 72, 36] as const;
-const OSC_RGB = [55, 130, 190] as const;
-const FLOW_RGB = [70, 175, 120] as const;
+export const REGIME_HEX = {
+  calm: "#c4a35a",
+  tex: "#96969b",
+  chaos: "#e64824",
+  osc: "#3782be",
+  flow: "#46af78",
+} as const;
 
 /**
- * Debug visualisation: regime base layer + observational calm silhouettes.
- * Not listening posts / lattice ears. No AABB rectangles.
+ * Outline map at display resolution: crisp 1px regime edges, L-brackets and
+ * COM marks on every tracked region. No AABB rectangles, no interior wash.
  */
 export class RegionOverlay {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly regimeImage: ImageData;
-  private readonly regimeBuf: Uint8ClampedArray;
 
   constructor(parent: HTMLElement) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "region-overlay";
-    this.canvas.width = GRID_SIZE;
-    this.canvas.height = GRID_SIZE;
     parent.appendChild(this.canvas);
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("2d context unavailable");
     this.ctx = ctx;
-    this.regimeImage = ctx.createImageData(GRID_SIZE, GRID_SIZE);
-    this.regimeBuf = this.regimeImage.data;
   }
 
   clear(): void {
-    this.ctx.clearRect(0, 0, GRID_SIZE, GRID_SIZE);
+    const { ctx, canvas } = this;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
   setVisible(visible: boolean): void {
@@ -46,156 +43,216 @@ export class RegionOverlay {
     return this.canvas.style.display !== "none";
   }
 
-  draw(obs: FieldObservation | null, stats: AudioStats | null = null): void {
-    const { ctx } = this;
-    ctx.clearRect(0, 0, GRID_SIZE, GRID_SIZE);
+  draw(
+    obs: FieldObservation | null,
+    _stats: AudioStats | null = null,
+  ): void {
+    this.clear();
     if (!this.visible || !obs) return;
 
-    const w = obs.width;
-    const h = obs.height;
-    const scaleX = GRID_SIZE / w;
-    const scaleY = GRID_SIZE / h;
-    const cellW = Math.max(1, scaleX);
-    const cellH = Math.max(1, scaleY);
+    const css = this.syncSize();
+    if (css.w < 2 || css.h < 2) return;
 
-    this.paintRegimeLayer(obs, w, h);
-    ctx.putImageData(this.regimeImage, 0, 0);
+    const { ctx } = this;
+    const gridW = obs.width;
+    const gridH = obs.height;
+    const cw = css.w / gridW;
+    const ch = css.h / gridH;
 
-    for (const r of obs.coherent) {
-      const cells = r.cells;
-      if (!cells || cells.length === 0) continue;
+    ctx.lineWidth = 1;
+    ctx.lineCap = "butt";
+    ctx.lineJoin = "miter";
+    ctx.setLineDash([]);
 
-      const inRegion = new Set<number>();
-      for (let i = 0; i < cells.length; i++) inRegion.add(cells[i]!);
-
-      // Interior: dim gold fill. Edge cells: brighter gold outline.
-      for (let i = 0; i < cells.length; i++) {
-        const ci = cells[i]!;
-        const cx = ci % w;
-        const cy = (ci / w) | 0;
-        const edge = isEdgeCell(inRegion, cx, cy, w, h);
-        ctx.fillStyle = edge
-          ? "rgba(220, 185, 95, 0.8)"
-          : "rgba(196, 163, 90, 0.07)";
-        ctx.fillRect(cx * scaleX, cy * scaleY, cellW, cellH);
-      }
-
-      const comX = r.comX * scaleX;
-      const comY = r.comY * scaleY;
-      ctx.beginPath();
-      ctx.fillStyle = "rgba(220, 185, 95, 0.9)";
-      ctx.arc(comX, comY, 1.8, 0, Math.PI * 2);
-      ctx.fill();
-
-      const vx = r.velX * scaleX * 4;
-      const vy = r.velY * scaleY * 4;
-      if (Math.hypot(vx, vy) > 0.5) {
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(220, 185, 95, 0.85)";
-        ctx.moveTo(comX, comY);
-        ctx.lineTo(comX + vx, comY + vy);
-        ctx.stroke();
-      }
-    }
-
-    for (const f of obs.flows ?? []) {
-      const cells = f.cells;
-      if (!cells || cells.length === 0) continue;
-      const comX = f.comX * scaleX;
-      const comY = f.comY * scaleY;
-      ctx.beginPath();
-      ctx.fillStyle = "rgba(90, 210, 140, 0.9)";
-      ctx.arc(comX, comY, 2.2, 0, Math.PI * 2);
-      ctx.fill();
-      const vx = f.velX * scaleX * 4;
-      const vy = f.velY * scaleY * 4;
-      if (Math.hypot(vx, vy) > 0.5) {
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(90, 210, 140, 0.85)";
-        ctx.moveTo(comX, comY);
-        ctx.lineTo(comX + vx, comY + vy);
-        ctx.stroke();
-      }
-    }
-
-    if (stats?.listen?.length) {
-      for (const g of stats.listen) {
-        const x = (g.x + 0.5) * scaleX;
-        const y = (g.y + 0.5) * scaleY;
-        ctx.beginPath();
-        if (g.regime === "calm") {
-          ctx.fillStyle = "rgba(196, 163, 90, 0.9)";
-        } else if (g.regime === "flow") {
-          ctx.fillStyle = "rgba(90, 210, 140, 0.9)";
-        } else {
-          ctx.fillStyle = "rgba(120, 180, 200, 0.75)";
-        }
-        ctx.arc(x, y, g.sounding ? 2.4 : 1.4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-
-  /** One ImageData put — textured / chaotic / oscillator / flow cells. */
-  private paintRegimeLayer(obs: FieldObservation, w: number, h: number): void {
-    const buf = this.regimeBuf;
-    buf.fill(0);
-    const sx = GRID_SIZE / w;
-    const sy = GRID_SIZE / h;
-
-    const paint = (
-      cells: Uint32Array,
-      r: number,
-      g: number,
-      b: number,
-      a: number,
-    ) => {
-      for (let i = 0; i < cells.length; i++) {
-        const ci = cells[i]!;
-        const cx = ci % w;
-        const cy = (ci / w) | 0;
-        const x0 = Math.floor(cx * sx);
-        const y0 = Math.floor(cy * sy);
-        const x1 = Math.max(x0 + 1, Math.floor((cx + 1) * sx));
-        const y1 = Math.max(y0 + 1, Math.floor((cy + 1) * sy));
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            const o = (y * GRID_SIZE + x) * 4;
-            buf[o] = r;
-            buf[o + 1] = g;
-            buf[o + 2] = b;
-            buf[o + 3] = a;
-          }
-        }
-      }
-    };
-
-    // Dim fills so the CA stays readable beneath. One colour per regime.
-    // Chaos last among remainder so it is not buried under gold calm.
     if (obs.textured.cells.length) {
-      paint(obs.textured.cells, TEX_RGB[0], TEX_RGB[1], TEX_RGB[2], 55);
-    }
-    for (const r of obs.coherent) {
-      if (r.cells.length) paint(r.cells, CALM_RGB[0], CALM_RGB[1], CALM_RGB[2], 55);
-    }
-    for (const g of obs.oscillators) {
-      if (g.cells.length) paint(g.cells, OSC_RGB[0], OSC_RGB[1], OSC_RGB[2], 80);
+      strokeEdges(ctx, obs.textured.cells, gridW, gridH, cw, ch, REGIME_HEX.tex);
     }
     if (obs.chaotic.cells.length) {
-      paint(obs.chaotic.cells, CHAOS_RGB[0], CHAOS_RGB[1], CHAOS_RGB[2], 140);
+      strokeEdges(ctx, obs.chaotic.cells, gridW, gridH, cw, ch, REGIME_HEX.chaos);
+    }
+    for (const g of obs.oscillators) {
+      if (!g.cells.length) continue;
+      strokeEdges(ctx, g.cells, gridW, gridH, cw, ch, REGIME_HEX.osc);
+      const mark = marksOf(g.cells, gridW);
+      drawBrackets(ctx, mark.box, cw, ch, REGIME_HEX.osc);
+      drawCross(ctx, mark.comX * cw, mark.comY * ch, REGIME_HEX.osc);
+    }
+    for (const r of obs.coherent) {
+      if (!r.cells.length) continue;
+      strokeEdges(ctx, r.cells, gridW, gridH, cw, ch, REGIME_HEX.calm);
+      drawBrackets(ctx, boundsOf(r.cells, gridW), cw, ch, REGIME_HEX.calm);
+      drawCross(ctx, r.comX * cw, r.comY * ch, REGIME_HEX.calm);
+      drawHeading(ctx, r.comX * cw, r.comY * ch, r.velX * cw, r.velY * ch, REGIME_HEX.calm, false);
     }
     for (const f of obs.flows ?? []) {
-      if (f.cells.length) {
-        paint(
-          dilateCells(f.cells, w, h, FIELD_OBS.flowJoinRadius),
-          FLOW_RGB[0],
-          FLOW_RGB[1],
-          FLOW_RGB[2],
-          75,
-        );
-      }
+      if (!f.cells.length) continue;
+      const cells = dilateCells(f.cells, gridW, gridH, FIELD_OBS.flowJoinRadius);
+      strokeEdges(ctx, cells, gridW, gridH, cw, ch, REGIME_HEX.flow);
+      drawBrackets(ctx, boundsOf(f.cells, gridW), cw, ch, REGIME_HEX.flow);
+      drawCross(ctx, f.comX * cw, f.comY * ch, REGIME_HEX.flow);
+      drawHeading(ctx, f.comX * cw, f.comY * ch, f.velX * cw, f.velY * ch, REGIME_HEX.flow, true);
     }
   }
+
+  private syncSize(): { w: number; h: number } {
+    const parent = this.canvas.parentElement;
+    const w = Math.max(1, parent?.clientWidth ?? 0);
+    const h = Math.max(1, parent?.clientHeight ?? 0);
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const bw = Math.max(1, Math.round(w * dpr));
+    const bh = Math.max(1, Math.round(h * dpr));
+    if (this.canvas.width !== bw || this.canvas.height !== bh) {
+      this.canvas.width = bw;
+      this.canvas.height = bh;
+    }
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w, h };
+  }
+}
+
+function strokeEdges(
+  ctx: CanvasRenderingContext2D,
+  cells: Uint32Array,
+  w: number,
+  h: number,
+  cw: number,
+  ch: number,
+  color: string,
+): void {
+  const inRegion = new Set<number>();
+  for (let i = 0; i < cells.length; i++) inRegion.add(cells[i]!);
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  for (let i = 0; i < cells.length; i++) {
+    const ci = cells[i]!;
+    const cx = ci % w;
+    const cy = (ci / w) | 0;
+    if (!isEdgeCell(inRegion, cx, cy, w, h)) continue;
+    const x0 = cx * cw;
+    const y0 = cy * ch;
+    const x1 = x0 + cw;
+    const y1 = y0 + ch;
+    if (!inRegion.has(cy * w + ((cx + 1) % w))) {
+      ctx.moveTo(x1, y0);
+      ctx.lineTo(x1, y1);
+    }
+    if (!inRegion.has(cy * w + ((cx - 1 + w) % w))) {
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x0, y1);
+    }
+    if (!inRegion.has(((cy + 1) % h) * w + cx)) {
+      ctx.moveTo(x0, y1);
+      ctx.lineTo(x1, y1);
+    }
+    if (!inRegion.has(((cy - 1 + h) % h) * w + cx)) {
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y0);
+    }
+  }
+  ctx.stroke();
+}
+
+function boundsOf(
+  cells: Uint32Array,
+  w: number,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  let minX = w;
+  let minY = w;
+  let maxX = 0;
+  let maxY = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const ci = cells[i]!;
+    const x = ci % w;
+    const y = (ci / w) | 0;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function marksOf(
+  cells: Uint32Array,
+  w: number,
+): {
+  box: { minX: number; minY: number; maxX: number; maxY: number };
+  comX: number;
+  comY: number;
+} {
+  const box = boundsOf(cells, w);
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const ci = cells[i]!;
+    sx += ci % w;
+    sy += (ci / w) | 0;
+  }
+  const n = Math.max(1, cells.length);
+  return { box, comX: sx / n, comY: sy / n };
+}
+
+function drawBrackets(
+  ctx: CanvasRenderingContext2D,
+  box: { minX: number; minY: number; maxX: number; maxY: number },
+  cw: number,
+  ch: number,
+  color: string,
+): void {
+  const x0 = box.minX * cw;
+  const y0 = box.minY * ch;
+  const x1 = (box.maxX + 1) * cw;
+  const y1 = (box.maxY + 1) * ch;
+  const L = Math.max(6, Math.min(14, Math.min(x1 - x0, y1 - y0) * 0.2));
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0 + L);
+  ctx.lineTo(x0, y0);
+  ctx.lineTo(x0 + L, y0);
+  ctx.moveTo(x1 - L, y0);
+  ctx.lineTo(x1, y0);
+  ctx.lineTo(x1, y0 + L);
+  ctx.moveTo(x1, y1 - L);
+  ctx.lineTo(x1, y1);
+  ctx.lineTo(x1 - L, y1);
+  ctx.moveTo(x0 + L, y1);
+  ctx.lineTo(x0, y1);
+  ctx.lineTo(x0, y1 - L);
+  ctx.stroke();
+}
+
+function drawCross(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  color: string,
+): void {
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x - 4, y);
+  ctx.lineTo(x + 4, y);
+  ctx.moveTo(x, y - 4);
+  ctx.lineTo(x, y + 4);
+  ctx.stroke();
+}
+
+function drawHeading(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  color: string,
+  dashed: boolean,
+): void {
+  if (Math.hypot(vx, vy) < 0.8) return;
+  ctx.strokeStyle = color;
+  if (dashed) ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + vx * 4, y + vy * 4);
+  ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function dilateCells(

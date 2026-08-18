@@ -611,6 +611,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         sounding: s.sounding,
         gain: s.amp * this.masterGain * this.normGain * this.preScale,
         regime: s.regime,
+        t: this.length > 0 ? s.readPos / this.length : 0,
       });
     }
 

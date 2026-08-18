@@ -1,27 +1,8 @@
-Cellular Automata Granular Audio Engine — Implementation Filter (V5)
-Status: V5 CODE COMPLETE — harness-green 2026-08-11; owner ears open
-  (`scripts/listening-gate-v5.md`). V4.4 COMPLETE (ears signed off 2026-08-11).
-  Flow CURRENT 2026-08-17: similarity travel (Brief); fifth grain pool.
-North star: Creative Brief v4.txt (V5 + Flow observation + flow grain laws)
-Entry for agents: this file first, then the Brief, then
-  `IMPLEMENTATION_PLAN_V5.md` and `scripts/v5-implementation-log.md`.
-  Historical: `scripts/v4.4-implementation-log.md`.
-  Listening: `scripts/listening-gate-v5.md` (V5 + flow ears); V4.4 checklist closed.
-
->> V4.4 Phases 1–8 are committed. Do not re-execute IMPLEMENTATION_PLAN_V4.4.md.
->> Do not lower deltaRateNorm.
->> V5 polar/stereo/relative-Y is live in code; complete listening-gate-v5.md.
->> Flow = similarity travel (colour correspondence). Filled translating
-   silhouettes stay calm; 2D scatter is not flow. Doctrine is the Brief.
->> Fifth spend pool: trailing-edge piece-spawn, hop-velocity conveyor
-   (FLOW_ID_BASE), packing→mid duration. Doppler forbidden. Grains die at
-   the leading edge and respawn at the trailing edge.
->> Do not fold flow back into chaos; do not treat translating solids as flow.
-
-Historical detail: scripts/v4.3-implementation-log.md (do not re-execute).
-V4.4 gate record: scripts/v4.4-implementation-log.md
+Cellular Automata Granular Audio Engine — Implementation Filter
+Status: CURRENT. Sonic identity is closed; do not reopen mapping without a
+  new listening decision.
+North star: Creative Brief.txt
 Verify: `npm run build && npm run verify`
-  (= phase 0–4 scripts + investigate --stage 9 + render --stage 7)
 Scenarios: scripts/test-scenarios.md
 
 ------------------------------------------------------------------------------
@@ -34,11 +15,11 @@ STOP — do not revive
 - Rebake-on-change or “dumb paint of frozen scrub positions”
 - Mid-grain sample-window scrub chase of moving regions
   (direct pan / Y-spectrum / channel-mix follow for region-bound grains is allowed)
-- V3 identity (X→sample / RGB→envelope) without a new listening decision
+- V3 identity (X→sample / RGB→envelope)
 - 48-bin offline spectral bank (replaced by per-grain resonant bandpass)
-- 1D hue→centroid LUT as the sole material axis (superseded by V5 polar map)
+- 1D hue→centroid LUT as the sole material axis (superseded by polar map)
 - Mono fold-down of the source as the only playback buffer (analysis may use mono)
-- Doppler / velocity→grain rate (pitch offsets beyond ±1) — rejected
+- Doppler / velocity→grain rate (pitch offsets beyond ±1)
 - Stratified spawn sites for calm/texture are sampling, not listening posts;
   they are scoped to those two pools and must never be given persistence or
   ownership. Do not apply stratification to chaos or osc.
@@ -52,52 +33,33 @@ STOP — do not revive
 - A sixth “moving static” regime — calm already covers translating silhouettes
 - Folding flow grains back into chaos share; applying tracks on raw flow.id
   (collides with calm — use FLOW_ID_BASE)
-
-Archives (reference only): public/_obsolete/ (failed lattice path — do not revive)
-Superseded work orders (deleted from tree): IMPLEMENTATION_PLAN_V4.2/V4.3,
-  v4.2-implementation-log, audio-system-report — history lives in git + v4.3 log
-
-------------------------------------------------------------------------------
-CLOSED — do not reopen without new evidence
-------------------------------------------------------------------------------
-
-1. Chaos under-spend on real Utomata — CLOSED (measured 2026-08-06; ear
-   confirmed Gate 7 2026-08-11). Live chaos δ̄ 0.26–0.30 → t 0.75–0.87
-   (~1 dB under-spend). Do not lower `deltaRateNorm`. UI surfaces chaos δ̄ / t.
-
-2. Frozen-and-detailed vs still-and-uniform — CLOSED (ear 2026-08-11).
-
-3. Percussive chaos + blinker envelope — CLOSED (ear 2026-08-11).
-   Envelope 0.04/0.2 left alone — do not “harmonise”.
-
-4. Creative Brief V4.3 / V4.4 doctrine addenda — ADOPTED (owner 2026-08-11).
-
-5. Flow observation — CURRENT (2026-08-17). Borders: Brief.
-   4×4 spatial×colour blocks → independent NN match to previous same-hue
-   block (not one-to-one greedy) → cluster by colour + heading + lane.
-   Pack velocity from cluster COM; long/wrapping tracks may match on
-   colour+area and coast heading when COM jumps. Skip the field mode
-   colour bin (wake), not every common bin. Confirm 8 + travel ~1.5.
-   Scramble uses a smaller block budget but still hunts. CPU: O(active)
-   accumulate; correspondence ≤ cap².
-
-8. Flow grain behaviour — CURRENT (2026-08-17). Laws: Brief.
-   Fifth pool from Σ flow.regionArea. Trailing-edge piece-spawn;
-   packing→FLOW_ORDER_MIN..MAX; FLOW_WINDOW_T; polar bias neutral;
-   FLOW_ID_BASE + flow.id hop-velocity conveyor (not COM). Die at leading
-   edge; respawn at trailing edge. No Doppler. Chaos area-blind.
+- Treating a filled translating silhouette as flow; treating 2D scatter as
+  one flow; tint-glue of hues
+- Lowering deltaRateNorm against the closed live-chaos under-spend claim
 
 ------------------------------------------------------------------------------
-Still deferred / harness notes
+Closed — do not reopen without new evidence
 ------------------------------------------------------------------------------
 
-6. Stage-5 chaos rate band is loose
-   full-flicker lower band 1200 Hz is ~44% below ideal 64/0.03 ≈ 2133.
-   Direct guard is avg active ∈ [55, 64]. Check concurrency before rate.
+- Live chaos under-spend: δ̄ 0.26–0.30 → t 0.75–0.87 (~1 dB). Do not lower
+  `deltaRateNorm`. DATA no longer shows δ̄ / t; the claim is closed in
+  verify / live listening, not on the HUD.
+- Frozen-and-detailed vs still-and-uniform are different materials.
+- Percussive chaos + blinker envelope: 0.04/0.2 left alone — do not “harmonise”.
+- Flow is similarity travel (colour correspondence), not pack-COM. Filled
+  translating silhouettes stay calm. Fifth spend pool: trailing-edge
+  piece-spawn, hop-velocity conveyor (`FLOW_ID_BASE`), packing→mid duration.
+  Grains die at the leading edge and respawn at the trailing edge.
 
-7. Deferred (separate from V5): Prev/Next/Random Type-U variations emit
-   scalar greyscale fields. Owner pastes coloured equations; mapping must
-   work for grey and colour. Do not block identity work on equation rewrite.
+------------------------------------------------------------------------------
+Still deferred
+------------------------------------------------------------------------------
+
+- Stage-5 chaos rate band is loose: full-flicker lower band 1200 Hz is ~44%
+  below ideal 64/0.03 ≈ 2133. Direct guard is avg active ∈ [55, 64]. Check
+  concurrency before rate.
+- Random (dice) Type-U at the current depth can emit greyscale fields.
+  Mapping must work for grey and colour. No undo/redo.
 
 ------------------------------------------------------------------------------
 Live pipeline
@@ -120,10 +82,27 @@ Scheduler: five pools (calm / texture / chaos / osc / flow); area-share
 Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
   mono 0.5*(L+R) reported secondary only.
 
+Presentation (locked):
+- Dark grey chrome `#1c1c1c`. Colour lives in the CA; overlay/DATA may use
+  regime colours only when those layers are on (calm gold, static grey,
+  chaos red, osc blue, flow green). VT323 chrome, Share Tech Mono readout.
+- Corner HUD. Overlay off by default: 1px vector outlines at display
+  resolution, L-brackets + COM on tracked calm/osc/flow, chaos as fragments.
+- Source waveform + grain ticks sit under the field (chrome), not on the sim.
+- DATA fold: regime %, spend, budget, clip, step; SIM test patterns.
+  Flow % is member-cell area / grid (sparse packs read as tenths of a
+  percent). Overlay outlines are dilated for visibility; scheduler share
+  still uses regionArea.
+- Explore: eight Type-U map neighbours (±1 x/y), audio follows centre.
+  Click a neighbour to travel; click centre (or Explore) to settle.
+- Pause stops new CA steps and therefore new grains. Load audio arms the
+  AudioContext on the file-picker click (browser gesture).
+
 Key modules:
 - src/field/FieldObserver.ts, FrameObserver.ts, GrainScheduler.ts, TestPatterns.ts
 - src/audio/spectral.ts, public/grain-processor.js
-- src/ui/controls.ts (field % including Flow %, overlay legend), RegionOverlay.ts
+- src/ui/controls.ts, RegionOverlay.ts, WaveformStrip.ts
+- src/ca/typeU.ts (programAt / neighborPrograms), UtomataHost.ts
 
 Negotiable (not doctrine):
 - FIELD_OBS — chaosDeltaMin, osc_*, flow_* (binSize≈4/maxBlocks≈192/
@@ -143,33 +122,11 @@ Negotiable (not doctrine):
 - Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS
 
 Harnesses:
+- verify-phase0.mjs — lattice path stays gone from the live tree
 - verify-phase1.mjs — flow borders (dense/stream/diagonal/train +y;
   cascade / wavefront / denser cascade; solids ≠ flow; flow-dots ≠ flow)
 - verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band
-- diagnose-live-flow.mjs — calm-edge / wavefront / dithered texture
+- verify-phase4.mjs — polar / stereo / absolute Y contract
 - investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q)
 - render-scenarios.mjs — total-power RMS, crest, sites, block-RMS, cold-start;
   audio flux reported not asserted
-
-------------------------------------------------------------------------------
-Adopted Brief doctrine (V4.3 + V4.4 + V5)
-------------------------------------------------------------------------------
-
-- Neutrality is measured, not assumed. Any mapping axis that changes output
-  energy is a bug until proven flat. The engine compensates filter bandwidth;
-  it does not compensate the source spectrum.
-- Area share is spent, not merely allocated. Caps that prevent a pool from
-  reaching its share are loudness policy in disguise.
-- Two axes, two consequences: timeOrder → duration/envelope; similarity → Q.
-  That is what makes still-and-uniform ≠ still-and-detailed at matched level.
-- Sampling must not manufacture change. Stratified sites are re-derived every
-  frame from the measured area — not listening posts, never owned by a grain.
-- Percussiveness is a coverage consequence (share ÷ duration), not an
-  envelope tweak. A pulsed pool spends its share at the pulse; silence
-  between hits is not an unspent share.
-- V5: HSV polar material + stereo channel mix + absolute Y spectrum
-  (80 Hz–12 kHz; relative-Y around centroid reverted 2026-08-14). Calm/texture
-  listen only inside the high-stationarity subset (identity, not share policy).
-  Window stays frozen; channel mix may follow with pan.
-- Flow: similarity travel (colour correspondence), not pack-COM; filled
-  translating silhouettes stay calm. Grains ride hop-velocity conveyor.

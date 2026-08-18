@@ -1,0 +1,504 @@
+Cellular Automata Granular Audio Engine — Creative Brief
+Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviour.
+
+Identity:
+
+  HSV → polar material plane (hue angle · sat radius · value band)
+  saturation → window half-width · regime soft-bias (calm→sustained, chaos→transient)
+  X → stereo pan + source L/R channel mix (both follow region-bound grains)
+  Y → absolute log bandpass (80 Hz bottom … 12 kHz top); independent of material centroid
+  sample window frozen at spawn
+
+------------------------------------------------------------------------------
+Project Overview
+------------------------------------------------------------------------------
+
+This project is a browser-based audiovisual instrument that lets a listener hear
+a Cellular Automata simulation as a finite sonic universe.
+
+Core axiom:
+
+  The audio must NOT be controlled by the Cellular Automata.
+  The audio IS the Cellular Automata.
+
+Visual output and audio output are two sensory renderings of the same underlying
+mathematical system. Granular synthesis is the chosen listening medium — not a
+synthesizer that the CA modulates.
+
+What you are listening to:
+
+  The movement and evolution of computational information through time —
+  emergence, propagation, interaction, and transformation — heard as sonic
+  events / grains that emerge from that activity.
+
+Cellular Automata are not interesting because of the static state of individual
+cells. They are interesting because of continuous computational flow. The sound
+must evolve as the visuals evolve.
+
+
+------------------------------------------------------------------------------
+Core Design Philosophy
+------------------------------------------------------------------------------
+
+We are NOT building:
+
+- A granular synthesizer intelligently playing the Cellular Automata
+- An audiovisual music visualiser
+- A composer, curator, or interestingness engine
+- Explicit structure detection that asks which structure deserves a voice
+- Aesthetic preference for wash, stability, chaos, beauty, or intensity
+- Arbitrary DSP mappings disconnected from CA mathematics
+- Voice ownership, structure prioritisation, interestingness scores,
+  stable-vs-chaotic loudness pools, or sustain-vs-active voice systems
+- Fixed listening points, persistent sonic locations, or lattice “ears”
+- Luminance → volume as a substitute for hearing computational flow
+
+We ARE building:
+
+- One Cellular Automata universe
+- One shared mathematical state
+- Two renderings: visual and audio
+- A physically constrained audio renderer of computational evolution
+- An instrument whose sonic complexity emerges from CA behaviour itself
+- Observational regions (coherence / chaos / texture / oscillators / flow)
+  as field measurements that set grain laws — never as owned voices
+
+
+------------------------------------------------------------------------------
+Sonic Laws (authoritative)
+------------------------------------------------------------------------------
+
+One-sentence axiom:
+
+  The CA field is observed as coherence regions and chaotic areas; each area’s
+  share of a finite grain pool is proportional to its size; within that share,
+  change and coherence set rate, length, and overlap; grain identity at spawn
+  is HSV→polar material, X→pan+channel-mix, Y→absolute spectrum; sample window
+  freezes at spawn while region-bound grains directly follow pan/Y/channel-mix
+  with their region; loudness is globally neutral.
+
+
+1. Grains are ephemeral carriers of identity
+
+   A grain is a short-lived sonic event. When it spawns it carries identity from
+   the field at that moment. It does not own a place in the grid. The next grain
+   may carry different identity. There are no persistent sonic posts.
+
+
+2. Grain identity (what the grain is made of)
+
+   From the spawn cell (or calm spawn site):
+
+   - HSV → sample position / locked scrub window via a polar descriptor plane
+           (hue = angle on a centroid-ranked circle; saturation = radius from
+           centre so grey still reaches material via value; value = energy
+           band). Soft regime bias prefers sustained material for calm/texture
+           and transient material for chaos/osc — FROZEN at spawn
+   - Saturation → window half-width in seconds (grey = diffuse / wide;
+                  saturated = focused / tight) — FROZEN at spawn
+   - X        → stereo pan (−1 left … +1 right) AND source L/R channel mix
+                (left of grid hears left of recording). Initial at spawn;
+                while a grain belongs to a region it directly follows that
+                region’s motion in pan and channel mix (spawn offset preserved)
+   - Y        → bandpass cutoff as an absolute log sweep of the frequency
+                spectrum (80 Hz at the bottom of the grid, 12 kHz at the top);
+                independent of the chosen segment’s spectral centroid
+                — same direct region follow
+   - Envelope / duration / filter Q → continuous functions of κ/δ (and calm
+                area/fill) at spawn — not binary calm|chaos presets, not RGB
+
+   Colour chooses where in the source the grain listens. Spatial X places the
+   grain in the stereo field and selects which source channel feeds the
+   grain. Colour must never set loudness, allocation, or topology. Luminance
+   is not volume. Playback rate stays ±1 (no Doppler).
+
+   Two axes, two consequences: timeOrder (stability + extent) → duration and
+   envelope; spatial similarity → Q. Still-and-uniform and still-and-detailed
+   differ in material at matched loudness. Q is spectral purity, not loudness;
+   the bandpass is unity-gain at its centre frequency.
+
+
+3. Field observation (how we see regimes)
+
+   Every CA step, with spatial and temporal averaging so regimes are stable
+   enough to hear (not micro-flicker):
+
+   - δ   local rate of change (smoothed colour/state delta)
+   - s   local colour similarity (inverse of neighbour variance)
+   - κ   coherence = similarity × stability (high only when BOTH hold)
+   - extent via region width / height / area (spatial scale of a coherent mass)
+
+   Group into observational regions:
+
+   - Calm: similar colour, slow changing, with measurable area A, centre of
+     mass (x̄, ȳ), mean change δ̄, mean coherence κ̄, bounding width/height,
+     and COM velocity from smoothed COM motion. A solid block that sits still
+     or slides cell→adjacent cell as a continuous body stays here.
+   - Textured: spatially dissimilar but temporally stable — static detail is
+     NOT chaos. Heard as few long overlapping grains whose identity diversity
+     carries the texture. A frozen universe sounds still.
+   - Oscillator groups: cells whose colour repeats with a confirmed period
+     (2..8 steps) are structure, not noise. Grouped by period, re-derived
+     every frame; excluded from calm/texture/chaos bags. Grains fire in
+     bursts phase-locked to the visual period.
+   - Flow groups: a colour that reappears nearby along a heading (similarity
+     travel). Fifth area-share pool; conveyor grains on FLOW_ID_BASE tracks.
+     Full borders in “Flow observation + grain pool” below.
+   - Chaotic area: genuinely changing remainder — not periodic, not coherent
+     correspondence. Treated as a bag of cells; chaos grains spawn δ-weighted
+     so change is the event.
+
+   δ is spatially averaged (3×3) before regime decisions so single-cell
+   speckle cannot masquerade as chaos.
+
+   Regions are re-derived each frame with smoothing. They are measurements,
+   not voice owners. Do not score “interestingness” or prefer one regime.
+
+
+4. Region laws → grain function (how grains behave)
+
+   Spawn rate     ∝ region mean change δ̄
+                  (faster change → more frequent fires)
+
+   Duration       ∝ κ̄ and grows with area A
+                  (large calm areas → long grains)
+
+   Overlap        ∝ κ̄ × size
+                  (calm → overlap allowed; chaos → overlap ≈ 0)
+
+   Calm packing:  few long overlapping grains → one continuous texture
+   Chaos packing: many short non-overlapping grains from random cells
+                  inside the chaotic area. Chaos rate is pure change
+                  (δ̄→0 → silence). CHAOS_EVENTS_MAX_HZ is a CPU rail only.
+
+   Percussiveness is a coverage consequence, not an envelope setting. Event
+   rate is share ÷ duration. Chaos reads as discrete events only at small
+   coverage. For a pulsed pool the area share is spent at the pulse; silence
+   between hits is not an unspent share.
+
+   Sampling must not manufacture change. Calm/texture spawn sites are
+   stratified and re-derived every frame from the measured area — not
+   listening posts, never owned. Chaos and oscillators stay random.
+
+   The surrounding relationships determine the laws. The grain spawn location
+   supplies hue, X, and Y. The trigger and behaviour come from region
+   observation.
+
+
+5. Freeze at spawn (anti-glitch law)
+
+   Frozen at birth (must not chase):
+
+   - Sample / scrub window and ping-pong bounds
+   - Playback direction
+   - Envelope shape (attack/release fractions for that grain’s life)
+
+   Allowed to track directly after birth (any grain with a region id):
+
+   - Stereo pan ← region COM X + spawn offset (equal-power, no smoothing)
+   - Spectral Y ← region COM Y + spawn offset (no smoothing)
+   - Channel mix ← region COM X (same follow)
+
+   Forbidden: modulating the sample scrub window during playback to chase a
+   moving region or cell (causes undesirable glitches / pitch tears).
+
+   Sonic time follows CA time via inter-grain scrub: each calm region / the
+   texture pool advances a scrub offset for newly spawned grains. Living
+   grains never move their window.
+
+   How region texture follows motion: grains that belong to a coherent region
+   move their pan and spectrum with that region; sample material stays locked;
+   new grains also spawn from the updated mask/colour; overlap crossfades
+   create continuous evolution. Chaos-bag grains have no region id and keep
+   spawn pan/Y.
+
+
+6. Geometry and colour laws at spawn (setup for each grain)
+
+   Decided only at spawn:
+
+   - Hue → sample window + ping-pong: spawn-cell hue maps to a sample range
+     locked at spawn (calm wider than chaos). If the read head reaches either
+     edge before the grain ends, it reverses and continues (ping-pong) until
+     the grain’s defined length completes.
+   - X → pan: spawn cell horizontal position maps to equal-power stereo pan.
+   - Motion → direction: if the region’s COM is moving left/right, playback
+     direction may be forward or reverse to match that motion.
+   - Height → Y spread: tall coherent regions bias the few calm grains toward
+     varied Y spawn heights (fuller harmonic spread). Thin/short regions keep
+     a narrower Y spread.
+
+   These are physics of colour, geometry, and motion — not aesthetic effects.
+
+
+7. Finite grain budget (area spends capacity; activity does not buy priority)
+
+   There is a maximum concurrent grain count (physical constraint).
+
+   Each region’s share of that budget ∝ A / total area.
+   Large stable areas that dominate the simulation receive most of the budget
+   and spend it as few long overlapping grains. Chaotic areas receive share
+   by their area and spend it as many short hits.
+
+   Area share is spent, not merely allocated. Caps that prevent a pool from
+   reaching its share are loudness policy in disguise.
+
+   Activity (δ̄) shapes rate, length, and overlap — how the share is used.
+   Activity must NOT increase loudness or sonic priority.
+
+
+8. Volume is a finite neutral resource
+
+   Master / total sonic energy stays roughly constant whether the simulation
+   is all calm, all chaotic, or mixed.
+
+   Neither chaotic nor stable regions may be louder or quieter as a policy.
+   Their balance in the output follows their weighting in the simulation
+   (area share → grain-budget share → texture character).
+   What changes is grain usage and texture, not mix-desk preference.
+
+   Amplitude normalisation across active grains enforces neutrality.
+   More grains or faster firing must not equal a louder mix.
+
+   Neutrality is measured, not assumed. Filter bandwidth is compensated;
+   envelope energy is normalised after attack/release rescale. The source
+   spectrum is not compensated. Primary loudness measure for equal-power
+   stereo is total power √mean(L²+R²) — not mono fold-down.
+
+
+------------------------------------------------------------------------------
+Flow observation + grain pool
+------------------------------------------------------------------------------
+
+Flow is an observation of similarity travel: a colour that reappears nearby
+along a heading. Speed and direction are inferred as correspondence (where
+did this colour last appear?). A pack’s centre of mass is a side effect and
+is untrustworthy on long or wrapping structures.
+
+Flow grains are a fifth area-share pool. Confirmed flow cells are removed
+from the chaos/texture remainder before share allocation. Do not fold flow
+back into chaos. Filled translating silhouettes stay calm; 2D scatter is
+not flow.
+
+Regime borders (overlay + Field % + scheduler pools):
+
+  Calm     connected similar colour, large evenly filled mass. A solid
+           block that sits still or slides cell→adjacent cell as a
+           continuous body stays here (moving-bar, filled stamps / ribbons
+           that translate as fixed silhouettes).
+  Static   temporally still, spatially dissimilar (texture).
+  Osc      confirmed periodic cells (period 2..8).
+  Flow     a colour that travels by correspondence. Members (or 4×4
+           colour-blocks) match a nearby same-colour site last frame
+           along a shared heading. Colour stays itself (no hue tint walk).
+           Dashed streams, wavefronts, dithered sliding texture, and
+           denser cascades count if heading is consistent and the pack is
+           not a filled stamp. Thin travelling colour may ride the edge
+           of a calm mass.
+           Confirm ~8 steps + travel floor ≥ ~1.5 cells. Size ~4 (keep 3).
+           Field mode colour bin is ignored so motion *wake* does not
+           glue into flow; a travelling rare hue is kept.
+           Reject: solid high-fill slabs; high persist with filled AABB
+           (sliding bodies); stamp-like density / packT; emerging
+           oscillators that are sitting still; isolated 2D scatter;
+           scramble-as-one-flow; stationary flicker.
+           Two mono-colour streams may coexist. No “moving static” pool.
+  Chaos    changing remainder — not periodic, not coherent correspondence.
+
+Overlay (one colour per regime, not per region id): gold calm, grey static,
+orange chaos, blue osc, green flow. Drawn as 1px outlines at display
+resolution — no interior wash. Tracked calm / oscillator / flow regions
+get L-brackets and a COM mark; chaos is edge fragments. Live grains are
+ticks on the source waveform under the field, not dots on the CA.
+
+Detection (cheap): 4×4 spatial×colour blocks → match each to the previous
+same-hue block → cluster by colour + heading + lane. Not flood-fill.
+Track identity may follow colour+size when COM jumps (wrapping fields).
+
+Flow grain laws:
+
+  - Share ∝ Σ flow.regionArea (occupied patch, same as Flow %).
+  - Spawn on trailing-edge member cells (start of hop motion), never the
+    COM or dilated gaps. Extra concurrent grains space along the heading.
+  - Pack-to-share; duration in a mid chaos–calm band from packing density
+    (area / regionArea → FLOW_ORDER_MIN..MAX), optionally capped by stream
+    length / hop speed so a grain dies near the leading edge. RegionArea
+    buys concurrency; packing shapes duration/envelope. Chaos stays
+    area-blind (short).
+  - Envelope from that timeOrder; polar material bias neutral;
+    FLOW_WINDOW_T mixes sat→window toward the long end (less choppy
+    than chaos). Sample scrub width is not driven by packing.
+  - Pan / Y / channelMix follow via applyTracks with
+    regionId = FLOW_ID_BASE + flow.id (disjoint from calm ids).
+    Follow hop-velocity conveyor (velX/velY), not group COM deltas.
+    When a grain reaches the leading edge, end it; spawn the next at
+    the trailing edge.
+  - Sample window frozen at spawn. Playback direction may freeze from
+    velX (same as calm) — that is not Doppler.
+
+
+------------------------------------------------------------------------------
+The Audio Engine as Constrained Renderer
+------------------------------------------------------------------------------
+
+The audio engine does not decide what deserves to be heard, and does not ask
+what a fixed point in space should sound like.
+
+It asks:
+
+  What sonic events naturally emerge from the current computational state
+  and evolution of the simulation?
+
+Its only legitimate constraints are physical and perceptual:
+
+- Maximum grain count
+- Maximum total sonic energy (held neutral)
+- Maximum CPU budget
+- Human perceptual limitations
+
+Rules must be simple and mathematically explainable — not artistic judgement
+about what is musical, ambient, beautiful, chaotic, or interesting.
+
+
+------------------------------------------------------------------------------
+Stability, Chaos, and Neutrality
+------------------------------------------------------------------------------
+
+The engine must not impose a sonic aesthetic on the simulation.
+
+Stable regimes should not be forced into ambient pads.
+Chaotic regimes should not be forced into glitch music.
+
+If the simulation is calm, chaotic, propagating, collapsing, or transforming,
+the sonic texture should naturally reflect those behaviours because grain
+rate, length, overlap, and spawn patterns emerge from coherence and change —
+not because the engine chose a mood.
+
+If the simulation is entirely chaotic and fast-changing, the audio should be
+too. If it is half chaotic and half stable by area, grain-budget share and
+texture should reflect that split — at neutral loudness.
+
+
+------------------------------------------------------------------------------
+Source Audio
+------------------------------------------------------------------------------
+
+The user may load WAV, MP3, or AIFF.
+
+Source audio is raw material from which grains are formed. The CA’s evolution
+redistributes exploration of that material through the Sonic Laws. No
+traditional effects rack is required for the listening philosophy.
+
+
+------------------------------------------------------------------------------
+Visual Engine
+------------------------------------------------------------------------------
+
+Utomata remains the Cellular Automata visual engine.
+
+It provides cell positions, RGB values, neighbour relationships, temporal
+evolution, global state, editable equations, and toroidal topology.
+
+The audio renderer observes the same state. It does not drive the CA.
+
+
+------------------------------------------------------------------------------
+User Interaction
+------------------------------------------------------------------------------
+
+Users should be able to:
+
+- Move through CA equation variations
+- Restart / reset the simulation
+- Load source audio
+- Observe audiovisual evolution in real time
+
+The creative instrument is the simulation.
+
+
+------------------------------------------------------------------------------
+Live pipeline
+------------------------------------------------------------------------------
+
+  Utomata → FrameObserver
+    → FieldObserver (δ, s, κ + region extract; chaos bag; oscillator groups;
+                     flow groups)
+    → GrainScheduler (five area-share pools; polar HSV material; X→pan +
+                      channel mix; absolute Y; freeze-at-spawn window;
+                      region-bound pan/Y/channelMix follow; flow conveyor)
+    → AudioEngine.sendEvents (+ track)
+    → grain-processor (locked window, ping-pong, per-grain bandpass,
+                       analytic envelope, equal-power pan, applyTracks)
+
+
+------------------------------------------------------------------------------
+Sacred / Negotiable / Forbidden
+------------------------------------------------------------------------------
+
+SACRED
+- Audio IS the CA
+- Sonic Laws above (identity, observation, region laws, freeze-at-spawn,
+  geometry-at-spawn, area-weighted budget, neutral loudness, flow as
+  similarity travel)
+- No aesthetic imposition (beauty / wash / chaos / interestingness)
+- No structure/voice ownership or interestingness scoring
+- No fixed listening points / persistent sonic locations as architecture
+- Physically constrained rendering (grain count, energy, CPU, perception)
+- Evolving sound inseparable from evolving simulation behaviour
+- Observational regions measure the field; they do not own voices
+
+NEGOTIABLE
+- Exact numeric curves, thresholds, EMA times, grain budget N, hop ranges
+- Grid size, CPU budgets, UI metering
+- Debug visualisation of regions (optional; must not become lattice ears)
+
+FORBIDDEN
+- Fixed listening-point / lattice-pixel listening architectures
+- Voice ownership / structure prioritisation / interestingness scores
+- Using luminance→volume as the primary way to “hear the CA”
+- Mid-grain sample-window scrub chase of moving regions
+  (direct pan / Y-spectrum / channel-mix follow for region-bound grains
+  is allowed; no smoothing)
+- Colour → loudness, allocation, or macro schedule
+- Treating the CA as a modulation source for an unrelated granular synth
+- Optimising for ambient beauty, glitch excitement, or “musicality”
+- Letting high activity increase loudness or steal budget beyond area share
+- Doppler / velocity→grain rate (pitch offsets beyond ±1)
+- Caps that prevent a pool from spending its area share
+- Treating CHAOS_EVENTS_MAX_HZ as a mix knob
+- A sixth “moving static” regime (calm covers translating silhouettes)
+- Treating a filled translating silhouette as flow; treating 2D
+  same-direction scatter as one flow; tint-glue of hues
+- Folding flow grains back into chaos share; applyTracks on raw flow.id
+  (collides with calm — use FLOW_ID_BASE)
+- Reviving X→sample / RGB→envelope, the 48-bin spectral bank, or a 1D
+  hue→centroid LUT as the sole material axis
+
+
+------------------------------------------------------------------------------
+Success / Failure
+------------------------------------------------------------------------------
+
+Success: the listener feels they are hearing the simulation’s behaviour evolve —
+calm, chaos, flow, propagation, collapse, transformation — as continuous
+changing sonic texture. Large coherent areas form long overlapping textures
+that evolve as successive grains follow regional motion; chaotic areas spray
+short grains; travelling colour rides a conveyor; overall loudness stays
+neutral; balance matches area weighting.
+
+Failure: constant repeating texture; curated voices; fixed posts; aesthetic
+mood engines; mid-grain glitchy scrub chasing; chaos winning the mix by firing
+more; or “granular synth controlled by CA.”
+
+
+------------------------------------------------------------------------------
+Final Creative Goal
+------------------------------------------------------------------------------
+
+Create an audiovisual instrument that behaves as a miniature computational
+universe.
+
+The beauty of the visuals emerges from simple local relationships between cells.
+The beauty of the sound emerges from those same relationships heard as
+computational flow through time — grains as events of that flow — rendered as
+faithfully as physics and perception allow under the Sonic Laws.

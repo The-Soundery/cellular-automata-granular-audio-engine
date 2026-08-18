@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overlay — C</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #1c1c1c;
+      --ink: #cfcfcf;
+      --mute: #7a7a7a;
+      --line: #3a3a3a;
+      --cell: 42px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      overflow: hidden;
+      font-family: "VT323", monospace;
+    }
+    a { color: inherit; text-decoration: none; }
+    button {
+      font: inherit;
+      color: inherit;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      padding: 0;
+      cursor: pointer;
+    }
+
+    /* Same 42px module as the control cells — peeks in the void as off-screen tiles. */
+    .void {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='42' height='42'%3E%3Cpath d='M42 0H0V42' fill='none' stroke='%233a3a3a' stroke-width='1'/%3E%3C/svg%3E");
+      background-size: 42px 42px;
+    }
+
+    .stage {
+      position: absolute;
+      inset: 42px 42px 10px 42px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      z-index: 1;
+    }
+    .field {
+      width: min(100%, calc(100vh - 42px - 10px - 24px - 2px));
+      aspect-ratio: 1;
+      border: 1px solid var(--line);
+      position: relative;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .field img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      image-rendering: pixelated;
+    }
+    .map {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .map path { vector-effect: non-scaling-stroke; }
+    .eq {
+      width: min(100%, calc(100vh - 42px - 10px - 24px - 2px));
+      height: 22px;
+      border: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      font-family: "Share Tech Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.02em;
+      color: var(--mute);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .eq .u { color: var(--ink); margin-right: 1.6em; }
+
+    .colony {
+      position: absolute;
+      left: 42px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 4;
+      display: flex;
+      flex-direction: column;
+    }
+    @supports (top: round(nearest, 1px, 1px)) {
+      .colony {
+        top: round(nearest, calc(50% - 186px), 42px);
+        transform: none;
+      }
+    }
+    .col { display: flex; flex-direction: column; }
+    .cell {
+      width: var(--cell);
+      height: var(--cell);
+      border: 1px solid var(--line);
+      background: var(--bg);
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      flex-shrink: 0;
+    }
+    .col > .cell + .cell { margin-top: -1px; }
+    .cell:hover, .cell:focus-visible { border-color: var(--ink); outline: none; }
+    .cell.on { border-color: var(--ink); }
+    .cell svg { width: 18px; height: 18px; display: block; }
+    .depth { display: flex; margin-top: 2px; }
+    .depth .cell { font-size: 18px; color: var(--mute); line-height: 1; }
+    .depth .cell + .cell { margin-left: -1px; }
+    .depth .cell.on { color: var(--ink); }
+  </style>
+</head>
+<body>
+  <div class="void" aria-hidden="true"></div>
+
+  <nav class="colony" aria-label="Controls">
+    <div class="col">
+      <button class="cell" type="button" title="Pause" aria-label="Pause">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="6" width="3" height="12" fill="#cfcfcf"/><rect x="14" y="6" width="3" height="12" fill="#cfcfcf"/></svg>
+      </button>
+      <button class="cell" type="button" title="Audio on" aria-label="Audio on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><path d="M6 10h3l5-3.5v11L9 14H6z"/><path d="M16.5 9c1.4 1.4 1.4 4.6 0 6"/><path d="M19 7c2.4 2.4 2.4 7.6 0 10"/></svg>
+      </button>
+      <button class="cell" type="button" title="Load audio" aria-label="Load audio">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><path d="M12 5v11"/><path d="M8 12l4 4 4-4"/><path d="M6 19h12"/></svg>
+      </button>
+      <button class="cell" type="button" title="Record" aria-label="Record">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg>
+      </button>
+      <button class="cell" type="button" title="Reset field" aria-label="Reset field">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><path d="M7 12a5 5 0 1 1 1.2 3.4"/><path d="M7 12l-2.2-2.8M7 12l3.2-.6"/></svg>
+      </button>
+      <a class="cell on" href="focus.html" title="Overlay on" aria-label="Overlay on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><path d="M5 5h4M5 5v4"/><path d="M19 5h-4M19 5v4"/><path d="M5 19h4M5 19v-4"/><path d="M19 19h-4M19 19v-4"/></svg>
+      </a>
+      <a class="cell" href="explore.html" title="Explore" aria-label="Explore">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><rect x="5" y="5" width="4" height="4"/><rect x="10" y="5" width="4" height="4"/><rect x="15" y="5" width="4" height="4"/><rect x="5" y="10" width="4" height="4"/><rect x="10" y="10" width="4" height="4"/><rect x="15" y="10" width="4" height="4"/><rect x="5" y="15" width="4" height="4"/><rect x="10" y="15" width="4" height="4"/><rect x="15" y="15" width="4" height="4"/></svg>
+      </a>
+      <a class="cell" href="data.html" title="DATA" aria-label="DATA">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1" aria-hidden="true"><rect x="5" y="5" width="14" height="14"/><path d="M5 16l3-3 3 2 4-5 4 3"/></svg>
+      </a>
+    </div>
+    <div class="depth" role="group" aria-label="Type-U depth">
+      <button class="cell on" type="button" aria-label="1st" title="1st">1</button>
+      <button class="cell" type="button" aria-label="2nd" title="2nd">2</button>
+      <button class="cell" type="button" aria-label="3rd" title="3rd">3</button>
+    </div>
+  </nav>
+
+  <div class="stage">
+    <div class="field">
+      <img src="../stills/tile-0.png" alt="Cellular automata field" />
+      <!-- Outline map: 1px regime edges over the whole field + brackets on main regions. -->
+      <svg class="map" viewBox="0 0 720 720" preserveAspectRatio="none" aria-hidden="true">
+        <g fill="none" stroke-width="1" vector-effect="non-scaling-stroke">
+          <!-- Static — left vertical strips -->
+          <path stroke="#96969b" d="M8,8 L152,8 L168,72 L148,148 L172,228 L138,318 L160,408 L130,502 L154,598 L142,712 L8,712 Z"/>
+          <path stroke="#96969b" d="M48,8 V712"/>
+          <path stroke="#96969b" d="M96,8 V712"/>
+          <path stroke="#96969b" d="M28,190 L70,190 L70,340 L28,340"/>
+          <!-- Calm — upper lime mass -->
+          <path stroke="#c4a35a" d="M176,44 L428,38 L458,88 L442,168 L418,248 L392,278 L214,286 L170,176 Z"/>
+          <path stroke="#c4a35a" d="M220,86 L390,80 L404,150 L378,230 L248,238 L210,150 Z"/>
+          <!-- Calm — lower mustard mass -->
+          <path stroke="#c4a35a" d="M188,298 L476,288 L502,362 L478,468 L448,548 L312,562 L196,512 L174,368 Z"/>
+          <path stroke="#c4a35a" d="M230,340 L430,332 L448,420 L410,510 L268,522 L214,430 Z"/>
+          <!-- Osc — right brick column -->
+          <path stroke="#3782be" d="M512,16 L712,16 L712,704 L524,704 L504,612 L528,430 L508,248 L522,16"/>
+          <path stroke="#3782be" d="M548,16 V704"/>
+          <path stroke="#3782be" d="M512,120 H712 M512,240 H712 M512,360 H712 M512,480 H712 M512,600 H712"/>
+          <!-- Flow — dashed heading through lower-right orange -->
+          <path stroke="#46af78" stroke-dasharray="7 5" d="M392,568 L468,592 L548,636 L628,688"/>
+          <path stroke="#46af78" d="M616,668 L628,688 L606,684"/>
+          <path stroke="#46af78" stroke-dasharray="7 5" d="M360,620 L430,644 L510,680"/>
+          <!-- Chaos — edge fragments, not a box -->
+          <path stroke="#e64824" d="M156,300 h22 v10 h14"/>
+          <path stroke="#e64824" d="M148,352 h8 v18 h-6 v12 h16"/>
+          <path stroke="#e64824" d="M178,410 h28 v8 h-12 v16"/>
+          <path stroke="#e64824" d="M132,468 h18 v-10 h10"/>
+          <path stroke="#e64824" d="M164,522 h8 v14 h20 v-8"/>
+          <path stroke="#e64824" d="M400,196 h16 v12"/>
+          <path stroke="#e64824" d="M424,214 h-8 v16 h14"/>
+          <path stroke="#e64824" d="M486,250 h12 v-10 h8"/>
+          <path stroke="#e64824" d="M198,640 h24 v8 h-10 v12"/>
+          <path stroke="#e64824" d="M454,80 h10 v14 h-16"/>
+
+          <!-- Brackets: upper calm -->
+          <g stroke="#c4a35a">
+            <path d="M176,44 h40 M176,44 v40"/>
+            <path d="M458,38 h-40 M458,38 v40"/>
+            <path d="M170,286 h40 M170,286 v-40"/>
+            <path d="M418,248 h40 M418,248 v40"/>
+            <path d="M285,148 h16 M293,140 v16"/>
+          </g>
+          <!-- Brackets: lower calm -->
+          <g stroke="#c4a35a">
+            <path d="M188,298 h40 M188,298 v40"/>
+            <path d="M502,288 h-40 M502,288 v40"/>
+            <path d="M174,548 h40 M174,512 v40"/>
+            <path d="M448,548 h40 M448,548 v-40"/>
+            <path d="M322,412 h16 M330,404 v16"/>
+          </g>
+          <!-- Brackets: osc column -->
+          <g stroke="#3782be">
+            <path d="M512,16 h40 M512,16 v40"/>
+            <path d="M712,16 h-40 M712,16 v40"/>
+            <path d="M524,704 h-40 M524,704 v-40"/>
+            <path d="M712,704 h-40 M712,704 v-40"/>
+            <path d="M604,352 h16 M612,344 v16"/>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <div class="eq">
+      <span class="u">U(add(V.b,V8.b),sub(V4.b,V8.b))</span>
+      <span>1ST  ·  X 184  ·  Y 91</span>
+    </div>
+  </div>
+</body>
+</html>

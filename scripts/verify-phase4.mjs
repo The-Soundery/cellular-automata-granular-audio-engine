@@ -1,9 +1,7 @@
 /**
- * Phase 4 — Sonic Laws listening / contract gate (automated portion).
- * Manual listening checklist (V5): scripts/listening-gate-v5.md
- * Historical V4.4: scripts/listening-gate-sonic-laws.md
+ * Phase 4 — Sonic Laws contract checks (polar / stereo / absolute Y).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,12 +17,10 @@ function assert(label, ok) {
   }
 }
 
-const brief = readFileSync(join(root, "Creative Brief v4.txt"), "utf8");
+const brief = readFileSync(join(root, "Creative Brief.txt"), "utf8");
 const worklet = readFileSync(join(root, "public/grain-processor.js"), "utf8");
 const sched = readFileSync(join(root, "src/field/GrainScheduler.ts"), "utf8");
 const main = readFileSync(join(root, "src/main.ts"), "utf8");
-const gateV5 = join(root, "scripts/listening-gate-v5.md");
-const gateV44 = join(root, "scripts/listening-gate-sonic-laws.md");
 
 assert("Sonic Laws in brief", /Sonic Laws \(authoritative\)/.test(brief));
 assert("freeze-at-spawn in brief", /Freeze at spawn/.test(brief));
@@ -40,13 +36,6 @@ assert("brief has no velocity-hybrid", !/velocity-hybrid/i.test(brief));
 assert(
   "brief forbids sample scrub chase",
   /sample scrub window|Sample \/ scrub window/i.test(brief),
-);
-assert("listening gate V5 doc present", existsSync(gateV5));
-assert("listening gate V4.4 archive present", existsSync(gateV44));
-const gateSrc = readFileSync(gateV5, "utf8");
-assert(
-  "listening gate V5 covers polar / stereo / absolute Y",
-  /polar/i.test(gateSrc) && /stereo/i.test(gateSrc) && /spectrum/i.test(gateSrc),
 );
 assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/.test(main) && /scheduler\.step/.test(main) && /sendEvents/.test(main));
 assert(
@@ -65,7 +54,6 @@ assert(
 );
 assert("no luminance→volume mapping in scheduler", !/luminance/.test(sched) && !/brightness/.test(sched));
 assert("equal amplitude / sqrt budget", /equalAmp|1 \/ Math\.sqrt/.test(sched));
-assert("lattice archive only under _obsolete", existsSync(join(root, "public/_obsolete/grain-processor-lattice.js")));
 assert("live worklet is not lattice archive", !/latticeIndex/.test(worklet));
 
 const spectral = readFileSync(join(root, "src/audio/spectral.ts"), "utf8");
@@ -242,4 +230,4 @@ if (failed) {
   console.error(`\nPhase 4 verify: ${failed} failure(s)`);
   process.exit(1);
 }
-console.log("\nPhase 4 verify: passed (automated). Complete manual checklist in listening-gate-v5.md");
+console.log("\nPhase 4 verify: passed");

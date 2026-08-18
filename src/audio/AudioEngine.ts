@@ -16,6 +16,8 @@ export interface ListenGrain {
   sounding: boolean;
   gain: number;
   regime?: string;
+  /** Normalised read head in the source [0,1]. */
+  t?: number;
 }
 
 export interface AudioStats {

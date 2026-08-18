@@ -1,5 +1,5 @@
 /**
- * Phase 0 gate: lattice path must be gone from the live tree.
+ * Contract: lattice path must stay gone from the live tree.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -32,10 +32,6 @@ assert("controls has no Paint/s", !/Paint\/s/.test(controls));
 assert("controls has no lattice hint", !/Sonic-state lattice/.test(controls));
 assert("worklet has no paintGrain (lattice)", !/paintGrain/.test(worklet));
 assert("worklet has no latticeIndex", !/latticeIndex/.test(worklet));
-assert(
-  "obsolete archive kept for Phase 2 mining",
-  existsSync(join(root, "public/_obsolete/grain-processor-lattice.js")),
-);
 
 if (failed) {
   console.error(`\nPhase 0 verify: ${failed} failure(s)`);

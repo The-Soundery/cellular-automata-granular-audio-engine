@@ -91,6 +91,59 @@ function mixedToDec(digits: number[], bases: number[]): number {
   return n;
 }
 
+function decToMixed(n: number, bases: number[]): number[] {
+  const digits = new Array<number>(bases.length);
+  let rest = n;
+  for (let i = bases.length - 1; i >= 0; i--) {
+    const b = bases[i]!;
+    digits[i] = rest % b;
+    rest = Math.floor(rest / b);
+  }
+  return digits;
+}
+
+export function axisSize(depth: TypeUDepth): { w: number; h: number } {
+  const bases = slotBases(depth);
+  const mid = bases.length / 2;
+  const prod = (xs: number[]) => xs.reduce((a, b) => a * b, 1);
+  return { w: prod(bases.slice(0, mid)), h: prod(bases.slice(mid)) };
+}
+
+function wrapAxis(n: number, size: number): number {
+  return ((n % size) + size) % size;
+}
+
+export function programAt(
+  depth: TypeUDepth,
+  x: number,
+  y: number,
+): TypeUProgram {
+  const bases = slotBases(depth);
+  const { w, h } = axisSize(depth);
+  const mid = bases.length / 2;
+  const left = decToMixed(wrapAxis(x, w), bases.slice(0, mid));
+  const right = decToMixed(wrapAxis(y, h), bases.slice(mid));
+  return composeTypeU(depth, [...left, ...right]);
+}
+
+/** Compass order: N, NE, E, SE, S, SW, W, NW. */
+export const NEIGHBOR_DIRS = [
+  { dx: 0, dy: -1 },
+  { dx: 1, dy: -1 },
+  { dx: 1, dy: 0 },
+  { dx: 1, dy: 1 },
+  { dx: 0, dy: 1 },
+  { dx: -1, dy: 1 },
+  { dx: -1, dy: 0 },
+  { dx: -1, dy: -1 },
+] as const;
+
+export function neighborPrograms(program: TypeUProgram): TypeUProgram[] {
+  return NEIGHBOR_DIRS.map(({ dx, dy }) =>
+    programAt(program.depth, program.x + dx, program.y + dy),
+  );
+}
+
 function slotsToXY(slots: number[], depth: TypeUDepth): { x: number; y: number } {
   const bases = slotBases(depth);
   const mid = slots.length / 2;
@@ -262,4 +315,8 @@ export function cycleSlot(
 
 export function formatCoord(program: TypeUProgram): string {
   return `${depthLabel(program.depth)} · x ${program.x.toLocaleString("en-US")} · y ${program.y.toLocaleString("en-US")}`;
+}
+
+export function formatHud(program: TypeUProgram): string {
+  return `${depthLabel(program.depth).toUpperCase()}  ·  X ${program.x}  ·  Y ${program.y}`;
 }

@@ -1,9 +1,9 @@
 import { UtomataHost, GRID_SIZE } from "./ca/UtomataHost.ts";
 import {
-  parseTypeU,
   randomProgram,
   cycleSlot,
   seedProgram,
+  neighborPrograms,
   type TypeUDepth,
   type TypeUProgram,
 } from "./ca/typeU.ts";
@@ -28,6 +28,7 @@ import {
   type FieldMeterStats,
 } from "./ui/controls.ts";
 import { RegionOverlay } from "./ui/RegionOverlay.ts";
+import { WaveformStrip } from "./ui/WaveformStrip.ts";
 import "./style.css";
 
 const DEFAULT_SOURCE_URL = "/default-source.wav";
@@ -39,16 +40,27 @@ if (!app) throw new Error("#app missing");
 
 app.innerHTML = `
   <div class="stage">
-    <div class="ca-wrap" id="ca-wrap"></div>
+    <div class="scope" id="scope">
+      <div class="ca-wrap" id="ca-wrap">
+        <span class="bracket bracket-tl"></span>
+        <span class="bracket bracket-tr"></span>
+        <span class="bracket bracket-bl"></span>
+        <span class="bracket bracket-br"></span>
+      </div>
+      <div class="wave-strip" id="wave-strip"></div>
+      <div class="explore-sky" id="explore-sky" hidden></div>
+    </div>
   </div>
-  <div id="controls-mount"></div>
 `;
 
 const caWrap = document.querySelector<HTMLElement>("#ca-wrap")!;
-const controlsMount = document.querySelector<HTMLElement>("#controls-mount")!;
+const exploreSky = document.querySelector<HTMLElement>("#explore-sky")!;
+const waveStrip = document.querySelector<HTMLElement>("#wave-strip")!;
 
 const host = new UtomataHost(caWrap);
 const overlay = new RegionOverlay(caWrap);
+overlay.setVisible(false);
+const wave = new WaveformStrip(waveStrip);
 const frameObserver = new FrameObserver(GRID_SIZE, GRID_SIZE);
 const fieldObserver = new FieldObserver(GRID_SIZE, GRID_SIZE);
 const scheduler = new GrainScheduler();
@@ -84,7 +96,7 @@ let smoothFieldDelta: {
   calmMeanDelta: number;
   staticMeanDelta: number;
 } | null = null;
-let overlayVisible = true;
+let overlayVisible = false;
 let defaultSourcePromise: Promise<void> | null = null;
 /** null = live Utomata; else active synthetic pattern. */
 let activePattern: TestPattern | null = null;
@@ -93,23 +105,21 @@ let syntheticStep = 0;
 let syntheticAccSec = 0;
 let lastTickMs = performance.now();
 
-const UNDO_CAP = 200;
+const PREVIEW_SIZE = 64;
+const PREVIEW_FPS = 30;
+const PREVIEW_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315];
+
 let currentProgram: TypeUProgram | null = seedProgram(1);
 let mappedDepth: TypeUDepth = 1;
 const lastByDepth: Partial<Record<TypeUDepth, TypeUProgram>> = {
   1: currentProgram,
 };
-const undoStack: TypeUProgram[] = [];
-const redoStack: TypeUProgram[] = [];
+let exploring = false;
+let dataOpen = false;
+let explorePreviews: UtomataHost[] = [];
+let wavePeaks: Float32Array | null = null;
 
 function commitProgram(next: TypeUProgram, resetColours: boolean): void {
-  if (currentProgram && currentProgram.equation !== next.equation) {
-    undoStack.push(currentProgram);
-    if (undoStack.length > UNDO_CAP) undoStack.shift();
-    redoStack.length = 0;
-  } else if (!currentProgram) {
-    redoStack.length = 0;
-  }
   currentProgram = next;
   mappedDepth = next.depth;
   lastByDepth[next.depth] = next;
@@ -119,14 +129,105 @@ function commitProgram(next: TypeUProgram, resetColours: boolean): void {
   }
   host.applyEquation(next.equation);
   controls.setProgram(next, next.equation);
+  if (exploring) mountExploreNeighbors();
 }
 
-function restoreProgram(next: TypeUProgram): void {
-  currentProgram = next;
-  mappedDepth = next.depth;
-  lastByDepth[next.depth] = next;
-  host.applyEquation(next.equation);
-  controls.setProgram(next, next.equation);
+function cacheWavePeaks(): void {
+  const bank = audio.getBank();
+  if (!bank) {
+    wavePeaks = null;
+    controls.setHasSource(false);
+    return;
+  }
+  const pcm = bank.pcmL;
+  const n = 256;
+  const peaks = new Float32Array(n);
+  const hop = Math.max(1, Math.floor(pcm.length / n));
+  for (let i = 0; i < n; i++) {
+    let mag = 0;
+    const start = i * hop;
+    const end = i === n - 1 ? pcm.length : Math.min(pcm.length, start + hop);
+    for (let j = start; j < end; j++) {
+      const a = Math.abs(pcm[j]!);
+      if (a > mag) mag = a;
+    }
+    peaks[i] = mag;
+  }
+  wavePeaks = peaks;
+  controls.setHasSource(true);
+}
+
+function disposeExplorePreviews(): void {
+  for (const preview of explorePreviews) preview.dispose();
+  explorePreviews = [];
+  exploreSky.replaceChildren();
+}
+
+function mountExploreNeighbors(): void {
+  if (!exploring || !currentProgram) return;
+  const neighbors = neighborPrograms(currentProgram);
+  if (explorePreviews.length !== neighbors.length) {
+    disposeExplorePreviews();
+    neighbors.forEach((program, i) => {
+      const star = document.createElement("button");
+      star.type = "button";
+      star.className = "star";
+      star.style.setProperty("--a", `${PREVIEW_ANGLES[i]}deg`);
+      star.title = "Travel";
+      exploreSky.append(star);
+      const preview = new UtomataHost(
+        star,
+        `preview-${i}`,
+        PREVIEW_SIZE,
+        PREVIEW_FPS,
+      );
+      preview.applyEquation(program.equation);
+      if (host.isPaused()) preview.pause();
+      explorePreviews.push(preview);
+      star.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!currentProgram) return;
+        const next = neighborPrograms(currentProgram)[i];
+        if (next) commitProgram(next, true);
+      });
+    });
+  } else {
+    neighbors.forEach((program, i) => {
+      const preview = explorePreviews[i]!;
+      preview.reset();
+      preview.applyEquation(program.equation);
+    });
+  }
+  requestAnimationFrame(() => {
+    host.fitZoom(caWrap);
+    for (const preview of explorePreviews) preview.fitZoom();
+  });
+}
+
+function closeExplore(): void {
+  if (!exploring) return;
+  exploring = false;
+  document.body.classList.remove("exploring");
+  caWrap.classList.remove("is-settle");
+  for (const preview of explorePreviews) preview.pause();
+  exploreSky.hidden = true;
+  controls.setExplore(false);
+  host.fitZoom(caWrap);
+}
+
+function openExplore(): boolean {
+  if (!currentProgram || activePattern) return false;
+  exploring = true;
+  document.body.classList.add("exploring");
+  caWrap.classList.add("is-settle");
+  exploreSky.hidden = false;
+  controls.setExplore(true);
+  mountExploreNeighbors();
+  if (!host.isPaused()) {
+    for (const preview of explorePreviews) preview.play();
+  }
+  requestAnimationFrame(() => host.fitZoom(caWrap));
+  return true;
 }
 
 function clearPipeline(): void {
@@ -188,6 +289,7 @@ async function ensureDefaultSource(): Promise<void> {
     defaultSourcePromise = (async () => {
       await audio.loadUrl(DEFAULT_SOURCE_URL);
       syncSourceDuration();
+      cacheWavePeaks();
     })().catch((err) => {
       defaultSourcePromise = null;
       throw err;
@@ -196,24 +298,7 @@ async function ensureDefaultSource(): Promise<void> {
   await defaultSourcePromise;
 }
 
-const controls = mountControls(controlsMount, {
-  onApplyEquation(eq) {
-    const parsed = parseTypeU(eq);
-    if (!parsed) {
-      if (currentProgram) {
-        undoStack.push(currentProgram);
-        if (undoStack.length > UNDO_CAP) undoStack.shift();
-        redoStack.length = 0;
-      }
-      currentProgram = null;
-      host.applyEquation(eq);
-      controls.setProgram(null, eq);
-      return;
-    }
-    const depthChanged =
-      currentProgram === null || currentProgram.depth !== parsed.depth;
-    commitProgram(parsed, depthChanged);
-  },
+const controls = mountControls(app, {
   onResetColours() {
     if (activePattern) {
       syntheticStep = 0;
@@ -237,6 +322,7 @@ const controls = mountControls(controlsMount, {
       controls.setTypeUEnabled(true);
       return;
     }
+    closeExplore();
     const pattern = getTestPattern(id);
     if (!pattern) return;
     activePattern = pattern;
@@ -256,19 +342,12 @@ const controls = mountControls(controlsMount, {
       if (!patternPaused) syntheticAccSec = 0;
       return patternPaused;
     }
-    return host.togglePause();
-  },
-  onUndo() {
-    const prev = undoStack.pop();
-    if (!prev) return;
-    if (currentProgram) redoStack.push(currentProgram);
-    restoreProgram(prev);
-  },
-  onRedo() {
-    const next = redoStack.pop();
-    if (!next) return;
-    if (currentProgram) undoStack.push(currentProgram);
-    restoreProgram(next);
+    const paused = host.togglePause();
+    for (const preview of explorePreviews) {
+      if (paused) preview.pause();
+      else preview.play();
+    }
+    return paused;
   },
   onRandomEquation() {
     commitProgram(randomProgram(mappedDepth), true);
@@ -365,13 +444,36 @@ const controls = mountControls(controlsMount, {
     if (!overlayVisible) overlay.clear();
     return overlayVisible;
   },
+  onToggleData() {
+    dataOpen = !dataOpen;
+    return dataOpen;
+  },
+  onToggleExplore() {
+    if (exploring) {
+      closeExplore();
+      return false;
+    }
+    return openExplore();
+  },
+  async onArmAudio() {
+    try {
+      await audio.ensureRunning();
+      controls.setAudioEnabled(audio.isEnabled);
+    } catch (err) {
+      console.error(err);
+    }
+  },
   async onLoadAudio(file) {
     audioStatus = "decoding…";
     pushStats(true);
     try {
       await audio.loadFile(file);
       syncSourceDuration();
+      cacheWavePeaks();
       defaultSourcePromise = Promise.resolve();
+      if (!audio.isEnabled) {
+        await audio.ensureRunning();
+      }
       audioStatus = audio.isReady
         ? `loaded · ${file.name}`
         : `loaded · ${file.name} · ctx ${audio.contextState}`;
@@ -387,17 +489,42 @@ const controls = mountControls(controlsMount, {
 const startProgram = seedProgram(1);
 controls.setProgram(startProgram, startProgram.equation);
 controls.setTypeUEnabled(true);
-controls.setOverlayVisible(true);
+overlay.setVisible(false);
+controls.setOverlayVisible(false);
 controls.setAudioEnabled(false);
 controls.setRecording(false);
+controls.setHasSource(audio.hasSource);
 
-const ro = new ResizeObserver(() => host.fitZoom(caWrap));
+caWrap.addEventListener("click", () => {
+  if (exploring) closeExplore();
+});
+
+window.addEventListener(
+  "pointerdown",
+  () => {
+    if (audio.hasSource && audio.contextState === "suspended") {
+      void audio.ensureRunning().then(() => {
+        controls.setAudioEnabled(audio.isEnabled);
+      });
+    }
+  },
+  { capture: true },
+);
+
+const ro = new ResizeObserver(() => {
+  host.fitZoom(caWrap);
+  for (const preview of explorePreviews) preview.fitZoom();
+});
 ro.observe(caWrap);
-window.addEventListener("resize", () => host.fitZoom(caWrap));
+window.addEventListener("resize", () => {
+  host.fitZoom(caWrap);
+  for (const preview of explorePreviews) preview.fitZoom();
+});
 
 function pushStats(forceMeter = false) {
   const stats = audio.getStats();
   overlay.draw(lastObs, audio.isReady ? stats : null);
+  wave.draw(wavePeaks, audio.isReady ? stats : null);
 
   const now = performance.now();
   const due =

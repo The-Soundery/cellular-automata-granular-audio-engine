@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DATA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #1c1c1c;
+    overflow: hidden;
+    color: #cfcfcf;
+    font-family: VT323, monospace;
+    user-select: none;
+  }
+  a { color: inherit; text-decoration: none; }
+  .stage {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+  }
+  .scope {
+    position: relative;
+    width: min(calc(100vw - 88px), calc(100vh - 72px));
+    height: min(calc(100vw - 88px), calc(100vh - 72px));
+  }
+  .readout {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 100%;
+    margin-bottom: 12px;
+    text-align: center;
+    font-family: "Share Tech Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: #7a7a7a;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .ca {
+    width: 100%; height: 100%;
+    display: block;
+    image-rendering: pixelated;
+  }
+  .b {
+    position: absolute;
+    width: 28px; height: 28px;
+    pointer-events: none;
+  }
+  .b-tl { top: -7px; left: -7px; border-top: 1px solid #cfcfcf; border-left: 1px solid #cfcfcf; }
+  .b-tr { top: -7px; right: -7px; border-top: 1px solid #cfcfcf; border-right: 1px solid #cfcfcf; }
+  .b-bl { bottom: -7px; left: -7px; border-bottom: 1px solid #cfcfcf; border-left: 1px solid #cfcfcf; }
+  .b-br { bottom: -7px; right: -7px; border-bottom: 1px solid #cfcfcf; border-right: 1px solid #cfcfcf; }
+  .corner {
+    position: fixed;
+    z-index: 20;
+    display: flex;
+    gap: 1px;
+  }
+  .tl { top: 10px; left: 10px; }
+  .tr { top: 10px; right: 10px; align-items: flex-start; }
+  .bl { bottom: 10px; left: 10px; }
+  .br { bottom: 10px; right: 10px; }
+  .cell {
+    width: 24px; height: 24px;
+    border: 1px solid #3a3a3a;
+    background: #1c1c1c;
+    display: grid;
+    place-items: center;
+    color: #7a7a7a;
+    flex: none;
+  }
+  a.cell:hover, .cell.ink { color: #cfcfcf; }
+  .cell.hot { color: #cfcfcf; border-color: #cfcfcf; }
+  .cell.data { width: 40px; font-size: 14px; letter-spacing: 0.14em; }
+  .cell.d { font-size: 16px; }
+  svg.ico { display: block; }
+  .fold {
+    width: 176px;
+    border: 1px solid #cfcfcf;
+    background: #1c1c1c;
+  }
+  .fold .head {
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 8px;
+    border-bottom: 1px solid #3a3a3a;
+    font-size: 14px;
+    letter-spacing: 0.14em;
+    color: #cfcfcf;
+  }
+  .fold .body { padding: 8px 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+  .row { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #7a7a7a; }
+  .row .k { width: 40px; }
+  .row .n { width: 16px; text-align: right; color: #cfcfcf; }
+  .ticks { display: flex; gap: 1px; height: 7px; }
+  .ticks b, .ticks i { display: block; width: 3px; height: 7px; }
+  .ticks b { background: #cfcfcf; }
+  .ticks i { background: #3a3a3a; }
+  .meta {
+    margin-top: 5px; padding-top: 6px; border-top: 1px solid #3a3a3a;
+    display: grid; grid-template-columns: 1fr auto; gap: 4px 8px;
+    font-size: 13px; color: #7a7a7a;
+  }
+  .meta b { font-weight: normal; color: #cfcfcf; text-align: right; }
+</style>
+</head>
+<body>
+  <nav class="corner tl">
+    <span class="cell ink" title="Pause">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12"><rect x="2.5" y="2" width="2.5" height="8" fill="currentColor"/><rect x="7" y="2" width="2.5" height="8" fill="currentColor"/></svg>
+    </span>
+    <span class="cell" title="Record">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12"><rect x="3" y="3" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+    </span>
+  </nav>
+  <nav class="corner tr">
+    <a class="cell" href="overlay.html" title="Overlay">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M2 4V2h2"/><path d="M8 2h2v2"/><path d="M10 8v2H8"/><path d="M4 10H2V8"/></svg>
+    </a>
+    <aside class="fold">
+      <a class="head" href="main.html" title="DATA">DATA</a>
+      <div class="body">
+        <div class="row"><span class="k">CALM</span><span class="ticks"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="n">40</span></div>
+        <div class="row"><span class="k">STAT</span><span class="ticks"><b></b><b></b><b></b><b></b><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="n">20</span></div>
+        <div class="row"><span class="k">CHAOS</span><span class="ticks"><b></b><b></b><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="n">10</span></div>
+        <div class="row"><span class="k">OSC</span><span class="ticks"><b></b><b></b><b></b><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="n">15</span></div>
+        <div class="row"><span class="k">FLOW</span><span class="ticks"><b></b><b></b><b></b><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="n">15</span></div>
+        <div class="meta"><span>SPEND</span><b>0.58</b><span>CLIP</span><b>0</b><span>STEP</span><b>2048</b></div>
+      </div>
+    </aside>
+  </nav>
+  <nav class="corner bl">
+    <span class="cell ink" title="Audio on">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M2 4.5h2.5L7 2v8L4.5 7.5H2z" fill="currentColor" stroke="none"/><path d="M8.5 5c.7.4.7 1.6 0 2"/><path d="M10 4.2c1.2.7 1.2 2.9 0 3.6"/></svg>
+    </span>
+    <span class="cell" title="Load">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M6 2v6"/><path d="M3.5 5.5 6 8l2.5-2.5"/><path d="M2.5 10h7"/></svg>
+    </span>
+    <span class="cell" title="Reset">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M8.5 3.3A3.6 3.6 0 1 1 6 2.4"/><path d="M8.5 1.5v2.2H6.4"/></svg>
+    </span>
+  </nav>
+  <nav class="corner br">
+    <a class="cell" href="explore.html" title="Explore">
+      <svg class="ico" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><rect x="5" y="5" width="2" height="2"/><rect x="5" y="1" width="2" height="2"/><rect x="9" y="5" width="2" height="2"/><rect x="5" y="9" width="2" height="2"/><rect x="1" y="5" width="2" height="2"/></svg>
+    </a>
+    <span class="cell d hot" title="1st">1</span>
+    <span class="cell d" title="2nd">2</span>
+    <span class="cell d" title="3rd">3</span>
+  </nav>
+
+  <div class="stage">
+    <div class="scope">
+      <div class="readout">U(add(V.b,V8.b),sub(V4.b,V8.b))&nbsp;&nbsp;1ST · X 184 · Y 91</div>
+      <span class="b b-tl"></span>
+      <span class="b b-tr"></span>
+      <span class="b b-bl"></span>
+      <span class="b b-br"></span>
+      <img class="ca" src="../stills/tile-0.png" alt="CA field" draggable="false">
+    </div>
+  </div>
+</body>
+</html>
