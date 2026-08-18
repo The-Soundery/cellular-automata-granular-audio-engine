@@ -1,139 +1,265 @@
-/** Default Type U equation (Utomata Lab style). */
+/** Lab Type-U (1st). Each cell copies a neighbour; this tree is one operator per axis. */
 export const TYPE_U_SEED = "U(add(V.b,V8.b),sub(V4.b,V8.b))";
 
 export const TYPE_U_SETUP = "rand(1.0, 2.0, 3.0)";
 
-const NEIGHBOURHOODS = [
-  "V4",
-  "V5",
-  "V8",
-  "V9",
-  "V24",
-  "V25",
-] as const;
+export const TYPE_U_SEEDS: Record<TypeUDepth, string> = {
+  1: TYPE_U_SEED,
+  2: "U(sub(add(V24.b,V24.b),mlt(V24.r,V4.b)),div(sub(V8.r,V24.g),add(V8.r,V8.r)))",
+  3: "U(sub(div(div(V.r,V4.g),div(V8.g,V4.g)),div(add(V8.g,V8.r),add(V4.r,V8.r))),add(div(mlt(V4.r,V.b),sub(V24.r,V4.r)),div(mlt(V8.g,V8.r),sub(V24.b,V8.b))))",
+};
 
-const CHANNELS = ["r", "g", "b"] as const;
+export const TYPE_U_DEPTHS = [1, 2, 3] as const;
+export type TypeUDepth = (typeof TYPE_U_DEPTHS)[number];
 
-const BINARY_OPS = ["add", "sub", "mlt", "div"] as const;
+export const OPS = ["add", "sub", "mlt", "div"] as const;
+export const COLOURS = ["r", "g", "b"] as const;
+export const NEIGH_SHALLOW = ["V", "V4", "V8"] as const;
+export const NEIGH_DEEP = ["V", "V4", "V8", "V24"] as const;
 
-export interface TypeUTokens {
-  opOuter: (typeof BINARY_OPS)[number];
-  opInner: (typeof BINARY_OPS)[number];
-  opRight: (typeof BINARY_OPS)[number];
-  leftN: (typeof NEIGHBOURHOODS)[number];
-  leftC: (typeof CHANNELS)[number];
-  midN: (typeof NEIGHBOURHOODS)[number];
-  midC: (typeof CHANNELS)[number];
-  rightLN: (typeof NEIGHBOURHOODS)[number];
-  rightLC: (typeof CHANNELS)[number];
-  rightRN: (typeof NEIGHBOURHOODS)[number];
-  rightRC: (typeof CHANNELS)[number];
+export type SlotKind = "F" | "Q" | "C";
+
+export interface EqToken {
+  text: string
+  /** Index into `program.slots` when this token is a swappable part. */
+  slot?: number
+  kind?: SlotKind
 }
 
-/** Skeleton: opOuter(opInner(left, mid), opRight(rightL, rightR)) with channel swizzles. */
-export function composeTypeU(t: TypeUTokens): string {
-  const left = `${t.leftN}.${t.leftC}`;
-  const mid = `${t.midN}.${t.midC}`;
-  const rightL = `${t.rightLN}.${t.rightLC}`;
-  const rightR = `${t.rightRN}.${t.rightRC}`;
-  return `${t.opOuter}(${t.opInner}(${left},${mid}),${t.opRight}(${rightL},${rightR}))`;
+export interface TypeUProgram {
+  depth: TypeUDepth
+  slots: number[]
+  equation: string
+  tokens: EqToken[]
+  x: number
+  y: number
 }
 
-export function parseTypeU(eq: string): TypeUTokens | null {
-  const re =
-    /^(add|sub|mlt|div)\((add|sub|mlt|div)\((V\d+)\.([rgb]),(V\d+)\.([rgb])\),(add|sub|mlt|div)\((V\d+)\.([rgb]),(V\d+)\.([rgb])\)\)$/;
-  const m = eq.trim().match(re);
-  if (!m) return null;
-  const neigh = new Set<string>(NEIGHBOURHOODS);
-  const ch = new Set<string>(CHANNELS);
-  if (
-    !neigh.has(m[3]) ||
-    !neigh.has(m[5]) ||
-    !neigh.has(m[8]) ||
-    !neigh.has(m[10]) ||
-    !ch.has(m[4]) ||
-    !ch.has(m[6]) ||
-    !ch.has(m[9]) ||
-    !ch.has(m[11])
-  ) {
-    return null;
+const DEPTH_LABEL: Record<TypeUDepth, string> = {
+  1: "1st",
+  2: "2nd",
+  3: "3rd",
+};
+
+export function depthLabel(depth: TypeUDepth): string {
+  return DEPTH_LABEL[depth];
+}
+
+export function neighbourhoods(depth: TypeUDepth): readonly string[] {
+  return depth === 1 ? NEIGH_SHALLOW : NEIGH_DEEP;
+}
+
+export function domainSize(kind: SlotKind, depth: TypeUDepth): number {
+  if (kind === "F") return OPS.length;
+  if (kind === "C") return COLOURS.length;
+  return neighbourhoods(depth).length;
+}
+
+export function domainOf(kind: SlotKind, depth: TypeUDepth): readonly string[] {
+  if (kind === "F") return OPS;
+  if (kind === "C") return COLOURS;
+  return neighbourhoods(depth);
+}
+
+export function slotKinds(depth: TypeUDepth): SlotKind[] {
+  const kinds: SlotKind[] = [];
+  const expr = (order: number) => {
+    if (order === 0) {
+      kinds.push("Q", "C");
+      return;
+    }
+    kinds.push("F");
+    expr(order - 1);
+    expr(order - 1);
+  };
+  expr(depth);
+  expr(depth);
+  return kinds;
+}
+
+function slotBases(depth: TypeUDepth): number[] {
+  return slotKinds(depth).map((k) => domainSize(k, depth));
+}
+
+function mixedToDec(digits: number[], bases: number[]): number {
+  let n = 0;
+  let power = 1;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    n += digits[i]! * power;
+    power *= bases[i]!;
   }
+  return n;
+}
+
+function slotsToXY(slots: number[], depth: TypeUDepth): { x: number; y: number } {
+  const bases = slotBases(depth);
+  const mid = slots.length / 2;
   return {
-    opOuter: m[1] as TypeUTokens["opOuter"],
-    opInner: m[2] as TypeUTokens["opInner"],
-    leftN: m[3] as TypeUTokens["leftN"],
-    leftC: m[4] as TypeUTokens["leftC"],
-    midN: m[5] as TypeUTokens["midN"],
-    midC: m[6] as TypeUTokens["midC"],
-    opRight: m[7] as TypeUTokens["opRight"],
-    rightLN: m[8] as TypeUTokens["rightLN"],
-    rightLC: m[9] as TypeUTokens["rightLC"],
-    rightRN: m[10] as TypeUTokens["rightRN"],
-    rightRC: m[11] as TypeUTokens["rightRC"],
+    x: mixedToDec(slots.slice(0, mid), bases.slice(0, mid)),
+    y: mixedToDec(slots.slice(mid), bases.slice(mid)),
   };
 }
 
-function pick<T>(arr: readonly T[], rnd: () => number): T {
-  return arr[Math.floor(rnd() * arr.length)]!;
-}
-
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-export function seedTokens(): TypeUTokens {
-  return {
-    opOuter: "sub",
-    opInner: "add",
-    opRight: "mlt",
-    leftN: "V24",
-    leftC: "b",
-    midN: "V24",
-    midC: "b",
-    rightLN: "V24",
-    rightLC: "r",
-    rightRN: "V4",
-    rightRC: "b",
-  };
-}
-
-export function randomVariation(seed = Date.now()): string {
-  const rnd = mulberry32(seed);
-  return composeTypeU({
-    opOuter: pick(BINARY_OPS, rnd),
-    opInner: pick(BINARY_OPS, rnd),
-    opRight: pick(BINARY_OPS, rnd),
-    leftN: pick(NEIGHBOURHOODS, rnd),
-    leftC: pick(CHANNELS, rnd),
-    midN: pick(NEIGHBOURHOODS, rnd),
-    midC: pick(CHANNELS, rnd),
-    rightLN: pick(NEIGHBOURHOODS, rnd),
-    rightLC: pick(CHANNELS, rnd),
-    rightRN: pick(NEIGHBOURHOODS, rnd),
-    rightRC: pick(CHANNELS, rnd),
+export function composeTypeU(
+  depth: TypeUDepth,
+  slotIndices: readonly number[],
+): TypeUProgram {
+  const kinds = slotKinds(depth);
+  if (slotIndices.length !== kinds.length) {
+    throw new Error(
+      `Type-U depth ${depth} needs ${kinds.length} slots, got ${slotIndices.length}`,
+    );
+  }
+  const slots = kinds.map((kind, i) => {
+    const size = domainSize(kind, depth);
+    const raw = slotIndices[i] ?? 0;
+    return ((raw % size) + size) % size;
   });
+
+  const tokens: EqToken[] = [];
+  let cursor = 0;
+  const take = (kind: SlotKind): string => {
+    const domain = domainOf(kind, depth);
+    const idx = slots[cursor]!;
+    const text = domain[idx]!;
+    tokens.push({ text, slot: cursor, kind });
+    cursor += 1;
+    return text;
+  };
+  const punct = (text: string) => {
+    tokens.push({ text });
+  };
+
+  const expr = (order: number): string => {
+    if (order === 0) {
+      const q = take("Q");
+      punct(".");
+      const c = take("C");
+      return `${q}.${c}`;
+    }
+    const op = take("F");
+    punct("(");
+    const left = expr(order - 1);
+    punct(",");
+    const right = expr(order - 1);
+    punct(")");
+    return `${op}(${left},${right})`;
+  };
+
+  punct("U");
+  punct("(");
+  const left = expr(depth);
+  punct(",");
+  const right = expr(depth);
+  punct(")");
+
+  const equation = `U(${left},${right})`;
+  const { x, y } = slotsToXY(slots, depth);
+  return { depth, slots, equation, tokens, x, y };
 }
 
-/** Deterministic walk through the Type U family from an index. */
-export function variationAt(index: number): string {
-  const rnd = mulberry32((index * 2654435761) >>> 0);
-  return randomVariation((rnd() * 1e9) | 0);
+function parseAtDepth(raw: string, depth: TypeUDepth): TypeUProgram | null {
+  let i = 0;
+  const slots: number[] = [];
+  const neigh = neighbourhoods(depth);
+  const neighLongest = [...neigh].sort((a, b) => b.length - a.length);
+
+  const eat = (s: string): boolean => {
+    if (!raw.startsWith(s, i)) return false;
+    i += s.length;
+    return true;
+  };
+
+  const parseLeaf = (): boolean => {
+    let q: string | null = null;
+    for (const n of neighLongest) {
+      if (raw.startsWith(n, i)) {
+        q = n;
+        i += n.length;
+        break;
+      }
+    }
+    if (!q) return false;
+    if (!eat(".")) return false;
+    const c = raw[i];
+    if (c !== "r" && c !== "g" && c !== "b") return false;
+    i += 1;
+    slots.push(neigh.indexOf(q));
+    slots.push(COLOURS.indexOf(c));
+    return true;
+  };
+
+  const parseExpr = (order: number): boolean => {
+    if (order === 0) return parseLeaf();
+    let op: (typeof OPS)[number] | null = null;
+    for (const o of OPS) {
+      if (raw.startsWith(o, i)) {
+        op = o;
+        i += o.length;
+        break;
+      }
+    }
+    if (!op) return false;
+    slots.push(OPS.indexOf(op));
+    if (!eat("(")) return false;
+    if (!parseExpr(order - 1)) return false;
+    if (!eat(",")) return false;
+    if (!parseExpr(order - 1)) return false;
+    if (!eat(")")) return false;
+    return true;
+  };
+
+  if (!eat("U(")) return null;
+  if (!parseExpr(depth)) return null;
+  if (!eat(",")) return null;
+  if (!parseExpr(depth)) return null;
+  if (!eat(")")) return null;
+  if (i !== raw.length) return null;
+  return composeTypeU(depth, slots);
 }
 
-export function stepVariation(
-  current: string,
-  delta: number,
-  indexRef: { value: number },
-): string {
-  indexRef.value = Math.max(0, indexRef.value + delta);
-  const parsed = parseTypeU(current);
-  if (!parsed && delta === 0) return TYPE_U_SEED;
-  return variationAt(indexRef.value);
+export function parseTypeU(eq: string): TypeUProgram | null {
+  const raw = eq.replace(/\s+/g, "");
+  if (!raw) return null;
+  for (const depth of TYPE_U_DEPTHS) {
+    const parsed = parseAtDepth(raw, depth);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+export function seedProgram(depth: TypeUDepth): TypeUProgram {
+  const parsed = parseTypeU(TYPE_U_SEEDS[depth]);
+  if (!parsed || parsed.depth !== depth) {
+    throw new Error(`Type-U seed for depth ${depth} failed to parse`);
+  }
+  return parsed;
+}
+
+export function randomProgram(
+  depth: TypeUDepth,
+  rnd: () => number = Math.random,
+): TypeUProgram {
+  const kinds = slotKinds(depth);
+  const slots = kinds.map((kind) => Math.floor(rnd() * domainSize(kind, depth)));
+  return composeTypeU(depth, slots);
+}
+
+export function cycleSlot(
+  program: TypeUProgram,
+  slotIndex: number,
+  dir: number,
+): TypeUProgram {
+  const kinds = slotKinds(program.depth);
+  const kind = kinds[slotIndex];
+  if (!kind) return program;
+  const size = domainSize(kind, program.depth);
+  const slots = program.slots.slice();
+  const step = dir < 0 ? -1 : 1;
+  slots[slotIndex] = (slots[slotIndex]! + step + size) % size;
+  return composeTypeU(program.depth, slots);
+}
+
+export function formatCoord(program: TypeUProgram): string {
+  return `${depthLabel(program.depth)} · x ${program.x.toLocaleString("en-US")} · y ${program.y.toLocaleString("en-US")}`;
 }

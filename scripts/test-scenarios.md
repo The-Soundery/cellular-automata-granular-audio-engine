@@ -77,8 +77,9 @@ Listening: `scripts/listening-gate-v5.md`.
 ## moving-bar
 
 - **Simulates:** 8-wide vertical bar moving +1 cell/step on uniform bg.
-- **Ground truth:** Large calm bg + moving bar region; edge δ is real chaos.
-- **Observer:** largest-region velX ≈ 0.88–1.0.
+- **Ground truth:** Large calm bg + moving bar as a calm region (solid
+  translating colour is not flow). Edge δ is real chaos.
+- **Observer:** largest-region velX ≈ 0.88–1.0; Flow % ≈ 0.
 - **Audio:** background sites stay put (anchor via circular concentration);
   bar tracks. Dominant-pool pan/yNorm ≤0.35/0.30.
 - **Assertions:** investigate stage 1 (velX); render stage 4 dispersion on bg.
@@ -87,7 +88,7 @@ Listening: `scripts/listening-gate-v5.md`.
 
 - **Simulates:** Every cell random every step.
 - **Ground truth:** 100% chaos.
-- **Observer:** chaos% ≥ 99.
+- **Observer:** chaos% ≥ 99; Flow % = 0 (scramble is not flow).
 - **Audio:** dense chaos at share/DUR_MIN (~2133 Hz ideal); concurrent ≈64;
   CHAOS_EVENTS_MAX_HZ (4000) must not bind.
 - **Assertions:** investigate stage 1/5; render stage 3/5 + chaos sites ≥500.
@@ -194,3 +195,48 @@ Listening: `scripts/listening-gate-v5.md`.
   share ~55 — the pathological live case from the V4.4 baseline.
 - **Purpose:** Harness coverage for Phase 4's whole-share osc burst at the
   extreme. Listening instrument (V4.4); pulse-mod assert applies when present.
+
+## flow-dots
+
+- **Simulates:** Sparse same-colour particles, widely spaced, all moving +x.
+- **Ground truth:** Not a flow region (2D scatter). Changing specks are chaos.
+- **Observer:** Flow % = 0. Overlay: orange specks, no green patch.
+- **Audio:** chaos pool (four/five-pool remainder); no flow grains.
+- **Assertions:** `scripts/verify-phase1.mjs` (widely spaced dots are not flow).
+
+## flow-dense
+
+- **Simulates:** 5×5 packed particles 3 cells apart, one colour, moving +1 x.
+- **Ground truth:** Similarity travel — one flow group. Occupied patch (including
+  gaps) is the Flow %, not particle count / grid.
+- **Observer:** Flow after ~8 steps of consistent heading + travel floor
+  (~1.5 cells). Similarity travel (colour correspondence), not pack-COM.
+  Overlay green. Solid translating blocks (`moving-bar`) stay calm.
+  Diagonal / dashed / vertical-train / denser cascade streams also confirm
+  (verify-phase1). Colour stays itself — no tint glue.
+- **Audio:** fifth pool spends area share from regionArea; piece-grains on
+  member cells with packing→mid duration band; pan/Y follow via FLOW_ID_BASE
+  hop-velocity conveyor. Chaos bag excludes flow cells.
+- **Assertions:** verify-phase1 (packed travelling colour is flow; members
+  not also counted as chaos; train vel primarily +y; cascade / wavefront
+  correspondence); verify-phase2 runtime (regime flow, share > 0,
+  regionId ≥ FLOW_ID_BASE; train grain rides hop). diagnose-live-flow
+  (calm-edge, wavefront, dithered texture).
+
+## flow-cascade
+
+- **Simulates:** Curved dashed hop stream (sinusoidal x, +y each step).
+- **Ground truth:** One flow via colour + heading + lane cluster (not H/V/diag strip).
+- **Assertions:** verify-phase1 cascade case.
+
+## flow-wavefront
+
+- **Simulates:** Staggered short dashes at different x, shared +y hop.
+- **Ground truth:** Flow (similarity travel / heading-connected cascade), not 2D scatter.
+- **Assertions:** verify-phase1 wavefront case.
+
+## flow-dense-cascade
+
+- **Simulates:** Several 2×3 same-colour clumps spaced along +y hop.
+- **Ground truth:** Flow (denser uneven cascade — not an evenly filled calm mass).
+- **Assertions:** verify-phase1 denser multi-cell cascade case.

@@ -88,7 +88,19 @@ assert(
 assert("no ySpread special case", !/ySpreadFillMin/.test(schedSrc) && !/pickNearestCellInColumn/.test(schedSrc));
 assert("no velocity-hybrid calm laws", !/hybridCalmLaws/.test(schedSrc) && !/velChaosNorm/.test(schedSrc));
 assert("region tracks for pan/Y", /RegionTrack/.test(schedSrc) && /tracks/.test(schedSrc) && /trackDx/.test(schedSrc));
+assert(
+  "flow fifth pool + FLOW_ID_BASE",
+  /FLOW_ID_BASE/.test(schedSrc) &&
+    /FLOW_ORDER_MIN/.test(schedSrc) &&
+    /FLOW_ORDER_MAX/.test(schedSrc) &&
+    /flowTimeOrder|flowPackT/.test(schedSrc) &&
+    /flowHeadingEdges|flowConveyorDuration/.test(schedSrc) &&
+    /spawnFlow/.test(schedSrc) &&
+    /regime: "flow"/.test(schedSrc),
+);
+assert("UI flow spend meter", /shareFlow|flowGrains/.test(controls) && /· f /.test(controls));
 const overlaySrc = readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8");
+assert("overlay flow listen colour", /regime === "flow"/.test(overlaySrc));
 assert("overlay draws cell silhouette", /cells/.test(overlaySrc));
 assert("overlay bright edge cells", /isEdgeCell/.test(overlaySrc));
 assert("overlay has no AABB strokeRect", !/strokeRect/.test(overlaySrc));
@@ -426,6 +438,196 @@ async function runtimeScheduler() {
   assert("batch includes region tracks", sawTracks);
   assert("tracks include COM + grid size", trackHasCom);
   assert("calm grains include trackDx/Dy offset", spawnHasOffset);
+
+  // Flow-dense: packed travelling colour → fifth pool spends after confirm.
+  const { FLOW_ID_BASE } = schedMod;
+  const flowW = 128;
+  const flowH = 128;
+  const flowN = flowW * flowH;
+  function makeFlowField(fill) {
+    const r = new Float32Array(flowN);
+    const g = new Float32Array(flowN);
+    const b = new Float32Array(flowN);
+    for (let i = 0; i < flowN; i++) fill(r, g, b, i);
+    return { width: flowW, height: flowH, r, g, b };
+  }
+  function paintDense(field, step) {
+    for (let i = 0; i < flowN; i++) {
+      field.r[i] = 0.1;
+      field.g[i] = 0.1;
+      field.b[i] = 0.12;
+    }
+    const x0 = (((40 + step) % flowW) + flowW) % flowW;
+    const y0 = 48;
+    for (let iy = 0; iy < 5; iy++) {
+      for (let ix = 0; ix < 5; ix++) {
+        const x = (x0 + ix * 3) % flowW;
+        const y = (y0 + iy * 3) % flowH;
+        const i = y * flowW + x;
+        field.r[i] = 0.95;
+        field.g[i] = 0.82;
+        field.b[i] = 0.2;
+      }
+    }
+  }
+  const flowFo = new FieldObserver(flowW, flowH);
+  let flowPrev = makeFlowField((r, g, b) => {
+    r.fill(0.1);
+    g.fill(0.1);
+    b.fill(0.12);
+  });
+  for (let step = 0; step < 40; step++) {
+    const flowCur = makeFlowField(() => {});
+    paintDense(flowCur, step);
+    flowFo.observe(flowCur, flowPrev);
+    flowPrev = flowCur;
+  }
+  const flowObs = flowFo.observation;
+  assert(
+    "runtime flow-dense: observer reports flow",
+    (flowObs.flows ?? []).length > 0 && flowObs.flowAreaFraction > 0,
+  );
+  const flowSched = new GrainScheduler(GRAIN_BUDGET);
+  let nowFlow = 30000;
+  let flowEvents = 0;
+  let flowShareMax = 0;
+  let flowIdOk = true;
+  let flowDurOk = true;
+  for (let t = 0; t < 60; t++) {
+    nowFlow += 1000 / 30;
+    // Keep the pack moving so flow stays confirmed.
+    const step = 40 + t;
+    const flowCur = makeFlowField(() => {});
+    paintDense(flowCur, step);
+    flowFo.observe(flowCur, flowPrev);
+    flowPrev = flowCur;
+    const batch = flowSched.step(flowFo.observation, flowCur, nowFlow);
+    if (batch.shares.flow > flowShareMax) flowShareMax = batch.shares.flow;
+    for (const e of batch.events) {
+      if (e.regime === "flow") {
+        flowEvents += 1;
+        if (!(e.regionId >= FLOW_ID_BASE)) flowIdOk = false;
+        if (!(e.durationSec > 0.05 && e.durationSec < 1.0)) flowDurOk = false;
+      }
+    }
+  }
+  assert("runtime flow-dense: share > 0", flowShareMax > 0);
+  assert("runtime flow-dense: flow events spawned", flowEvents > 0);
+  assert("runtime flow-dense: regionId >= FLOW_ID_BASE", flowIdOk);
+  assert(
+    "runtime flow-dense: mid duration band (FLOW_ORDER_MIN..MAX)",
+    flowDurOk,
+  );
+
+  // Train-track conveyor: grains spawn near trailing edge and track anchor
+  // rides hop velocity (not stuck at structure COM).
+  const trainW = 64;
+  const trainH = 64;
+  const trainN = trainW * trainH;
+  function makeTrainField(fill) {
+    const r = new Float32Array(trainN);
+    const g = new Float32Array(trainN);
+    const b = new Float32Array(trainN);
+    for (let i = 0; i < trainN; i++) fill(r, g, b, i);
+    return { width: trainW, height: trainH, r, g, b };
+  }
+  function paintTrain(field, t) {
+    for (let i = 0; i < trainN; i++) {
+      field.r[i] = 0.1;
+      field.g[i] = 0.1;
+      field.b[i] = 0.12;
+    }
+    const xDrift = (2 + Math.floor(t / 5) + trainW) % trainW;
+    const y0 = (4 + t + trainH) % trainH;
+    for (let k = 0; k < 10; k++) {
+      const i = ((y0 + k * 3) % trainH) * trainW + xDrift;
+      field.r[i] = 0.2;
+      field.g[i] = 0.9;
+      field.b[i] = 0.35;
+    }
+  }
+  const trainFo = new FieldObserver(trainW, trainH);
+  let trainPrev = makeTrainField((r, g, b) => {
+    r.fill(0.1);
+    g.fill(0.1);
+    b.fill(0.12);
+  });
+  for (let t = 0; t < 40; t++) {
+    const cur = makeTrainField(() => {});
+    paintTrain(cur, t);
+    trainFo.observe(cur, trainPrev);
+    trainPrev = cur;
+  }
+  assert(
+    "runtime train: observer reports flow",
+    (trainFo.observation.flows ?? []).length > 0,
+  );
+  const trainSched = new GrainScheduler(GRAIN_BUDGET);
+  let nowTrain = 50000;
+  let trainSpawnNearTrail = 0;
+  let trainSpawnTotal = 0;
+  let prevAnchorY = null;
+  let anchorHopSteps = 0;
+  let anchorMovedDown = 0;
+  let comStuckWhileHop = 0;
+  for (let t = 40; t < 80; t++) {
+    nowTrain += 1000 / 26;
+    const cur = makeTrainField(() => {});
+    paintTrain(cur, t);
+    trainFo.observe(cur, trainPrev);
+    trainPrev = cur;
+    const obs = trainFo.observation;
+    const batch = trainSched.step(obs, cur, nowTrain);
+    const flow = (obs.flows ?? [])[0];
+    if (!flow) continue;
+    const track = batch.tracks.find((tr) => tr.regionId >= FLOW_ID_BASE);
+    if (track && typeof track.velY === "number" && track.velY > 0.5) {
+      if (prevAnchorY != null) {
+        let dy = track.anchorY - prevAnchorY;
+        if (dy > trainH * 0.5) dy -= trainH;
+        if (dy < -trainH * 0.5) dy += trainH;
+        anchorHopSteps += 1;
+        if (dy > 0.4) anchorMovedDown += 1;
+        if (Math.abs(dy) > 0.4 && Math.abs(flow.velY) > 0.7) {
+          comStuckWhileHop += 1;
+        }
+      }
+      prevAnchorY = track.anchorY;
+    }
+    const speed = Math.hypot(flow.velX, flow.velY);
+    if (speed < 0.2) continue;
+    const hx = flow.velX / speed;
+    const hy = flow.velY / speed;
+    let minProj = Infinity;
+    let maxProj = -Infinity;
+    for (const ci of flow.cells) {
+      const x = ci % trainW;
+      const y = (ci / trainW) | 0;
+      const p = x * hx + y * hy;
+      if (p < minProj) minProj = p;
+      if (p > maxProj) maxProj = p;
+    }
+    const span = Math.max(1e-3, maxProj - minProj);
+    for (const e of batch.events) {
+      if (e.regime !== "flow") continue;
+      trainSpawnTotal += 1;
+      const p = e.x * hx + e.y * hy;
+      // Trailing half of the stream (start of motion).
+      if ((p - minProj) / span <= 0.55) trainSpawnNearTrail += 1;
+    }
+  }
+  assert(
+    "runtime train: flow track anchor advances with hop (+y)",
+    anchorHopSteps >= 5 && anchorMovedDown / anchorHopSteps >= 0.6,
+  );
+  assert(
+    "runtime train: hop conveyor active while flow has +y vel",
+    comStuckWhileHop >= 3,
+  );
+  assert(
+    "runtime train: spawns prefer trailing edge (start of motion)",
+    trainSpawnTotal >= 3 && trainSpawnNearTrail / trainSpawnTotal >= 0.5,
+  );
 }
 
 await runtimeScheduler();

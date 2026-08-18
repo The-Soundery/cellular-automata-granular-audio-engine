@@ -4,6 +4,9 @@ Status: CODE COMPLETE — harness green 2026-08-11; owner ears open (`listening-
 North star: Creative Brief v4.txt (V5 addendum)
 Entry: Implementation Filter.txt
 
+Flow is CURRENT (2026-08-17): Brief / Filter items 5 + 8. Similarity travel
+(block correspondence). Do not re-open V5 polar work to retune flow.
+
 Supersedes V4.4 colour→sample identity (1D centroid hue LUT, mono bank,
 absolute Y bandpass). Keeps ephemeral grains, area share, freeze-at-spawn
 window, stratified calm/texture sites.
@@ -12,7 +15,9 @@ window, stratified calm/texture sites.
 
 1. HSV → **2D polar descriptor plane** (hue angle, sat radius, value band).
 2. Stereo source retained; **X → L/R channel mix** + pan; mix **follows** region.
-3. **Y** = relative bandpass offset around chosen segment centroid.
+3. **Y** = absolute log bandpass (80 Hz bottom … 12 kHz top). Relative-Y
+   around material centroid (original V5 item 3) **superseded** by 2026-08-14
+   listening decision.
 4. Regime soft-bias: calm/texture → sustained; chaos/osc → transient.
 5. Prev/Next/Random equation greyscale fix is out of scope.
 
@@ -33,7 +38,7 @@ frozen at spawn; channel mix + pan + Y follow for region-bound grains.
 0. Doctrine (Brief / Filter / this file)
 1. Stereo bank + worklet L/R + channelMix follow
 2. Full-coverage analysis + polar query API
-3. Scheduler HSV / regime / relative Y / channelMix
+3. Scheduler HSV / regime / absolute Y / channelMix
 4. Harness: replace obsolete asserts (see v5 log)
 5. Listening checklist
 

@@ -366,6 +366,111 @@ export const TEST_PATTERNS: TestPattern[] = [
     },
   },
   {
+    id: "flow-dots",
+    label: "Flow dots (sparse — should be off)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const starts: [number, number][] = [
+        [8, 20],
+        [40, 55],
+        [70, 15],
+        [100, 90],
+        [25, 100],
+        [88, 40],
+        [12, 70],
+        [55, 8],
+        [110, 60],
+        [33, 33],
+      ];
+      for (const [sx, sy] of starts) {
+        const x = (((sx + step * 2) % w) + w) % w;
+        const y = ((sy % h) + h) % h;
+        const i = y * w + x;
+        field.r[i] = 0.95;
+        field.g[i] = 0.82;
+        field.b[i] = 0.2;
+      }
+    },
+  },
+  {
+    id: "flow-dense",
+    label: "Flow dense (packed particles)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const x0 = (((40 + step) % w) + w) % w;
+      const y0 = 48;
+      for (let iy = 0; iy < 5; iy++) {
+        for (let ix = 0; ix < 5; ix++) {
+          const x = (x0 + ix * 3) % w;
+          const y = (y0 + iy * 3) % h;
+          const i = y * w + x;
+          field.r[i] = 0.95;
+          field.g[i] = 0.82;
+          field.b[i] = 0.2;
+        }
+      }
+    },
+  },
+  {
+    id: "flow-cascade",
+    label: "Flow cascade (curved hop stream)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const y0 = (((6 + step) % h) + h) % h;
+      for (let k = 0; k < 10; k++) {
+        const x = (((10 + Math.round(Math.sin(k * 0.55) * 4)) % w) + w) % w;
+        const y = (y0 + k * 3) % h;
+        const i = y * w + x;
+        field.r[i] = 0.15;
+        field.g[i] = 0.85;
+        field.b[i] = 0.55;
+      }
+    },
+  },
+  {
+    id: "flow-wavefront",
+    label: "Flow wavefront (staggered dashes)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const y0 = (((5 + step) % h) + h) % h;
+      for (let col = 0; col < 4; col++) {
+        const x = 40 + col * 4;
+        for (let k = 0; k < 3; k++) {
+          const y = (y0 + col + k * 4) % h;
+          const i = y * w + (x % w);
+          field.r[i] = 0.9;
+          field.g[i] = 0.55;
+          field.b[i] = 0.2;
+        }
+      }
+    },
+  },
+  {
+    id: "flow-dense-cascade",
+    label: "Flow dense cascade (joined clumps)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const y0 = (((5 + step) % h) + h) % h;
+      for (let k = 0; k < 5; k++) {
+        const x0 = 48;
+        const yBase = (y0 + k * 5) % h;
+        for (let iy = 0; iy < 2; iy++) {
+          for (let ix = 0; ix < 3; ix++) {
+            const i = ((yBase + iy) % h) * w + ((x0 + ix) % w);
+            field.r[i] = 0.85;
+            field.g[i] = 0.35;
+            field.b[i] = 0.2;
+          }
+        }
+      }
+    },
+  },
+  {
     id: "chaos-blob-2pct",
     label: "Chaos blob 2%",
     fill(field, step) {

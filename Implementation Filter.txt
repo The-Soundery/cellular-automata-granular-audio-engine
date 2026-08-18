@@ -1,15 +1,22 @@
 Cellular Automata Granular Audio Engine — Implementation Filter (V5)
 Status: V5 CODE COMPLETE — harness-green 2026-08-11; owner ears open
   (`scripts/listening-gate-v5.md`). V4.4 COMPLETE (ears signed off 2026-08-11).
-North star: Creative Brief v4.txt (includes V5 addendum)
+  Flow CURRENT 2026-08-17: similarity travel (Brief); fifth grain pool.
+North star: Creative Brief v4.txt (V5 + Flow observation + flow grain laws)
 Entry for agents: this file first, then the Brief, then
   `IMPLEMENTATION_PLAN_V5.md` and `scripts/v5-implementation-log.md`.
   Historical: `scripts/v4.4-implementation-log.md`.
-  Listening: `scripts/listening-gate-v5.md` (V5); V4.4 checklist closed.
+  Listening: `scripts/listening-gate-v5.md` (V5 + flow ears); V4.4 checklist closed.
 
 >> V4.4 Phases 1–8 are committed. Do not re-execute IMPLEMENTATION_PLAN_V4.4.md.
 >> Do not lower deltaRateNorm.
 >> V5 polar/stereo/relative-Y is live in code; complete listening-gate-v5.md.
+>> Flow = similarity travel (colour correspondence). Filled translating
+   silhouettes stay calm; 2D scatter is not flow. Doctrine is the Brief.
+>> Fifth spend pool: trailing-edge piece-spawn, hop-velocity conveyor
+   (FLOW_ID_BASE), packing→mid duration. Doppler forbidden. Grains die at
+   the leading edge and respawn at the trailing edge.
+>> Do not fold flow back into chaos; do not treat translating solids as flow.
 
 Historical detail: scripts/v4.3-implementation-log.md (do not re-execute).
 V4.4 gate record: scripts/v4.4-implementation-log.md
@@ -42,44 +49,47 @@ STOP — do not revive
 - Softening or deleting the segmentation ≤1 dB band to hide a meter bug
 - Re-asserting audio-domain Welch-mel flux ordering — at filled concurrency it
   is near-backwards; event-domain Y/Q flux is the gate
+- A sixth “moving static” regime — calm already covers translating silhouettes
+- Folding flow grains back into chaos share; applying tracks on raw flow.id
+  (collides with calm — use FLOW_ID_BASE)
 
 Archives (reference only): public/_obsolete/ (failed lattice path — do not revive)
 Superseded work orders (deleted from tree): IMPLEMENTATION_PLAN_V4.2/V4.3,
   v4.2-implementation-log, audio-system-report — history lives in git + v4.3 log
 
 ------------------------------------------------------------------------------
-OPEN / DEFERRED — read before changing chaos rate, Q, or regimes
+CLOSED — do not reopen without new evidence
 ------------------------------------------------------------------------------
-
-These are NOT harness failures and are NOT listening-gate leftovers.
-Automated gates and the V4.4 ear pass are green. Do not "fix" remaining
-items by fitting thresholds to saturated-δ test patterns.
-
-CLOSED (do not reopen without new evidence):
 
 1. Chaos under-spend on real Utomata — CLOSED (measured 2026-08-06; ear
    confirmed Gate 7 2026-08-11). Live chaos δ̄ 0.26–0.30 → t 0.75–0.87
-   (~1 dB under-spend). The old “δ ≈ 0.1 / ~5 dB” premise was wrong. Do not
-   lower `deltaRateNorm`. UI surfaces chaos δ̄ / t on the Field panel.
+   (~1 dB under-spend). Do not lower `deltaRateNorm`. UI surfaces chaos δ̄ / t.
 
 2. Frozen-and-detailed vs still-and-uniform — CLOSED (ear 2026-08-11).
-   Headless mean Q frozen 1.32 < uniform 8.00; owner confirmed distinct
-   materials at matched loudness (`frozen-noise` vs `uniform-static`).
 
 3. Percussive chaos + blinker envelope — CLOSED (ear 2026-08-11).
-   Sparse chaos (`chaos-blob-2pct`) reads percussive; denser coverage
-   (`chaos-blob-10pct`) reads as a rattle. Blinker / osc whole-share pulses
-   with silence between hits. Envelope 0.04/0.2 left alone — do not
-   “harmonise”. Percussiveness is a coverage consequence (share ÷ duration).
+   Envelope 0.04/0.2 left alone — do not “harmonise”.
 
 4. Creative Brief V4.3 / V4.4 doctrine addenda — ADOPTED (owner 2026-08-11).
-   Lines live in Creative Brief v4.txt (V4.3 §1–4 and V4.4 addenda).
 
-Still deferred / harness notes:
+5. Flow observation — CURRENT (2026-08-17). Borders: Brief.
+   4×4 spatial×colour blocks → independent NN match to previous same-hue
+   block (not one-to-one greedy) → cluster by colour + heading + lane.
+   Pack velocity from cluster COM; long/wrapping tracks may match on
+   colour+area and coast heading when COM jumps. Skip the field mode
+   colour bin (wake), not every common bin. Confirm 8 + travel ~1.5.
+   Scramble uses a smaller block budget but still hunts. CPU: O(active)
+   accumulate; correspondence ≤ cap².
 
-5. Deferred: moving coherent structures (gliders as figure)
-   κ = similarity × stability → movers never form regions. Needs a fourth
-   regime. glider-swarm only improves via its calm background today.
+8. Flow grain behaviour — CURRENT (2026-08-17). Laws: Brief.
+   Fifth pool from Σ flow.regionArea. Trailing-edge piece-spawn;
+   packing→FLOW_ORDER_MIN..MAX; FLOW_WINDOW_T; polar bias neutral;
+   FLOW_ID_BASE + flow.id hop-velocity conveyor (not COM). Die at leading
+   edge; respawn at trailing edge. No Doppler. Chaos area-blind.
+
+------------------------------------------------------------------------------
+Still deferred / harness notes
+------------------------------------------------------------------------------
 
 6. Stage-5 chaos rate band is loose
    full-flicker lower band 1200 Hz is ~44% below ideal 64/0.03 ≈ 2133.
@@ -87,7 +97,7 @@ Still deferred / harness notes:
 
 7. Deferred (separate from V5): Prev/Next/Random Type-U variations emit
    scalar greyscale fields. Owner pastes coloured equations; mapping must
-   work for grey and colour. Do not block V5 on equation-family rewrite.
+   work for grey and colour. Do not block identity work on equation rewrite.
 
 ------------------------------------------------------------------------------
 Live pipeline
@@ -96,35 +106,47 @@ Live pipeline
 Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
   → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
   → grain-processor (polar HSV window; stereo L/R by channelMix;
-                     relative Y bandpass; bandwidth-compensated;
+                     absolute Y bandpass 80 Hz–12 kHz; bandwidth-compensated;
                      envNorm after attack/release rescale; equal-power pan;
                      direct pan/Y/channelMix follow)
 
-Observation: calm / textured / chaotic / oscillators (remainder split).
-Scheduler: area-share concurrency; split material (timeOrder→dur/env,
-  spectralT→Q); stratified+dispersion sites (calm/texture); SPAWN_ANCHOR_R_MIN;
-  scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only; HSV→polar material query
-  with regime stationarity bias.
+Observation: calm / textured / chaotic / oscillators / flow (remainder
+  split; flow is similarity travel, punched out of chaos, not out of calm).
+Scheduler: five pools (calm / texture / chaos / osc / flow); area-share
+  concurrency; flow piece-spawn + FLOW_ID_BASE tracks; split material
+  (timeOrder→dur/env, spectralT→Q); stratified+dispersion sites (calm/texture);
+  SPAWN_ANCHOR_R_MIN; scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only;
+  HSV→polar material query; calm/texture restricted to sustained subset.
 Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
   mono 0.5*(L+R) reported secondary only.
 
 Key modules:
 - src/field/FieldObserver.ts, FrameObserver.ts, GrainScheduler.ts, TestPatterns.ts
 - src/audio/spectral.ts, public/grain-processor.js
-- src/ui/controls.ts (field % + active/share spend meter), RegionOverlay.ts
+- src/ui/controls.ts (field % including Flow %, overlay legend), RegionOverlay.ts
 
 Negotiable (not doctrine):
-- FIELD_OBS — chaosDeltaMin, osc_*, region colour eps, …
+- FIELD_OBS — chaosDeltaMin, osc_*, flow_* (binSize≈4/maxBlocks≈192/
+  scrambleFrac≈0.72/stream≈22/lane≈8/confirm≈8/travel≈1.5/size≈4 keep≈3/
+  solidFill≈0.88/straightness≈0.35/localDensity≈0.72/packT≈0.65/
+  persist≈0.70/hop≈0.15/hopDominate/stitchHeadingCos),
+  region colour eps (flowColourEps stays 0.12 — no tint join), …
 - SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
   REL_CHAOS 0.98, REL_CALM 0.34, Q_*, WINDOW_HALF_*,
+  FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_WINDOW_T 0.45, FLOW_ID_BASE 1e6,
+  FLOW_TRAVEL_DUR_BLEND 1,
   maxCalmConcurrent/textureMaxConcurrent 64, calmPackRateMin 1.0,
   CHAOS_EVENTS_MAX_HZ 4000, deltaRateNorm 0.35 (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
-  SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax, Y_OCTAVE_SPAN
+  SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
 - Spectral — CENTROID_HOP_SEC, analysis FFT, polar weight / regime bias
 - Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS
 
 Harnesses:
+- verify-phase1.mjs — flow borders (dense/stream/diagonal/train +y;
+  cascade / wavefront / denser cascade; solids ≠ flow; flow-dots ≠ flow)
+- verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band
+- diagnose-live-flow.mjs — calm-edge / wavefront / dithered texture
 - investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q)
 - render-scenarios.mjs — total-power RMS, crest, sites, block-RMS, cold-start;
   audio flux reported not asserted
@@ -145,6 +167,9 @@ Adopted Brief doctrine (V4.3 + V4.4 + V5)
 - Percussiveness is a coverage consequence (share ÷ duration), not an
   envelope tweak. A pulsed pool spends its share at the pulse; silence
   between hits is not an unspent share.
-- V5: HSV polar material + stereo channel mix + relative Y. Soft regime
-  stationarity bias is identity, not share policy. Window stays frozen;
-  channel mix may follow with pan.
+- V5: HSV polar material + stereo channel mix + absolute Y spectrum
+  (80 Hz–12 kHz; relative-Y around centroid reverted 2026-08-14). Calm/texture
+  listen only inside the high-stationarity subset (identity, not share policy).
+  Window stays frozen; channel mix may follow with pan.
+- Flow: similarity travel (colour correspondence), not pack-COM; filled
+  translating silhouettes stay calm. Grains ride hop-velocity conveyor.

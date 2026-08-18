@@ -60,7 +60,7 @@ function makeTestMaterialSegments(n = 64) {
       stationarity,
       energy: 1,
       angle: t,
-      radius: 0.7 + 0.3 * stationarity,
+      radius: 0.85,
       band,
     });
   }
@@ -228,6 +228,8 @@ function runScenario(pattern) {
         } else if (e.regime === "osc") {
           oscEvents++;
           oscThisStep++;
+        } else if (e.regime === "flow") {
+          // Fifth pool — not chaos. Counted separately when needed.
         } else {
           chaosEvents++;
           if (inBlinkerBlock(e.y * W + e.x)) blinkerChaosEvents++;

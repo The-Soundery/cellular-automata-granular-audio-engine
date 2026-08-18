@@ -4,8 +4,10 @@
  * Sample window / ping-pong bounds freeze at spawn (no scrub chase).
  * Any grain with a regionId directly follows that region's COM for pan, Y,
  * and source L/R channelMix (spawn offset preserved). No smoothing.
- * Envelope frozen at spawn. Y→spectrum is a relative offset around the
- * chosen material centroid. Stereo source read via channelMix.
+ * Calm and flow use regionId (flow ids are offset by FLOW_ID_BASE in the
+ * scheduler so they never collide with calm). Envelope frozen at spawn.
+ * Y→spectrum is an absolute log sweep (80 Hz bottom … 12 kHz top).
+ * Stereo source read via channelMix.
  * Energy normalisation keeps loudness roughly neutral (asymmetric).
  */
 
@@ -26,16 +28,14 @@ const ENV_ATTACK_CHAOS = 0.06;
 const ENV_RELEASE_CHAOS = 0.15;
 const ENV_ATTACK_CALM = 0.22;
 const ENV_RELEASE_CALM = 0.28;
-/** Absolute safety floor/ceiling for bandpass (Hz). */
+/** Absolute Y→bandpass floor/ceiling (Hz). Bottom of grid = FMIN, top = FMAX. */
 const FILT_FMIN = 80;
 const FILT_FMAX = 12000;
-/** Y offset span in octaves around material centroid (± half of this). */
-const Y_OCTAVE_SPAN = 4;
 /** Fallback Q when spawn omits q (scheduler always sends continuous q). */
 const Q_DEFAULT = 2.0;
 /** Reference Q for bandwidth-compensated gain — keeps absolute level familiar. */
 const Q_REF = 2.0;
-/** Reference cutoff for bandwidth-compensated gain (geometric centre of the Y range). */
+/** Geometric centre of the Y bandpass span (loudness reference). */
 const FC_REF = Math.sqrt(FILT_FMIN * FILT_FMAX); // ≈ 980 Hz
 /** 0 = no cutoff-bandwidth compensation, 1 = full. Negotiable. */
 const SPECTRAL_TILT_COMP = 1.0;
@@ -58,7 +58,6 @@ class GrainVoice {
     this.windowCenter = 0;
     this.windowHalf = 1;
     this.yNorm = 0.5;
-    this.materialCentroidHz = FC_REF;
     this.channelMix = 0.5;
     this.r = 0.5;
     this.g = 0.5;
@@ -193,16 +192,18 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.x = e.x || 0;
       voice.y = e.y || 0;
       voice.yNorm = clamp01(typeof e.yNorm === "number" ? e.yNorm : 0.5);
-      voice.materialCentroidHz =
-        typeof e.materialCentroidHz === "number" && e.materialCentroidHz > 0
-          ? e.materialCentroidHz
-          : FC_REF;
       voice.channelMix = clamp01(
         typeof e.channelMix === "number" ? e.channelMix : 0.5,
       );
       voice.dir = e.direction < 0 ? -1 : 1;
-      // Unknown / texture / osc regimes use calm envelope defaults (not chaos).
-      voice.regime = e.regime === "chaos" ? "chaos" : e.regime || "calm";
+      // Chaos keeps percussive defaults; calm / texture / osc / flow use calm defaults
+      // when spawn omits attack/release (scheduler always sends explicit fractions).
+      voice.regime =
+        e.regime === "chaos"
+          ? "chaos"
+          : e.regime === "flow"
+            ? "flow"
+            : e.regime || "calm";
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
       // Envelope shape frozen at spawn — not RGB-driven.
       const defA =
@@ -291,6 +292,10 @@ class GrainProcessor extends AudioWorkletProcessor {
    * region's anchor by the shortest toroidal step (spawn offset preserved).
    * Sample window stays frozen. No smoothing.
    *
+   * Calm anchors are region COM (or grid centre). Flow anchors are
+   * hop-integrated conveyors from the scheduler so grains ride perceptual
+   * motion, not a stuck structure COM.
+   *
    * Pan saturates at the torus seam instead of wrapping (avoids a one-frame
    * +1→−1 flip). Follow uses anchor *deltas*, not absolute `anchor+trackDx`,
    * so when the COM itself wraps 127→0 the grain steps by +1 instead of
@@ -345,7 +350,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.yNorm = 1 - y / Math.max(1, t.h - 1);
       voice.channelMix = clamp01(x / Math.max(1, t.w - 1));
       applyEqualPowerPan(voice, voice.pan);
-      // Relative Y follows region — refresh filter coeffs next process block.
+      // Absolute Y follows region — refresh filter coeffs next process block.
       voice.fcNorm = -1;
     }
   }
@@ -383,28 +388,19 @@ class GrainProcessor extends AudioWorkletProcessor {
   updateFilterCoeffs(voice) {
     const y = clamp01(voice.yNorm);
     const q = Math.max(0.5, voice.q);
-    const cent = Math.max(
-      FILT_FMIN,
-      voice.materialCentroidHz || FC_REF,
-    );
     if (
       Math.abs(y - voice.fcNorm) < 1e-6 &&
-      Math.abs(q - voice.filtQ) < 1e-6 &&
-      Math.abs(cent - (voice._lastCent || 0)) < 1e-3
+      Math.abs(q - voice.filtQ) < 1e-6
     ) {
       return;
     }
     voice.fcNorm = y;
     voice.filtQ = q;
-    voice._lastCent = cent;
     const fs = this.sampleRate_;
-    // Relative Y: ± Y_OCTAVE_SPAN/2 octaves around the material centroid.
-    const oct = (y - 0.5) * Y_OCTAVE_SPAN;
-    let fc = cent * Math.pow(2, oct);
+    // Absolute Y: log sweep 80 Hz (bottom) … 12 kHz (top).
+    let fc = FILT_FMIN * Math.pow(FILT_FMAX / FILT_FMIN, y);
     const fcMax = 0.45 * fs;
-    if (fc < FILT_FMIN) fc = FILT_FMIN;
     if (fc > fcMax) fc = fcMax;
-    if (fc > FILT_FMAX) fc = FILT_FMAX;
     const g = Math.tan((Math.PI * fc) / fs);
     const k = 1 / q;
     const a1 = 1 / (1 + g * (g + k));

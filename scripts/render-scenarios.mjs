@@ -119,7 +119,7 @@ function makeTestMaterialSegments(n = 64) {
       stationarity,
       energy: 1,
       angle: t,
-      radius: 0.7 + 0.3 * stationarity,
+      radius: 0.85,
       band,
     });
   }
@@ -235,7 +235,10 @@ function poolFilter(regime) {
   if (regime === "all") return () => true;
   if (regime === "chaos") {
     return (e) =>
-      e.regime !== "calm" && e.regime !== "texture" && e.regime !== "osc";
+      e.regime !== "calm" &&
+      e.regime !== "texture" &&
+      e.regime !== "osc" &&
+      e.regime !== "flow";
   }
   return (e) => e.regime === regime;
 }
@@ -823,7 +826,8 @@ function countDistinctSites(pattern, regime) {
         regime === "chaos"
           ? e.regime !== "calm" &&
             e.regime !== "texture" &&
-            e.regime !== "osc"
+            e.regime !== "osc" &&
+            e.regime !== "flow"
           : regime === "calm+texture"
             ? e.regime === "calm" || e.regime === "texture"
             : e.regime === regime;

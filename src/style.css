@@ -133,7 +133,81 @@ body,
   border-radius: 2px;
   padding: 0.55rem;
   resize: vertical;
-  min-height: 4.5rem;
+  min-height: 3.2rem;
+}
+
+.eq-tokens {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.78rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  background: #0a0d0c;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.45rem 0.5rem;
+  min-height: 4.2rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.eq-token {
+  display: inline;
+}
+
+.eq-token.is-punct {
+  color: var(--muted);
+}
+
+.eq-token.is-slot {
+  color: var(--accent);
+  cursor: ns-resize;
+  border-bottom: 1px dotted var(--accent);
+}
+
+.eq-token.is-slot:hover,
+.eq-token.is-slot:focus {
+  background: #2a2618;
+  color: var(--ink);
+}
+
+.eq-token.kind-Q {
+  min-width: 2.6ch;
+  display: inline-block;
+  text-align: center;
+}
+
+.eq-meta {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.eq-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.68rem;
+  line-height: 1.35;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.depth-switch {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.depth-btn.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.field.is-disabled .eq-tokens,
+.field.is-disabled textarea {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 .row {
@@ -144,7 +218,7 @@ body,
 
 .overlay-legend {
   display: grid;
-  grid-template-columns: auto 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto 1fr auto 1fr;
   gap: 0.25rem 0.4rem;
   align-items: center;
   font-size: 0.72rem;
@@ -159,7 +233,7 @@ body,
 }
 
 .leg-calm {
-  background: hsla(40, 55%, 50%, 0.55);
+  background: rgba(196, 163, 90, 0.7);
 }
 
 .leg-tex {
@@ -167,11 +241,15 @@ body,
 }
 
 .leg-chaos {
-  background: rgba(190, 95, 55, 0.55);
+  background: rgba(230, 72, 36, 0.85);
 }
 
 .leg-osc {
   background: rgba(55, 130, 190, 0.55);
+}
+
+.leg-flow {
+  background: rgba(70, 175, 120, 0.7);
 }
 
 button,
@@ -185,6 +263,8 @@ button,
   padding: 0.4rem 0.65rem;
   border-radius: 2px;
   cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 button:hover,

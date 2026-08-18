@@ -45,8 +45,8 @@ assert("listening gate V5 doc present", existsSync(gateV5));
 assert("listening gate V4.4 archive present", existsSync(gateV44));
 const gateSrc = readFileSync(gateV5, "utf8");
 assert(
-  "listening gate V5 covers polar / stereo / relative Y",
-  /polar/i.test(gateSrc) && /stereo/i.test(gateSrc) && /relative/i.test(gateSrc),
+  "listening gate V5 covers polar / stereo / absolute Y",
+  /polar/i.test(gateSrc) && /stereo/i.test(gateSrc) && /spectrum/i.test(gateSrc),
 );
 assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/.test(main) && /scheduler\.step/.test(main) && /sendEvents/.test(main));
 assert(
@@ -78,6 +78,22 @@ assert(
     /stationarity/.test(spectral),
 );
 assert(
+  "calm sustained subset (not soft 0.22 bias)",
+  /SUSTAINED_SUBSET_QUANTILE/.test(spectral) &&
+    /SUSTAINED_ATTACK_GAP/.test(spectral) &&
+    /sustainedSubset/.test(spectral) &&
+    !/REGIME_STATIONARITY_BIAS/.test(spectral),
+);
+assert(
+  "attack score uses energy jump (first hop not zero-flux sustain)",
+  /W_ATTACK_ENERGY/.test(spectral) && /energyJumps/.test(spectral),
+);
+assert(
+  "polar radius is fixed (not stationarity-encoded)",
+  /POLAR_SEGMENT_RADIUS/.test(spectral) &&
+    !/0\.7 \+ 0\.3 \* stationarity/.test(spectral),
+);
+assert(
   "scheduler uses polar material query",
   /queryMaterialFromHsv/.test(sched) && /setMaterialSegments/.test(sched),
 );
@@ -90,9 +106,23 @@ assert(
   /channelMix/.test(worklet) && /pcmL/.test(worklet) && /pcmR/.test(worklet),
 );
 assert(
-  "worklet Y is relative to material centroid",
-  /materialCentroidHz/.test(worklet) && /Y_OCTAVE_SPAN/.test(worklet),
+  "worklet Y is absolute log spectrum (not relative to centroid)",
+  /FILT_FMIN \* Math\.pow\(FILT_FMAX \/ FILT_FMIN/.test(worklet) &&
+    !/Y_OCTAVE_SPAN/.test(worklet) &&
+    !/materialCentroidHz/.test(worklet),
 );
+assert(
+  "scheduler does not send materialCentroidHz into the filter",
+  !/materialCentroidHz/.test(sched) && !/Y_OCTAVE_SPAN/.test(sched),
+);
+// Formula-level: absolute Y endpoints must be 80 Hz / 12 kHz regardless of any centroid.
+{
+  const FILT_FMIN = 80;
+  const FILT_FMAX = 12000;
+  const fcAt = (y) => FILT_FMIN * Math.pow(FILT_FMAX / FILT_FMIN, y);
+  assert("absolute Y yNorm=0 → 80 Hz", Math.abs(fcAt(0) - 80) < 1e-9);
+  assert("absolute Y yNorm=1 → 12 kHz", Math.abs(fcAt(1) - 12000) < 1e-9);
+}
 assert("source prep has no 48-bin bank", !/SPECTRAL_BIN_COUNT/.test(spectral) && !/bins:\s*Float32Array/.test(spectral));
 assert("source message has no bins", !/msg\.bins/.test(worklet) && !/\bbins:/.test(audioSrc));
 assert("per-grain filter present", /ic1eq/.test(worklet));
@@ -102,6 +132,111 @@ assert(
   "no regime-branched audible Q defaults after continuous law",
   !/regime === "calm" \? Q_CALM/.test(worklet),
 );
+
+// Runtime: sustain tone + one click — calm must miss the click hop.
+{
+  const { pathToFileURL } = await import("node:url");
+  const {
+    buildPolarSegments,
+    queryMaterialFromHsv,
+  } = await import(pathToFileURL(join(root, "src/audio/spectral.ts")).href);
+
+  const sr = 44100;
+  const durSec = 2.0;
+  const n = Math.floor(sr * durSec);
+  const pcm = new Float32Array(n);
+  // Quiet sustained tone for most of the file.
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    pcm[i] = 0.08 * Math.sin(2 * Math.PI * 220 * t);
+  }
+  // One short click ~0.35 s in (well clear of the seam fade).
+  const clickAt = Math.floor(0.35 * sr);
+  const clickN = Math.floor(0.004 * sr);
+  for (let i = 0; i < clickN; i++) {
+    const env = 1 - i / clickN;
+    pcm[clickAt + i] = 0.95 * env * (i % 2 === 0 ? 1 : -1);
+  }
+
+  const segments = buildPolarSegments(pcm, sr);
+  assert("fixture produced multiple segments", segments.length >= 8);
+
+  const clickPos = clickAt / (n - 1);
+  const clickTol = 0.06; // ~±120 ms at 2 s
+  const nearClick = (pos) => Math.abs(pos - clickPos) < clickTol;
+
+  // Some segment near the click should score as relatively transient.
+  let minStatNearClick = 1;
+  for (const s of segments) {
+    if (nearClick(s.pos) && s.stationarity < minStatNearClick) {
+      minStatNearClick = s.stationarity;
+    }
+  }
+  assert(
+    "click neighbourhood has lower stationarity than pad median",
+    minStatNearClick < 0.55,
+  );
+
+  // Grey + mid-hue sustained queries must not land on the click.
+  const queries = [
+    { h: 0.0, s: 0.0, v: 0.5, label: "grey mid" },
+    { h: 0.5, s: 0.9, v: 0.6, label: "vivid mid-hue" },
+    { h: 0.15, s: 0.8, v: 0.4, label: "vivid warm" },
+    { h: 0.7, s: 0.7, v: 0.7, label: "vivid cool" },
+  ];
+  let sustainedMissed = true;
+  for (const q of queries) {
+    const r = queryMaterialFromHsv(segments, q.h, q.s, q.v, "sustained");
+    if (nearClick(r.sampleCenter)) {
+      sustainedMissed = false;
+      console.error(
+        `  sustained (${q.label}) landed near click at ${r.sampleCenter.toFixed(3)}`,
+      );
+    }
+  }
+  assert("sustained queries miss the click hop", sustainedMissed);
+
+  // File-start must not win grey sustained just because first-hop flux was 0.
+  // Build a second fixture that *opens* with a click, then pad.
+  {
+    const pcm2 = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      pcm2[i] = 0.08 * Math.sin(2 * Math.PI * 220 * t);
+    }
+    const openN = Math.floor(0.004 * sr);
+    for (let i = 0; i < openN; i++) {
+      const env = 1 - i / openN;
+      pcm2[i] = 0.95 * env * (i % 2 === 0 ? 1 : -1);
+    }
+    const segs2 = buildPolarSegments(pcm2, sr);
+    const startHit = queryMaterialFromHsv(segs2, 0.5, 0, 0.5, "sustained");
+    assert(
+      "grey sustained does not pin to opening click (first-hop lie)",
+      startHit.sampleCenter > 0.05,
+    );
+    const openSeg = segs2.reduce((best, s) =>
+      Math.abs(s.pos - 0) < Math.abs(best.pos - 0) ? s : best,
+    );
+    assert(
+      "opening click scores as transient",
+      openSeg.stationarity < 0.55,
+    );
+  }
+
+  // Transient may still find the click (colour + chance — at least allowed).
+  let transientNear = false;
+  for (const q of queries) {
+    const r = queryMaterialFromHsv(segments, q.h, q.s, q.v, "transient");
+    if (nearClick(r.sampleCenter)) transientNear = true;
+  }
+  // Not required to hit — only that the map still has low-stationarity material.
+  assert(
+    "map retains transient material near click",
+    segments.some((s) => nearClick(s.pos) && s.stationarity < 0.55) ||
+      transientNear,
+  );
+}
 
 if (failed) {
   console.error(`\nPhase 4 verify: ${failed} failure(s)`);

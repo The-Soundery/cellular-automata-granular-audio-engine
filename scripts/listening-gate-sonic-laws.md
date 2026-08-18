@@ -19,8 +19,8 @@ settled by measurement; all ear `[x]` items passed 2026-08-11.
       settled live Utomata: chaos δ̄ 0.26–0.30 and t 0.75–0.87
 - [x] Enable Audio loads default source without errors
 - [x] Overlay shows cell silhouettes with bright edges; Overlay On/Off works
-- [x] Overlay regime colours (static grey / chaos warm / osc cool) + legend
-      readable under the CA (V4.4 Phase 6)
+- [x] Overlay regime colours (gold calm / grey static / orange chaos / blue osc
+      / green flow) + legend readable under the CA (V4.4 Phase 6; flow 2026-08-13)
 - [x] Spend meter shows `c a/s · s a/s · x a/s · o a/s` (active/share), not just %
 
 ## Freeze-at-spawn (sample) + pan/Y track
@@ -64,8 +64,8 @@ Do not lower `deltaRateNorm` on the old δ≈0.1 / ~5 dB premise.
 ## Region fidelity
 
 - [x] Irregular shapes: grains follow the mask, not empty AABB corners
-- [x] Overlay shows regime colours (calm / static / chaos / osc) with legend
-      readable under the CA (half-half / chaos-blob-10pct)
+- [x] Overlay shows regime colours (calm / static / chaos / osc / flow) with legend
+      readable under the CA (half-half / chaos-blob-10pct / flow-dense)
 
 ## Observed rhythm → rate / oscillators
 
@@ -115,7 +115,8 @@ Do not lower `deltaRateNorm` on the old δ≈0.1 / ~5 dB premise.
 
 ## Still deferred (not ear-pass blockers)
 
-- Moving bar as figure/ground needs a fourth regime (Filter OPEN/DEFERRED 5).
+- Flow grains SETTLED in code (2026-08-14); active ear checklist is
+  `scripts/listening-gate-v5.md` (hop / train / dense / dots / bar).
 - Q ← region Y extent remains an open doctrine question (plan §10a); current
   law is spatial colour similarity → Q. Decide separately, then re-listen.
 

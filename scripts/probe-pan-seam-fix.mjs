@@ -90,7 +90,6 @@ function spawn(proc, { x, trackDx, pan, anchorX }) {
         trackDx,
         trackDy: 0,
         readOffset: 0,
-        materialCentroidHz: 1000,
       },
     ],
     tracks: track(anchorX),

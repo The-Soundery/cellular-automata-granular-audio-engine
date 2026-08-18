@@ -1,6 +1,14 @@
 import type { FieldObservation } from "../field/FieldObserver.ts";
+import { FIELD_OBS } from "../field/FieldObserver.ts";
 import type { AudioStats } from "../audio/AudioEngine.ts";
 import { GRID_SIZE } from "../ca/UtomataHost.ts";
+
+/** One colour per regime — diagnosis, not region identity. */
+const CALM_RGB = [196, 163, 90] as const;
+const TEX_RGB = [150, 150, 155] as const;
+const CHAOS_RGB = [230, 72, 36] as const;
+const OSC_RGB = [55, 130, 190] as const;
+const FLOW_RGB = [70, 175, 120] as const;
 
 /**
  * Debug visualisation: regime base layer + observational calm silhouettes.
@@ -54,29 +62,28 @@ export class RegionOverlay {
     ctx.putImageData(this.regimeImage, 0, 0);
 
     for (const r of obs.coherent) {
-      const hue = (r.id * 47) % 360;
       const cells = r.cells;
       if (!cells || cells.length === 0) continue;
 
       const inRegion = new Set<number>();
       for (let i = 0; i < cells.length; i++) inRegion.add(cells[i]!);
 
-      // Interior: dim fill. Edge cells (missing 4-neighbour): brighter outline.
+      // Interior: dim gold fill. Edge cells: brighter gold outline.
       for (let i = 0; i < cells.length; i++) {
         const ci = cells[i]!;
         const cx = ci % w;
         const cy = (ci / w) | 0;
         const edge = isEdgeCell(inRegion, cx, cy, w, h);
         ctx.fillStyle = edge
-          ? `hsla(${hue}, 75%, 70%, 0.7)`
-          : `hsla(${hue}, 55%, 50%, 0.07)`;
+          ? "rgba(220, 185, 95, 0.8)"
+          : "rgba(196, 163, 90, 0.07)";
         ctx.fillRect(cx * scaleX, cy * scaleY, cellW, cellH);
       }
 
       const comX = r.comX * scaleX;
       const comY = r.comY * scaleY;
       ctx.beginPath();
-      ctx.fillStyle = `hsla(${hue}, 70%, 68%, 0.65)`;
+      ctx.fillStyle = "rgba(220, 185, 95, 0.9)";
       ctx.arc(comX, comY, 1.8, 0, Math.PI * 2);
       ctx.fill();
 
@@ -84,7 +91,27 @@ export class RegionOverlay {
       const vy = r.velY * scaleY * 4;
       if (Math.hypot(vx, vy) > 0.5) {
         ctx.beginPath();
-        ctx.strokeStyle = `hsla(${hue}, 75%, 72%, 0.7)`;
+        ctx.strokeStyle = "rgba(220, 185, 95, 0.85)";
+        ctx.moveTo(comX, comY);
+        ctx.lineTo(comX + vx, comY + vy);
+        ctx.stroke();
+      }
+    }
+
+    for (const f of obs.flows ?? []) {
+      const cells = f.cells;
+      if (!cells || cells.length === 0) continue;
+      const comX = f.comX * scaleX;
+      const comY = f.comY * scaleY;
+      ctx.beginPath();
+      ctx.fillStyle = "rgba(90, 210, 140, 0.9)";
+      ctx.arc(comX, comY, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      const vx = f.velX * scaleX * 4;
+      const vy = f.velY * scaleY * 4;
+      if (Math.hypot(vx, vy) > 0.5) {
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(90, 210, 140, 0.85)";
         ctx.moveTo(comX, comY);
         ctx.lineTo(comX + vx, comY + vy);
         ctx.stroke();
@@ -95,18 +122,21 @@ export class RegionOverlay {
       for (const g of stats.listen) {
         const x = (g.x + 0.5) * scaleX;
         const y = (g.y + 0.5) * scaleY;
-        const calm = g.regime === "calm";
         ctx.beginPath();
-        ctx.fillStyle = calm
-          ? "rgba(196, 163, 90, 0.9)"
-          : "rgba(120, 180, 200, 0.75)";
+        if (g.regime === "calm") {
+          ctx.fillStyle = "rgba(196, 163, 90, 0.9)";
+        } else if (g.regime === "flow") {
+          ctx.fillStyle = "rgba(90, 210, 140, 0.9)";
+        } else {
+          ctx.fillStyle = "rgba(120, 180, 200, 0.75)";
+        }
         ctx.arc(x, y, g.sounding ? 2.4 : 1.4, 0, Math.PI * 2);
         ctx.fill();
       }
     }
   }
 
-  /** One ImageData put — textured / chaotic / oscillator cells only. */
+  /** One ImageData put — textured / chaotic / oscillator / flow cells. */
   private paintRegimeLayer(obs: FieldObservation, w: number, h: number): void {
     const buf = this.regimeBuf;
     buf.fill(0);
@@ -140,20 +170,58 @@ export class RegionOverlay {
       }
     };
 
-    // Dim fills so the CA stays readable beneath.
+    // Dim fills so the CA stays readable beneath. One colour per regime.
+    // Chaos last among remainder so it is not buried under gold calm.
     if (obs.textured.cells.length) {
-      paint(obs.textured.cells, 150, 150, 155, 55);
+      paint(obs.textured.cells, TEX_RGB[0], TEX_RGB[1], TEX_RGB[2], 55);
     }
-    if (obs.chaotic.cells.length) {
-      paint(obs.chaotic.cells, 190, 95, 55, 60);
+    for (const r of obs.coherent) {
+      if (r.cells.length) paint(r.cells, CALM_RGB[0], CALM_RGB[1], CALM_RGB[2], 55);
     }
     for (const g of obs.oscillators) {
-      if (g.cells.length) paint(g.cells, 55, 130, 190, 60);
+      if (g.cells.length) paint(g.cells, OSC_RGB[0], OSC_RGB[1], OSC_RGB[2], 80);
+    }
+    if (obs.chaotic.cells.length) {
+      paint(obs.chaotic.cells, CHAOS_RGB[0], CHAOS_RGB[1], CHAOS_RGB[2], 140);
+    }
+    for (const f of obs.flows ?? []) {
+      if (f.cells.length) {
+        paint(
+          dilateCells(f.cells, w, h, FIELD_OBS.flowJoinRadius),
+          FLOW_RGB[0],
+          FLOW_RGB[1],
+          FLOW_RGB[2],
+          75,
+        );
+      }
     }
   }
 }
 
-/** True when any 4-neighbour is outside the region mask (toroidal). */
+function dilateCells(
+  cells: Uint32Array,
+  w: number,
+  h: number,
+  radius: number,
+): Uint32Array {
+  const seen = new Uint8Array(w * h);
+  const out: number[] = [];
+  for (let c = 0; c < cells.length; c++) {
+    const i = cells[c]!;
+    const x = i % w;
+    const y = (i / w) | 0;
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const j = ((y + dy + h) % h) * w + ((x + dx + w) % w);
+        if (seen[j]) continue;
+        seen[j] = 1;
+        out.push(j);
+      }
+    }
+  }
+  return Uint32Array.from(out);
+}
+
 function isEdgeCell(
   inRegion: Set<number>,
   x: number,

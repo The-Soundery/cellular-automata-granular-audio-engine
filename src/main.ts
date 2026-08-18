@@ -1,8 +1,11 @@
 import { UtomataHost, GRID_SIZE } from "./ca/UtomataHost.ts";
 import {
-  TYPE_U_SEED,
-  randomVariation,
-  variationAt,
+  parseTypeU,
+  randomProgram,
+  cycleSlot,
+  seedProgram,
+  type TypeUDepth,
+  type TypeUProgram,
 } from "./ca/typeU.ts";
 import { FrameObserver, type RgbField } from "./field/FrameObserver.ts";
 import { FieldObserver, type FieldObservation } from "./field/FieldObserver.ts";
@@ -69,7 +72,6 @@ const patternRgba = patternImage.data;
   window as unknown as { __grainScheduler: GrainScheduler }
 ).__grainScheduler = scheduler;
 
-let variationIndex = 0;
 let lastObs: FieldObservation | null = null;
 let lastBatch: GrainEventBatch | null = null;
 let lastObservedStep = -1;
@@ -90,6 +92,42 @@ let patternPaused = false;
 let syntheticStep = 0;
 let syntheticAccSec = 0;
 let lastTickMs = performance.now();
+
+const UNDO_CAP = 200;
+let currentProgram: TypeUProgram | null = seedProgram(1);
+let mappedDepth: TypeUDepth = 1;
+const lastByDepth: Partial<Record<TypeUDepth, TypeUProgram>> = {
+  1: currentProgram,
+};
+const undoStack: TypeUProgram[] = [];
+const redoStack: TypeUProgram[] = [];
+
+function commitProgram(next: TypeUProgram, resetColours: boolean): void {
+  if (currentProgram && currentProgram.equation !== next.equation) {
+    undoStack.push(currentProgram);
+    if (undoStack.length > UNDO_CAP) undoStack.shift();
+    redoStack.length = 0;
+  } else if (!currentProgram) {
+    redoStack.length = 0;
+  }
+  currentProgram = next;
+  mappedDepth = next.depth;
+  lastByDepth[next.depth] = next;
+  if (resetColours) {
+    host.reset();
+    clearPipeline();
+  }
+  host.applyEquation(next.equation);
+  controls.setProgram(next, next.equation);
+}
+
+function restoreProgram(next: TypeUProgram): void {
+  currentProgram = next;
+  mappedDepth = next.depth;
+  lastByDepth[next.depth] = next;
+  host.applyEquation(next.equation);
+  controls.setProgram(next, next.equation);
+}
 
 function clearPipeline(): void {
   frameObserver.reset();
@@ -160,17 +198,31 @@ async function ensureDefaultSource(): Promise<void> {
 
 const controls = mountControls(controlsMount, {
   onApplyEquation(eq) {
-    host.applyEquation(eq);
+    const parsed = parseTypeU(eq);
+    if (!parsed) {
+      if (currentProgram) {
+        undoStack.push(currentProgram);
+        if (undoStack.length > UNDO_CAP) undoStack.shift();
+        redoStack.length = 0;
+      }
+      currentProgram = null;
+      host.applyEquation(eq);
+      controls.setProgram(null, eq);
+      return;
+    }
+    const depthChanged =
+      currentProgram === null || currentProgram.depth !== parsed.depth;
+    commitProgram(parsed, depthChanged);
   },
-  onReset() {
+  onResetColours() {
     if (activePattern) {
       syntheticStep = 0;
       syntheticAccSec = 0;
       clearPipeline();
-    } else {
-      host.reset();
-      clearPipeline();
+      return;
     }
+    host.reset();
+    clearPipeline();
   },
   onSelectSimSource(id) {
     if (id === "utomata" || id === "") {
@@ -182,6 +234,7 @@ const controls = mountControls(controlsMount, {
       clearPipeline();
       host.play();
       controls.setPaused(false);
+      controls.setTypeUEnabled(true);
       return;
     }
     const pattern = getTestPattern(id);
@@ -192,6 +245,7 @@ const controls = mountControls(controlsMount, {
     host.pause();
     // The pattern clock is running — Pause button controls it, not Utomata.
     controls.setPaused(false);
+    controls.setTypeUEnabled(false);
     syntheticStep = 0;
     syntheticAccSec = 0;
     clearPipeline();
@@ -204,23 +258,29 @@ const controls = mountControls(controlsMount, {
     }
     return host.togglePause();
   },
-  onPrevVariation() {
-    variationIndex = Math.max(0, variationIndex - 1);
-    const eq = variationAt(variationIndex);
-    controls.setEquation(eq);
-    return eq;
+  onUndo() {
+    const prev = undoStack.pop();
+    if (!prev) return;
+    if (currentProgram) redoStack.push(currentProgram);
+    restoreProgram(prev);
   },
-  onNextVariation() {
-    variationIndex += 1;
-    const eq = variationAt(variationIndex);
-    controls.setEquation(eq);
-    return eq;
+  onRedo() {
+    const next = redoStack.pop();
+    if (!next) return;
+    if (currentProgram) undoStack.push(currentProgram);
+    restoreProgram(next);
   },
-  onRandomVariation() {
-    variationIndex = (Math.random() * 1e6) | 0;
-    const eq = randomVariation(variationIndex);
-    controls.setEquation(eq);
-    return eq;
+  onRandomEquation() {
+    commitProgram(randomProgram(mappedDepth), true);
+  },
+  onCycleSlot(slotIndex, dir) {
+    if (!currentProgram) return;
+    commitProgram(cycleSlot(currentProgram, slotIndex, dir), false);
+  },
+  onSetDepth(depth) {
+    if (currentProgram?.depth === depth) return;
+    const next = lastByDepth[depth] ?? seedProgram(depth);
+    commitProgram(next, true);
   },
   async onToggleAudio() {
     try {
@@ -324,7 +384,9 @@ const controls = mountControls(controlsMount, {
   },
 });
 
-controls.setEquation(TYPE_U_SEED);
+const startProgram = seedProgram(1);
+controls.setProgram(startProgram, startProgram.equation);
+controls.setTypeUEnabled(true);
 controls.setOverlayVisible(true);
 controls.setAudioEnabled(false);
 controls.setRecording(false);
@@ -422,6 +484,7 @@ function pushStats(forceMeter = false) {
       oscPct:
         lastObs.oscillators.reduce((sum, g) => sum + g.area, 0) /
         (lastObs.width * lastObs.height),
+      flowPct: lastObs.flowAreaFraction,
       meanKappa: lastObs.meanCoherence,
       chaosMeanDelta: smoothFieldDelta!.chaosMeanDelta,
       chaosT: smoothFieldDelta!.chaosT,
@@ -433,10 +496,12 @@ function pushStats(forceMeter = false) {
       chaosGrains: lastBatch?.chaosActive ?? 0,
       textureGrains: lastBatch?.textureActive ?? 0,
       oscGrains: lastBatch?.oscActive ?? 0,
+      flowGrains: lastBatch?.flowActive ?? 0,
       shareCalm: lastBatch?.shares.calm ?? 0,
       shareTexture: lastBatch?.shares.texture ?? 0,
       shareChaos: lastBatch?.shares.chaos ?? 0,
       shareOsc: lastBatch?.shares.osc ?? 0,
+      shareFlow: lastBatch?.shares.flow ?? 0,
       budget: lastBatch?.budget ?? scheduler.budget,
       predictedActive: lastBatch?.predictedActive ?? 0,
     };

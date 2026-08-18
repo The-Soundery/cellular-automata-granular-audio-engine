@@ -2,6 +2,7 @@ import type {
   ChaoticArea,
   CoherentRegion,
   FieldObservation,
+  FlowGroup,
   OscillatorGroup,
   TexturedArea,
 } from "./FieldObserver.ts";
@@ -18,6 +19,12 @@ import {
 /** Negotiable physical budget — raise after listening + CPU check. */
 export const GRAIN_BUDGET = 64;
 export const MASTER_GAIN = 1.0;
+
+/**
+ * Flow track ids live above this so they never collide with calm region ids
+ * (both counters start at 1). Worklet applyTracks keys on regionId.
+ */
+export const FLOW_ID_BASE = 1_000_000;
 
 /** Negotiable scheduler curves (Sonic Laws shape; numbers are tunable). */
 export const SCHED = {
@@ -49,8 +56,6 @@ export const SCHED = {
   WINDOW_HALF_MAX_S: 0.8,
   /** Absolute floor on window half-width (seconds) — avoids degenerate ping-pong. */
   WINDOW_HALF_ABS_MIN_S: 0.005,
-  /** Y offset span in octaves around the chosen segment centroid (± half). */
-  Y_OCTAVE_SPAN: 4,
   /** Legacy calm Hz band — packing rate supersedes for calm wash. */
   calmRateMinHz: 0.8,
   calmRateMaxHz: 6,
@@ -126,9 +131,26 @@ export const SCHED = {
    * usable spawn anchor (circular variance ≥ 0.5) — plan §4d / SPAWN_ANCHOR_R_MIN.
    */
   SPAWN_ANCHOR_R_MIN: 0.5,
+  /**
+   * Flow timeOrder mid-band (chaos-adjacent → toward calm, never wash).
+   * Packing density packT = area/regionArea lerps MIN→MAX. RegionArea still
+   * only buys concurrency; packing shapes duration/envelope. Listen-tune.
+   */
+  FLOW_ORDER_MIN: 0.28,
+  FLOW_ORDER_MAX: 0.52,
+  /**
+   * Mix toward the long end of sat→window half-width so vivid travelling
+   * colour is less choppy than chaos. 0 = sat law only; 1 = always max half.
+   */
+  FLOW_WINDOW_T: 0.45,
+  /**
+   * Cap flow grain lifetime by stream travel time (length / hop speed in
+   * steps × dt). Keeps conveyor grains dying near the leading edge.
+   */
+  FLOW_TRAVEL_DUR_BLEND: 1,
 } as const;
 
-export type GrainRegime = "calm" | "chaos" | "texture" | "osc";
+export type GrainRegime = "calm" | "chaos" | "texture" | "osc" | "flow";
 
 /** Ephemeral grain descriptor (V4.1: continuous material; hue→sample frozen). */
 export interface GrainSpawnEvent {
@@ -151,8 +173,6 @@ export interface GrainSpawnEvent {
   q: number;
   /** Spectral position [0,1] at spawn; follows region while alive. */
   yNorm: number;
-  /** Chosen material centroid (Hz); Y offsets the bandpass around this. */
-  materialCentroidHz: number;
   /** Source L/R mix [0,1] from X (0=left); follows region while alive. */
   channelMix: number;
   /** Stereo pan [-1,1] at spawn; follows region while alive. */
@@ -181,11 +201,17 @@ export interface RegionTrack {
   /** True toroidal COM (kept for harness asserts; follow uses anchor). */
   comX: number;
   comY: number;
-  /** Spawn/follow anchor — grid centre when COM is meaningless in that axis. */
+  /**
+   * Spawn/follow anchor. Calm: COM (or grid centre). Flow: hop-integrated
+   * conveyor so grains ride perceptual motion, not structure COM drift.
+   */
   anchorX: number;
   anchorY: number;
   gridWidth: number;
   gridHeight: number;
+  /** Hop velocity (cells/step) — diagnostic; follow uses integrated anchor. */
+  velX?: number;
+  velY?: number;
 }
 
 export interface GrainEventBatch {
@@ -200,8 +226,15 @@ export interface GrainEventBatch {
   chaosActive: number;
   textureActive: number;
   oscActive: number;
-  /** Area-share allocation this step (sum of per-region calm/osc shares). */
-  shares: { calm: number; texture: number; chaos: number; osc: number };
+  flowActive: number;
+  /** Area-share allocation this step (sum of per-region calm/osc/flow shares). */
+  shares: {
+    calm: number;
+    texture: number;
+    chaos: number;
+    osc: number;
+    flow: number;
+  };
 }
 
 type ActiveRecord = {
@@ -254,6 +287,17 @@ export class GrainScheduler {
   private textureScrubSec = 0;
   /** Next stratified spawn slot for the texture bag. */
   private textureSiteSlot = 0;
+  /** Per-flow packing accumulators, trailing-edge cursors, hop conveyor. */
+  private flowClocks = new Map<
+    number,
+    {
+      acc: number;
+      cellCursor: number;
+      followX: number;
+      followY: number;
+      hasFollow: boolean;
+    }
+  >();
   /**
    * O(1) pool-membership test for spawn-site snapping. Stamp buffer so a
    * pool's mask never has to be cleared: a cell is a member iff its entry
@@ -294,6 +338,7 @@ export class GrainScheduler {
     this.oscPhase.clear();
     this.textureScrubSec = 0;
     this.textureSiteSlot = 0;
+    this.flowClocks.clear();
   }
 
   /** Write a pool's membership into the stamp buffer; returns its stamp. */
@@ -625,10 +670,98 @@ export class GrainScheduler {
       this.chaosAcc = Math.max(3, desiredChaos);
     }
 
+    // Flow: trailing-edge piece-grains; hop-velocity conveyor follow.
+    const liveFlowIds = new Set((obs.flows ?? []).map((f) => f.id));
+    for (const id of [...this.flowClocks.keys()]) {
+      if (!liveFlowIds.has(id)) this.flowClocks.delete(id);
+    }
+    for (const flow of obs.flows ?? []) {
+      const trackId = FLOW_ID_BASE + flow.id;
+      const w = obs.width;
+      const h = obs.height;
+      let clock = this.flowClocks.get(flow.id);
+      if (!clock) {
+        clock = {
+          acc: Math.random(),
+          cellCursor: 0,
+          followX: 0,
+          followY: 0,
+          hasFollow: false,
+        };
+        this.flowClocks.set(flow.id, clock);
+      }
+      const edge = flowHeadingEdges(flow, w, h);
+      if (!clock.hasFollow) {
+        clock.followX = edge.trailX;
+        clock.followY = edge.trailY;
+        clock.hasFollow = true;
+      } else {
+        clock.followX =
+          (((clock.followX + flow.velX) % w) + w) % w;
+        clock.followY =
+          (((clock.followY + flow.velY) % h) + h) % h;
+      }
+      tracks.push({
+        regionId: trackId,
+        comX: flow.comX,
+        comY: flow.comY,
+        anchorX: clock.followX,
+        anchorY: clock.followY,
+        gridWidth: w,
+        gridHeight: h,
+        velX: flow.velX,
+        velY: flow.velY,
+      });
+
+      const share = shares.flow.get(flow.id) ?? 0;
+      if (share <= 0 || flow.cells.length === 0) continue;
+
+      const flowDur = flowConveyorDuration(flow, dtSec, edge.length);
+      const packHz = share / Math.max(0.05, flowDur);
+      // Organised change: spend at packing rate (no δ floor → silence).
+      clock.acc += packHz * dtSec;
+      const flowAlready = this.active.filter((a) => a.regionId === trackId)
+        .length;
+      while (
+        clock.acc >= 1 &&
+        flowAlready + countEventsForRegion(events, trackId) < share &&
+        this.active.length < this.budget
+      ) {
+        clock.acc -= 1;
+        const ci =
+          edge.ordered[clock.cellCursor % edge.ordered.length]!;
+        clock.cellCursor += 1;
+        const ev = spawnFlow(
+          flow,
+          ci,
+          obs,
+          rgb,
+          amp,
+          bankDur,
+          dtSec,
+          this.segments,
+          clock.followX,
+          clock.followY,
+          flowDur,
+        );
+        events.push(ev);
+        this.active.push({
+          endMs: nowMs + ev.durationSec * 1000,
+          regime: "flow",
+          regionId: trackId,
+        });
+      }
+      if (clock.acc > Math.max(3, share)) {
+        clock.acc = Math.max(3, share);
+      }
+    }
+
     let calmShareSum = 0;
     for (const s of shares.calm.values()) calmShareSum += s;
     let oscShareSum = 0;
     for (const s of shares.osc.values()) oscShareSum += s;
+    let flowShareSum = 0;
+    for (const s of shares.flow.values()) flowShareSum += s;
 
     return {
       masterGain: MASTER_GAIN,
@@ -642,11 +775,13 @@ export class GrainScheduler {
       chaosActive: countActiveRegime(this.active, "chaos"),
       textureActive: countActiveRegime(this.active, "texture"),
       oscActive: countActiveRegime(this.active, "osc"),
+      flowActive: countActiveRegime(this.active, "flow"),
       shares: {
         calm: calmShareSum,
         texture: shares.texture,
         chaos: shares.chaos,
         osc: oscShareSum,
+        flow: flowShareSum,
       },
     };
   }
@@ -751,9 +886,11 @@ function allocateShares(
   chaos: number;
   texture: number;
   osc: Map<number, number>;
+  flow: Map<number, number>;
 } {
   const calm = new Map<number, number>();
   const osc = new Map<number, number>();
+  const flow = new Map<number, number>();
   let assigned = 0;
   /** Fractional remainders for largest-remainder redistribution. */
   const calmRemainders: { id: number; frac: number; area: number }[] = [];
@@ -770,6 +907,13 @@ function allocateShares(
     osc.set(g.period, (osc.get(g.period) ?? 0) + share);
     oscFromArea += share;
   }
+  let flowFromArea = 0;
+  for (const f of obs.flows ?? []) {
+    // Occupied patch (including gaps), same quantity as Flow %.
+    const share = Math.max(0, Math.round((budget * f.regionArea) / nCells));
+    flow.set(f.id, (flow.get(f.id) ?? 0) + share);
+    flowFromArea += share;
+  }
   const texturedArea = obs.textured?.area ?? 0;
   const textureFromArea = Math.max(
     0,
@@ -779,8 +923,9 @@ function allocateShares(
     0,
     Math.round((budget * obs.chaotic.area) / nCells),
   );
-  // Overflow scaling treats texture/osc like calm (stable pools yield to chaos).
-  const stableAssigned = assigned + textureFromArea + oscFromArea;
+  // Overflow scaling treats texture/osc/flow like calm (stable pools yield to chaos).
+  const stableAssigned =
+    assigned + textureFromArea + oscFromArea + flowFromArea;
   if (stableAssigned + chaosFromArea > budget && stableAssigned > 0) {
     const roomForStable = budget - Math.min(chaosFromArea, budget);
     const scale = roomForStable / stableAssigned;
@@ -795,25 +940,58 @@ function allocateShares(
       osc.set(p, ns);
       sum += ns;
     }
+    for (const [id, s] of flow) {
+      const ns = Math.max(0, Math.floor(s * scale));
+      flow.set(id, ns);
+      sum += ns;
+    }
     const texture = Math.max(0, Math.floor(textureFromArea * scale));
     sum += texture;
     return {
       calm,
       osc,
+      flow,
       texture,
       chaos: Math.min(chaosFromArea, Math.max(0, budget - sum)),
     };
   }
   const texture = Math.min(
     textureFromArea,
-    Math.max(0, budget - assigned - oscFromArea),
+    Math.max(0, budget - assigned - oscFromArea - flowFromArea),
   );
-  let chaos = Math.min(
-    chaosFromArea,
+  const flowCapped = Math.min(
+    flowFromArea,
     Math.max(0, budget - assigned - oscFromArea - texture),
   );
+  // Scale per-group flow shares if the cap trimmed the total.
+  if (flowCapped < flowFromArea && flowFromArea > 0) {
+    const scale = flowCapped / flowFromArea;
+    let sum = 0;
+    for (const [id, s] of flow) {
+      const ns = Math.max(0, Math.floor(s * scale));
+      flow.set(id, ns);
+      sum += ns;
+    }
+    // Absorb rounding leftover into the largest flow group.
+    let leftover = flowCapped - sum;
+    if (leftover > 0) {
+      let bestId = -1;
+      let best = -1;
+      for (const [id, s] of flow) {
+        if (s > best) {
+          best = s;
+          bestId = id;
+        }
+      }
+      if (bestId >= 0) flow.set(bestId, (flow.get(bestId) ?? 0) + leftover);
+    }
+  }
+  let chaos = Math.min(
+    chaosFromArea,
+    Math.max(0, budget - assigned - oscFromArea - texture - flowCapped),
+  );
   // Largest-remainder: give unused seats to calm regions (never to chaos).
-  let used = assigned + oscFromArea + texture + chaos;
+  let used = assigned + oscFromArea + texture + flowCapped + chaos;
   if (used < budget && calmRemainders.length > 0) {
     calmRemainders.sort((a, b) => b.frac - a.frac || b.area - a.area);
     let i = 0;
@@ -827,6 +1005,7 @@ function allocateShares(
   return {
     calm,
     osc,
+    flow,
     texture,
     chaos,
   };
@@ -972,7 +1151,6 @@ function spawnOsc(
     startOffsetSec: Math.random() * Math.min(0.15 * periodSec, 0.015),
     q: mat.q,
     yNorm,
-    materialCentroidHz: win.centroidHz,
     channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
     // Owner likes how blinkers sound — leave this envelope alone; do not
@@ -1047,7 +1225,6 @@ function spawnTexture(
     startOffsetSec: Math.random() * dtSec,
     q: mat.q,
     yNorm,
-    materialCentroidHz: win.centroidHz,
     channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
     attackFrac: mat.attackFrac,
@@ -1195,7 +1372,6 @@ function spawnCalmAt(
     startOffsetSec: Math.random() * dtSec,
     q: mat.q,
     yNorm,
-    materialCentroidHz: win.centroidHz,
     channelMix: channelMixFromX(cx, w),
     pan: panFromX(cx, w),
     attackFrac: mat.attackFrac,
@@ -1247,7 +1423,6 @@ function spawnChaos(
     startOffsetSec: Math.random() * dtSec,
     q: mat.q,
     yNorm,
-    materialCentroidHz: win.centroidHz,
     channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
     attackFrac: mat.attackFrac,
@@ -1258,6 +1433,167 @@ function spawnChaos(
     trackDy: 0,
     readOffset: Math.random() * 2 - 1,
   };
+}
+
+/** Member cells / dilated patch — dense pack → 1, thin stream → lower. */
+function flowPackT(flow: FlowGroup): number {
+  return clamp01(flow.area / Math.max(1, flow.regionArea));
+}
+
+/** Mid-band timeOrder from packing density (not chaos δ, not calm area growth). */
+function flowTimeOrder(flow: FlowGroup): number {
+  return lerp(SCHED.FLOW_ORDER_MIN, SCHED.FLOW_ORDER_MAX, flowPackT(flow));
+}
+
+/**
+ * Trailing / leading edges along hop heading. Trailing = start of motion
+ * (spawn); leading = end (grain dies). Ordered cells: trailing → leading.
+ */
+function flowHeadingEdges(
+  flow: FlowGroup,
+  w: number,
+  _h: number,
+): {
+  trailX: number;
+  trailY: number;
+  leadX: number;
+  leadY: number;
+  length: number;
+  ordered: number[];
+} {
+  const cells = Array.from(flow.cells);
+  const speed = Math.hypot(flow.velX, flow.velY);
+  if (cells.length === 0) {
+    return {
+      trailX: flow.comX,
+      trailY: flow.comY,
+      leadX: flow.comX,
+      leadY: flow.comY,
+      length: 1,
+      ordered: [],
+    };
+  }
+  if (speed < 1e-4) {
+    return {
+      trailX: flow.comX,
+      trailY: flow.comY,
+      leadX: flow.comX,
+      leadY: flow.comY,
+      length: Math.max(1, Math.sqrt(flow.regionArea)),
+      ordered: cells,
+    };
+  }
+  const hx = flow.velX / speed;
+  const hy = flow.velY / speed;
+  const scored = cells.map((ci) => {
+    const x = ci % w;
+    const y = (ci / w) | 0;
+    return { ci, x, y, proj: x * hx + y * hy };
+  });
+  scored.sort((a, b) => a.proj - b.proj);
+  const trail = scored[0]!;
+  const lead = scored[scored.length - 1]!;
+  let length = lead.proj - trail.proj;
+  if (length < 1) length = Math.max(1, scored.length);
+  return {
+    trailX: trail.x,
+    trailY: trail.y,
+    leadX: lead.x,
+    leadY: lead.y,
+    length,
+    ordered: scored.map((s) => s.ci),
+  };
+}
+
+/** Packing mid-band duration, capped by stream travel time (conveyor). */
+function flowConveyorDuration(
+  flow: FlowGroup,
+  dtSec: number,
+  streamLength: number,
+): number {
+  const packDur = durationFromTimeOrder(flowTimeOrder(flow));
+  const speed = Math.hypot(flow.velX, flow.velY);
+  if (speed < 0.15 || SCHED.FLOW_TRAVEL_DUR_BLEND <= 0) return packDur;
+  const travelSteps = Math.max(1, streamLength / speed);
+  const travelSec = travelSteps * Math.max(1e-3, dtSec);
+  const lo = SCHED.DUR_MIN;
+  const hi = packDur;
+  const capped = Math.min(hi, Math.max(lo, travelSec));
+  return lerp(packDur, capped, clamp01(SCHED.FLOW_TRAVEL_DUR_BLEND));
+}
+
+/**
+ * Flow piece-grain: trailing-edge member, packing→mid envelope, follows hop
+ * conveyor via trackDx/Dy against the hop-integrated follow anchor.
+ */
+function spawnFlow(
+  flow: FlowGroup,
+  ci: number,
+  obs: FieldObservation,
+  rgb: RgbField,
+  amplitude: number,
+  bankDur: number,
+  dtSec: number,
+  segments: MaterialSegment[],
+  followX: number,
+  followY: number,
+  durationSec: number,
+): GrainSpawnEvent {
+  const w = obs.width;
+  const h = obs.height;
+  const x = ci % w;
+  const y = (ci / w) | 0;
+  const r = rgb.r[ci] ?? flow.meanR;
+  const g = rgb.g[ci] ?? flow.meanG;
+  const b = rgb.b[ci] ?? flow.meanB;
+  const similarity = obs.similarity[ci] ?? 0.5;
+  const order = flowTimeOrder(flow);
+  const s = smoothstep01(order);
+  const attackFrac = lerp(SCHED.ATT_MIN, SCHED.ATT_MAX, s);
+  const releaseFrac = lerp(SCHED.REL_CHAOS, SCHED.REL_CALM, s);
+  const q = SCHED.Q_MIN * Math.pow(SCHED.Q_MAX / SCHED.Q_MIN, clamp01(similarity));
+  const win = sampleWindowFromColour(
+    r,
+    g,
+    b,
+    bankDur,
+    segments,
+    "neutral",
+    SCHED.FLOW_WINDOW_T,
+  );
+  const yNorm = 1 - y / Math.max(1, h - 1);
+  const trackDx = toroidalOffset(x, followX, w);
+  const trackDy = toroidalOffset(y, followY, h);
+
+  return {
+    x,
+    y,
+    r,
+    g,
+    b,
+    durationSec,
+    amplitude,
+    direction: flow.velX < -SCHED.velDirEps ? -1 : 1,
+    sampleCenter: win.sampleCenter,
+    sampleHalf: win.sampleHalf,
+    startOffsetSec: Math.random() * dtSec,
+    q,
+    yNorm,
+    channelMix: channelMixFromX(x, w),
+    pan: panFromX(x, w),
+    attackFrac,
+    releaseFrac,
+    regime: "flow",
+    regionId: FLOW_ID_BASE + flow.id,
+    trackDx,
+    trackDy,
+    readOffset: Math.random() * 2 - 1,
+  };
+}
+
+function durationFromTimeOrder(order: number): number {
+  const o = clamp01(order);
+  return SCHED.DUR_MIN * Math.pow(SCHED.DUR_MAX / SCHED.DUR_MIN, o);
 }
 
 /** δ-weighted rejection sampling over the chaos bag (uses smoothed δ). */
@@ -1283,7 +1619,9 @@ export function rgbToHueNorm(r: number, g: number, b: number): number {
 
 /**
  * HSV → polar material centre + sat→window half-width.
- * regimeBias soft-prefers sustained or transient segments.
+ * regimeBias "sustained" (calm/texture) searches only the high-stationarity
+ * subset; "transient"/"neutral" use the full map.
+ * windowLongT mixes toward the long end of the half-width law (flow).
  */
 function sampleWindowFromColour(
   r: number,
@@ -1292,12 +1630,15 @@ function sampleWindowFromColour(
   bankDur: number,
   segments: MaterialSegment[],
   regimeBias: RegimeMaterialBias,
-): { sampleCenter: number; sampleHalf: number; centroidHz: number } {
+  windowLongT = 0,
+): { sampleCenter: number; sampleHalf: number } {
   const { h, s, v } = rgbToHsv(r, g, b);
+  const satT = 1 - s;
+  const halfT = lerp(satT, 1, clamp01(windowLongT));
   const halfSec = lerp(
     SCHED.WINDOW_HALF_MIN_S,
     SCHED.WINDOW_HALF_MAX_S,
-    1 - s,
+    halfT,
   );
   const mat = queryMaterialFromHsv(segments, h, s, v, regimeBias);
   const absFloor = SCHED.WINDOW_HALF_ABS_MIN_S / Math.max(1e-3, bankDur);
@@ -1308,7 +1649,6 @@ function sampleWindowFromColour(
   return {
     sampleCenter: mat.sampleCenter,
     sampleHalf: Math.max(1e-4, sampleHalf),
-    centroidHz: mat.centroidHz,
   };
 }
 
