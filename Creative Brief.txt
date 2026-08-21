@@ -60,7 +60,7 @@ We ARE building:
 - Two renderings: visual and audio
 - A physically constrained audio renderer of computational evolution
 - An instrument whose sonic complexity emerges from CA behaviour itself
-- Observational regions (coherence / chaos / texture / oscillators / flow)
+- Observational regions (calm / static / chaos / oscillators / flow)
   as field measurements that set grain laws — never as owned voices
 
 
@@ -128,31 +128,55 @@ One-sentence axiom:
    - κ   coherence = similarity × stability (high only when BOTH hold)
    - extent via region width / height / area (spatial scale of a coherent mass)
 
-   Group into observational regions:
+   Classification order (exclusive by construction): Osc → Calm → Flow →
+   then leftover split by δ into Chaos (changing) or Static (still).
+   Spatial mix alone never chooses a regime.
 
-   - Calm: similar colour, slow changing, with measurable area A, centre of
-     mass (x̄, ȳ), mean change δ̄, mean coherence κ̄, bounding width/height,
-     and COM velocity from smoothed COM motion. A solid block that sits still
-     or slides cell→adjacent cell as a continuous body stays here.
-   - Textured: spatially dissimilar but temporally stable — static detail is
-     NOT chaos. Heard as few long overlapping grains whose identity diversity
-     carries the texture. A frozen universe sounds still.
-   - Oscillator groups: cells whose colour repeats with a confirmed period
-     (2..8 steps) are structure, not noise. Grouped by period, re-derived
-     every frame; excluded from calm/texture/chaos bags. Grains fire in
-     bursts phase-locked to the visual period.
-   - Flow groups: a colour that reappears nearby along a heading (similarity
-     travel). Fifth area-share pool; conveyor grains on FLOW_ID_BASE tracks.
-     Full borders in “Flow observation + grain pool” below.
-   - Chaotic area: genuinely changing remainder — not periodic, not coherent
-     correspondence. Treated as a bag of cells; chaos grains spawn δ-weighted
-     so change is the event.
+   Membership (what each regime is — not grain laws):
+
+   - Calm: a connected mass of similar colour with κ high enough to hold.
+     One body, not a bag. May sit still or slide cell→adjacent cell as that
+     body (high persist: interior keeps the colour). Fill is not a membership
+     gate — it shapes grains and keeps solid stamps out of Flow. Speckles
+     below min area are not Calm. Slow whole-field drift / breathing stays
+     Calm. Tracks COM, velocity, area A, κ̄, δ̄.
+   - Static (HUD name; code alias textured): temporally still remainder —
+     δ below the chaos floor, not claimed as Calm, Osc, or Flow. Typical
+     look is frozen mixed detail. A solid never-changing colour field is
+     Calm, not Static. Small similar patches that fail min area land here.
+   - Osc: sitting cells whose colour repeats with a confirmed period
+     (2..8 steps). The pulse does not travel; travelling period-looking
+     patterns are stripped to Flow or Chaos. Wavelength-2 site-revisit
+     with cancelling hops (train tracks, checkerboards) stays Osc.
+     Longer rhythms on a coherent mass stay Calm (scheduler may phase
+     grains — that is not Osc). Grouped by period (one bag per period),
+     re-derived every frame.
+   - Flow: similarity travel — the same colour reappears nearby along a
+     consistent heading (correspondence / hop). Organised and gappy: stream,
+     cascade, wavefront, or dithered sheet — not a filled translating
+     silhouette, not isolated 2D scatter. Confirm streak + travel floor.
+     Colour stays itself (value flicker of one hue matches; hue tint walks
+     do not). Velocity may keep block correspondence when pack COM jumps
+     on a torus. Stair-step +x/+y is still a diagonal heading. Thin still
+     same-colour lines are Calm (similarity along the line). Confirmed Flow
+     may pulse at a member blink period (2..8 steps). Full borders in
+     “Flow observation + grain pool” below.
+   - Chaos: changing remainder — temporally active cells not claimed as
+     Calm, Osc, or Flow. Spatial colour need not be mixed. Unorganised
+     change is enough. Scramble is Chaos, not Flow. Bag of cells; grains
+     spawn δ-weighted so change is the event.
+
+   Calm vs Flow: high persist (mass keeps its colour as it slides) → Calm;
+   high hop (colour leaves cells and lands nearby) → Flow.
+   Static vs Chaos: leftover and still → Static; leftover and changing → Chaos.
 
    δ is spatially averaged (3×3) before regime decisions so single-cell
    speckle cannot masquerade as chaos.
 
-   Regions are re-derived each frame with smoothing. They are measurements,
-   not voice owners. Do not score “interestingness” or prefer one regime.
+   Regions are re-derived each frame with smoothing / confirm streaks.
+   They are measurements, not voice owners. Do not score “interestingness”
+   or prefer one regime. Calm and Flow are tracked bodies; Static, Chaos,
+   and Osc are bags (no pan/Y follow except Flow/Calm region ids).
 
 
 4. Region laws → grain function (how grains behave)
@@ -166,10 +190,22 @@ One-sentence axiom:
    Overlap        ∝ κ̄ × size
                   (calm → overlap allowed; chaos → overlap ≈ 0)
 
-   Calm packing:  few long overlapping grains → one continuous texture
+   Calm packing:  few long overlapping grains → one continuous wash
+   Static packing: few long overlapping grains; identity diversity across
+                  spawn sites carries frozen detail (same pool shape as calm)
+   Osc packing:   pulse-locked bursts at the visual period; share spent at
+                  the hit; silence between hits is not an unspent share
    Chaos packing: many short non-overlapping grains from random cells
                   inside the chaotic area. Chaos rate is pure change
                   (δ̄→0 → silence). CHAOS_EVENTS_MAX_HZ is a CPU rail only.
+                  “Overlap ≈ 0” means many short hits, not a calm wash — and
+                  not a generation locked to the CA step. Packing rate uses
+                  the bag-mean duration; each grain’s duration follows its
+                  spawn cell’s raw δ around that mean so saturated scramble
+                  is a spray, not a 30 Hz choir.
+   Flow packing:  fifth area-share pool; conveyor grains — see Flow section.
+                  If members blink at a confirmed site period, share is
+                  spent as pulse-locked bursts at that period.
 
    Percussiveness is a coverage consequence, not an envelope setting. Event
    rate is share ÷ duration. Chaos reads as discrete events only at small
@@ -280,30 +316,45 @@ from the chaos/texture remainder before share allocation. Do not fold flow
 back into chaos. Filled translating silhouettes stay calm; 2D scatter is
 not flow.
 
-Regime borders (overlay + Field % + scheduler pools):
+Regime borders (overlay + Field % + scheduler pools) — membership only:
 
-  Calm     connected similar colour, large evenly filled mass. A solid
-           block that sits still or slides cell→adjacent cell as a
-           continuous body stays here (moving-bar, filled stamps / ribbons
-           that translate as fixed silhouettes).
-  Static   temporally still, spatially dissimilar (texture).
-  Osc      confirmed periodic cells (period 2..8).
-  Flow     a colour that travels by correspondence. Members (or 4×4
+  Calm     connected similar colour + κ (including 1-cell-wide still
+           lines: similarity along the line, 8-connected join). One body;
+           may sit or slide as a continuous mass (moving-bar, filled
+           stamps / ribbons / 1-cell-wide bars that translate as fixed
+           silhouettes). Fill is not a membership gate.
+  Static   still remainder (δ below chaos floor); not Calm / Osc / Flow.
+           Frozen mixed detail is the typical case — not “one solid colour”.
+  Osc      sitting confirmed period 2..8. Travelling period-looking cells
+           are stripped. Wavelength-2 site-revisit with cancelling hops
+           (train tracks, checkerboards) stays Osc. Periods longer than
+           8 on a coherent mass stay Calm.
+  Flow     similarity travel by correspondence. Members (or 4×4
            colour-blocks) match a nearby same-colour site last frame
            along a shared heading. Colour stays itself (no hue tint walk).
            Dashed streams, wavefronts, dithered sliding texture, and
            denser cascades count if heading is consistent and the pack is
            not a filled stamp. Thin travelling colour may ride the edge
-           of a calm mass.
+           of a calm mass. Pack COM is untrusted when it jumps on wrapping
+           structures — velocity may keep block correspondence then.
+           Stair-step +x/+y is still a diagonal heading. Confirmed Flow
+           may pulse at a member blink period.
            Confirm ~8 steps + travel floor ≥ ~1.5 cells. Size ~4 (keep 3).
-           Field mode colour bin is ignored so motion *wake* does not
-           glue into flow; a travelling rare hue is kept.
-           Reject: solid high-fill slabs; high persist with filled AABB
+           Field mode colour bin is ignored as a still-bg *wake*; if most
+           of that bin is itself changing, it is a travelling sheet and
+           is kept. Value flicker of one hue still matches; hue tint
+           walks do not.
+           Geometry may be a stream, cascade, wavefront, or a dithered
+           2D sheet — not a silhouette requirement. Isolated scatter
+           and filled stamps stay out.
+           Reject (stamp-fill / persist / density — not Calm membership):
+           solid high-fill slabs; high persist with filled AABB
            (sliding bodies); stamp-like density / packT; emerging
            oscillators that are sitting still; isolated 2D scatter;
            scramble-as-one-flow; stationary flicker.
            Two mono-colour streams may coexist. No “moving static” pool.
   Chaos    changing remainder — not periodic, not coherent correspondence.
+           Spatial mix alone does not make Chaos (frozen noise is Static).
 
 Overlay (one colour per regime, not per region id): gold calm, grey static,
 orange chaos, blue osc, green flow. Drawn as 1px outlines at display
@@ -312,12 +363,21 @@ get L-brackets and a COM mark; chaos is edge fragments. Live grains are
 ticks on the source waveform under the field, not dots on the CA.
 
 Detection (cheap): 4×4 spatial×colour blocks → match each to the previous
-same-hue block → cluster by colour + heading + lane. Not flood-fill.
+same-hue block → cluster by colour + heading + lane, or nearby same-heading
+sheet bins. Not flood-fill. Two interacting mono-colour streams may coexist;
+four-plus mixed hues sharing one rounded vel still look like a field shift.
 Track identity may follow colour+size when COM jumps (wrapping fields).
+Value flicker of one hue still matches; hue tint walks do not.
+Confirmed tracks keep last-good hop/density EMAs when a matched sample
+would fail emit — so overlay and budget meters do not blank while the
+track is still held.
 
 Flow grain laws:
 
-  - Share ∝ Σ flow.regionArea (occupied patch, same as Flow %).
+  - Share ∝ Σ flow.regionArea (occupied patch, including gaps). A confirmed
+    flow whose patch is at least a quarter-seat gets a floor of one seat.
+    Member-cell grid fraction is an observation detail, not the DATA budget
+    meter.
   - Spawn on trailing-edge member cells (start of hop motion), never the
     COM or dilated gaps. Extra concurrent grains space along the heading.
   - Pack-to-share; duration in a mid chaos–calm band from packing density
@@ -421,8 +481,7 @@ Live pipeline
 ------------------------------------------------------------------------------
 
   Utomata → FrameObserver
-    → FieldObserver (δ, s, κ + region extract; chaos bag; oscillator groups;
-                     flow groups)
+    → FieldObserver (δ, s, κ; Osc → Calm → Flow → Chaos/Static remainder)
     → GrainScheduler (five area-share pools; polar HSV material; X→pan +
                       channel mix; absolute Y; freeze-at-spawn window;
                       region-bound pan/Y/channelMix follow; flow conveyor)
@@ -488,7 +547,8 @@ neutral; balance matches area weighting.
 
 Failure: constant repeating texture; curated voices; fixed posts; aesthetic
 mood engines; mid-grain glitchy scrub chasing; chaos winning the mix by firing
-more; or “granular synth controlled by CA.”
+more; chaos phase-locked to the CA display clock (identical DUR_MIN choir);
+or “granular synth controlled by CA.”
 
 
 ------------------------------------------------------------------------------

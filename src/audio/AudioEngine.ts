@@ -52,6 +52,9 @@ export class AudioEngine {
   private stopWaiters: Array<() => void> = [];
   private bank: SpectralBank | null = null;
   private started = false;
+  private muted = false;
+  private outputGain = 1;
+  private muteGain: GainNode | null = null;
   private stats: AudioStats | null = null;
 
   get isReady(): boolean {
@@ -73,6 +76,15 @@ export class AudioEngine {
     );
   }
 
+  /** Speakers on: engine running and not muted. */
+  get isAudible(): boolean {
+    return this.isEnabled && !this.muted;
+  }
+
+  get isMuted(): boolean {
+    return this.muted;
+  }
+
   get isRecording(): boolean {
     return this.recording;
   }
@@ -91,6 +103,26 @@ export class AudioEngine {
 
   getStats(): AudioStats | null {
     return this.stats;
+  }
+
+  getOutputGain(): number {
+    return this.outputGain;
+  }
+
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    this.applySpeakerGain();
+  }
+
+  setOutputGain(gain: number): void {
+    this.outputGain = Math.max(0, Math.min(1, gain));
+    this.applySpeakerGain();
+  }
+
+  private applySpeakerGain(): void {
+    if (this.muteGain) {
+      this.muteGain.gain.value = this.muted ? 0 : this.outputGain;
+    }
   }
 
   async stop(): Promise<RecordingResult | null> {
@@ -223,9 +255,12 @@ export class AudioEngine {
           }
         };
 
-        // grain → recorder (passthrough) → speakers
+        // grain → recorder (passthrough) → mute → speakers
+        this.muteGain = this.ctx.createGain();
+        this.applySpeakerGain();
         this.node.connect(this.recorderNode);
-        this.recorderNode.connect(this.ctx.destination);
+        this.recorderNode.connect(this.muteGain);
+        this.muteGain.connect(this.ctx.destination);
       }
 
       if (this.ctx.state === "suspended") {
@@ -236,6 +271,7 @@ export class AudioEngine {
       }
 
       this.started = this.ctx.state === "running";
+      this.applySpeakerGain();
 
       if (this.bank && this.node) {
         this.sendSource(this.bank);
@@ -247,6 +283,7 @@ export class AudioEngine {
       this.recordRight = [];
       this.node = null;
       this.recorderNode = null;
+      this.muteGain = null;
       if (this.ctx) {
         await this.ctx.close().catch(() => undefined);
         this.ctx = null;

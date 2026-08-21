@@ -24,12 +24,20 @@ Grid 128×128 @ 30 steps/s. Default measure: last 7 s of 14 s
 
 Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 
+Regime membership (brief = observer): Osc → Calm → Flow → leftover split by δ
+into Chaos (changing) or Static (still; code `textured`). A solid never-changing
+colour field is **Calm**, not Static. Frozen mixed detail is **Static**. Solid
+translating silhouettes stay **Calm** (persist); gappy correspondence travel is
+**Flow** (hop). Scenario *names* like `uniform-static` are historical harness
+labels — trust Ground truth / Observer lines for the regime.
+
 ---
 
 ## uniform-static
 
 - **Simulates:** One solid colour, never changes.
-- **Ground truth:** 100% calm; zero temporal δ.
+- **Ground truth:** 100% **Calm** (connected similar colour + κ; zero temporal δ).
+  Not the Static regime — Static is still *remainder*, not one filled colour.
 - **Observer:** calm% ≈ 100; chaos% ≈ 0; one region.
 - **Audio:** calm wash at area share (~64 concurrent), long grains (DUR_MAX),
   centred pan/yNorm, low spectral flux; mean Q high (focused).
@@ -39,7 +47,8 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 ## hue-drift
 
 - **Simulates:** Uniform field, hue rotates slowly (~55 s full cycle).
-- **Ground truth:** Still one calm mass; tiny continuous δ; not rhythmic.
+- **Ground truth:** Still one **Calm** mass; tiny continuous δ; not rhythmic;
+  not Osc (period ≫ 8 steps).
 - **Observer:** calm% ≈ 100.
 - **Audio:** calm packing; sampleCenter drifts with polar hue angle;
   flux near static on a flat source spectrum.
@@ -49,7 +58,8 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 ## frozen-noise
 
 - **Simulates:** Per-cell random colours, frozen forever.
-- **Ground truth:** Spatially textured, temporally static.
+- **Ground truth:** **Static** regime — temporally still remainder (spatially
+  mixed). Not Chaos (no change); not Calm (no connected similar-colour mass).
 - **Observer:** ≥95% static/textured.
 - **Audio:** texture wash at share, long grains, wide pan/yNorm (≥0.7), mean Q
   low vs uniform (gated by mean-Q, not flux).
@@ -59,15 +69,17 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 
 ## checkerboard-static
 
-- **Simulates:** Static checkerboard contrast 0.3.
-- **Ground truth:** Textured stasis (no temporal change).
-- **Observer/Audio:** same class as frozen-noise.
-- **Assertions:** investigate stage 4; render sites/flux with other statics.
+- **Simulates:** Checkerboard contrast 0.3, never changes.
+- **Ground truth:** Two interleaved **Calm** masses — same-value cells
+  8-connect on diagonals, so this is not Static leftover. (Frozen mixed
+  detail without a connected similar-colour mass is Static; see frozen-noise.)
+- **Observer/Audio:** calm% ≈ 100; two regions; long calm grains.
+- **Assertions:** investigate stage 4 (calm%, not static%); render sites/flux.
 
 ## half-half
 
-- **Simulates:** Left half uniform static; right half fresh noise every step.
-- **Ground truth:** ~50/50 calm vs true chaos.
+- **Simulates:** Left half one solid colour (still); right half fresh noise every step.
+- **Ground truth:** ~50/50 **Calm** vs **Chaos** (left is Calm, not Static).
 - **Observer:** calm% in [45, 55].
 - **Audio:** calm wash left; chaos right at share/duration rate (~1100 Hz ideal
   after DUR_MIN 0.03); pool RMS balanced within ~6 dB.
@@ -77,8 +89,8 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 ## moving-bar
 
 - **Simulates:** 8-wide vertical bar moving +1 cell/step on uniform bg.
-- **Ground truth:** Large calm bg + moving bar as a calm region (solid
-  translating colour is not flow). Edge δ is real chaos.
+- **Ground truth:** Large calm bg + moving bar as a **Calm** region (persist —
+  solid translating colour is not Flow). Edge δ is real Chaos.
 - **Observer:** largest-region velX ≈ 0.88–1.0; Flow % ≈ 0.
 - **Audio:** background sites stay put (anchor via circular concentration);
   bar tracks. Dominant-pool pan/yNorm ≤0.35/0.30.
@@ -87,16 +99,20 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 ## full-flicker
 
 - **Simulates:** Every cell random every step.
-- **Ground truth:** 100% chaos.
+- **Ground truth:** 100% **Chaos** (changing remainder). Scramble is not Flow.
 - **Observer:** chaos% ≥ 99; Flow % = 0 (scramble is not flow).
-- **Audio:** dense chaos at share/DUR_MIN (~2133 Hz ideal); concurrent ≈64;
-  CHAOS_EVENTS_MAX_HZ (4000) must not bind.
+- **Audio:** dense chaos at share / bag-mean duration (~2133 Hz ideal when
+  mean → DUR_MIN); concurrent ≈64; CHAOS_EVENTS_MAX_HZ (4000) must not bind.
+  Per-grain duration is a spray around that mean (raw cell δ vs bag mean;
+  CHAOS_DUR_SPREAD / CHAOS_DUR_EXP), not a lock to one CA frame — p5/p95
+  ratio clearly above 1.
 - **Assertions:** investigate stage 1/5; render stage 3/5 + chaos sites ≥500.
 
 ## blinker-fast
 
-- **Simulates:** 40×40 centre block alternates A/B every step (period 2); static bg.
-- **Ground truth:** ~1600 oscillator cells at 15 Hz; not chaos.
+- **Simulates:** 40×40 centre block alternates A/B every step (period 2); still bg.
+- **Ground truth:** ~1600 **Osc** cells at 15 Hz (sitting period 2); not Chaos.
+  Background is Calm.
 - **Observer:** oscillator group period 2, ≥1000 cells.
 - **Audio:** pulse-locked osc bursts ~15/s (envelope left at 0.04/0.2); ≤2
   chaos ev/s from block.
@@ -106,14 +122,15 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 
 - **Simulates:** Same 40×40 block cycles through 6 HSV hues (one per step) →
   fundamental period 6 at 5 Hz.
-- **Ground truth:** Oscillator period 6.
+- **Ground truth:** **Osc** period 6 (sitting); not Chaos.
 - **Audio:** osc bursts ~5/s; ≤2 chaos ev/s from the block.
 - **Assertions:** stage 6.
 
 ## breathing-uniform
 
 - **Simulates:** Whole field one colour; HSV value breathes sinusoidally (period 90 steps).
-- **Ground truth:** Calm with small nonzero δ̄ (below chaos threshold).
+- **Ground truth:** **Calm** with small nonzero δ̄ (below chaos floor). Not Osc
+  (period ≫ 8 steps); not Chaos.
 - **Audio:** inter-grain scrub advances sampleCenter; level may breathe but
   unit-energy flux stays near static (value≠spectrum).
 - **Assertions:** investigate stage 7 sampleCenter spread ≥0.005; render
@@ -122,7 +139,9 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 ## gradient-static
 
 - **Simulates:** Horizontal hue gradient, never changes.
-- **Ground truth:** Large-scale spatial variation, zero temporal change → not chaos.
+- **Ground truth:** Zero temporal change → not Chaos. Adjacent similar hues join
+  as multiple **Calm** regions across the width (not one Static bag of mixed
+  leftover — connected similar colour still qualifies as Calm).
 - **Audio:** many calm regions across the width; pan spread ≥0.7; RMS near
   uniform (±1 dB target, see log if marginal).
 - **Assertions:** investigate stage 4; render stage 3/4.
@@ -163,10 +182,10 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 
 ## hue-bands
 
-- **Simulates:** Eight static vertical bands, 16 columns each, band k at HSV
+- **Simulates:** Eight still vertical bands, 16 columns each, band k at HSV
   hue = k×0.02, sat 0.8, value 0.8.
-- **Ground truth:** Adjacent-band RGB distance vs `regionColourEps` (0.12)
-  decides whether bands merge or split.
+- **Ground truth:** Each band is a candidate **Calm** mass. Adjacent-band RGB
+  distance vs `regionColourEps` (0.12) decides whether bands merge or split.
 - **Purpose:** Read off where the colour gate actually splits calm masses.
   Print RGB distance + region count. No verify assertions yet.
 
@@ -174,32 +193,34 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 
 - **Simulates:** Uniform calm colour; every 30th step HSV value jumps for 2
   steps then returns (period 1.0 s).
-- **Ground truth:** Period inside `rhythmMinSec`..`rhythmMaxSec` with a clear
-  dip for `RHYTHM_DIP`; expect detected periodSec ≈ 1.0 and confidence ≥ 0.72.
+- **Ground truth:** Remains **Calm** (not Osc — scheduler rhythm on a coherent
+  mass). Period inside `rhythmMinSec`..`rhythmMaxSec` with a clear dip for
+  `RHYTHM_DIP`; expect detected periodSec ≈ 1.0 and confidence ≥ 0.72.
 - **Purpose:** Pulsing calm can phase grain fires with visible change —
   breathing-uniform's 3 s period is out of range.
 
 ## identity-quadrants
 
-- **Simulates:** Four static quadrants at matched luminance — left grey
+- **Simulates:** Four still quadrants at matched luminance — left grey
   (sat 0), right saturated; upper/lower halves.
-- **Ground truth:** Isolates identity axes — sat→window half-width, X→pan,
-  Y→cutoff — without loudness confounding.
+- **Ground truth:** Four **Calm** masses (connected similar colour). Isolates
+  identity axes — sat→window half-width, X→pan, Y→cutoff — without loudness
+  confounding.
 - **Purpose:** Isolates identity axes for a single listen.
 
 ## osc-field
 
 - **Simulates:** Whole grid alternates between two distinct colours every step
   (period 2).
-- **Ground truth:** One large period-2 oscillator group (~100% of field),
-  share ~55 — a whole-field oscillator.
+- **Ground truth:** One large period-2 **Osc** group (~100% of field), share
+  ~55 — a whole-field sitting oscillator (not Chaos, not Calm).
 - **Purpose:** Harness coverage for a whole-share osc burst at the extreme.
   Pulse-mod assert applies when present.
 
 ## flow-dots
 
 - **Simulates:** Sparse same-colour particles, widely spaced, all moving +x.
-- **Ground truth:** Not a flow region (2D scatter). Changing specks are chaos.
+- **Ground truth:** Not Flow (isolated 2D scatter). Changing specks are **Chaos**.
 - **Observer:** Flow % = 0. Overlay: orange chaos edge fragments, no green.
 - **Audio:** chaos pool (four/five-pool remainder); no flow grains.
 - **Assertions:** `scripts/verify-phase1.mjs` (widely spaced dots are not flow).
@@ -207,14 +228,15 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 ## flow-dense
 
 - **Simulates:** 5×5 packed particles 3 cells apart, one colour, moving +1 x.
-- **Ground truth:** Similarity travel — one flow group. DATA Flow % is
-  member cells / grid (a 5×5 pack is ~0.2% of 128²). Scheduler share uses
-  regionArea (occupied patch). Overlay green is dilated for visibility.
+- **Ground truth:** **Flow** — similarity travel (hop), one flow group. DATA
+  FLOW meter is grain-budget concurrent/share (not member-cell %). Scheduler
+  share uses regionArea (occupied patch); patches ≥¼ seat get a floor of 1 voice.
+  Overlay green is dilated for visibility only.
 - **Observer:** Flow after ~8 steps of consistent heading + travel floor
   (~1.5 cells). Similarity travel (colour correspondence), not pack-COM.
-  Overlay green outlines. Solid translating blocks (`moving-bar`) stay calm.
-  Diagonal / dashed / vertical-train / denser cascade streams also confirm
-  (verify-phase1). Colour stays itself — no tint glue.
+  Overlay green outlines. Solid translating blocks (`moving-bar`) stay Calm
+  (persist). Diagonal / dashed / vertical-train / denser cascade streams also
+  confirm (verify-phase1). Colour stays itself — no tint glue.
 - **Audio:** fifth pool spends area share from regionArea; piece-grains on
   member cells with packing→mid duration band; pan/Y follow via FLOW_ID_BASE
   hop-velocity conveyor. Chaos bag excludes flow cells.
@@ -240,3 +262,12 @@ Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 - **Simulates:** Several 2×3 same-colour clumps spaced along +y hop.
 - **Ground truth:** Flow (denser uneven cascade — not an evenly filled calm mass).
 - **Assertions:** verify-phase1 denser multi-cell cascade case.
+
+## flow-dither
+
+- **Simulates:** A 2D band of same-hue speckles (~42% fill) translating +1 x.
+- **Ground truth:** Flow (dithered sliding texture / heading-connected sheet).
+  Not a filled stamp; not isolated scatter.
+- **Observer:** Flow after confirm; overlay green on the speckle band.
+- **Assertions:** verify-phase1 dither sheet; two interacting hues can confirm;
+  value-flicker same-hue stream still confirms.

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Generated investigation reports
+scripts/.chaos-stutter-report.json

@@ -20,6 +20,7 @@ export interface ControlsHandlers {
   onToggleExplore: () => boolean;
   onSelectSimSource: (id: string) => void;
   onArmAudio: () => Promise<void>;
+  onSetOutputGain: (gain: number) => void;
 }
 
 export interface AudioMeterStats {
@@ -71,6 +72,7 @@ export interface ControlsApi {
   setDataOpen: (open: boolean) => void;
   setSimSource: (id: string) => void;
   setHasSource: (has: boolean) => void;
+  setOutputGain: (gain: number) => void;
   setStats: (s: {
     step: number;
     fps: number;
@@ -90,13 +92,13 @@ function icon(svg: string): string {
 const ICO = {
   pause: `<svg width="24" height="24" viewBox="0 0 12 12"><rect x="2.5" y="2" width="2.5" height="8" fill="currentColor"/><rect x="7" y="2" width="2.5" height="8" fill="currentColor"/></svg>`,
   play: `<svg width="24" height="24" viewBox="0 0 12 12"><path fill="currentColor" d="M3 2v8l8-4z"/></svg>`,
-  rec: `<svg width="24" height="24" viewBox="0 0 12 12"><rect x="3" y="3" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1"/></svg>`,
-  recOn: `<svg width="24" height="24" viewBox="0 0 12 12"><rect x="3" y="3" width="6" height="6" fill="currentColor"/></svg>`,
+  rec: `<svg width="24" height="24" viewBox="0 0 12 12"><circle cx="6" cy="6" r="3.2" fill="none" stroke="currentColor" stroke-width="1"/></svg>`,
+  recOn: `<svg width="24" height="24" viewBox="0 0 12 12"><circle cx="6" cy="6" r="3.2" fill="currentColor"/></svg>`,
   overlay: icon(
     `<path d="M2 4V2h2"/><path d="M8 2h2v2"/><path d="M10 8v2H8"/><path d="M4 10H2V8"/>`,
   ),
-  wave: icon(
-    `<path d="M1 6h1l1-3 1 6 1-4 1 2H11"/>`,
+  load: icon(
+    `<path d="M6 1.5v7"/><path d="M3.2 6.2 6 9l2.8-2.8"/><path d="M2 10.5h8"/>`,
   ),
   audio: icon(
     `<path d="M2 4.5h2.5L7 2v8L4.5 7.5H2z" fill="currentColor" stroke="none"/><path d="M8.5 5c.7.4.7 1.6 0 2"/><path d="M10 4.2c1.2.7 1.2 2.9 0 3.6"/>`,
@@ -105,7 +107,7 @@ const ICO = {
     `<path d="M8.5 3.3A3.6 3.6 0 1 1 6 2.4"/><path d="M8.5 1.5v2.2H6.4"/>`,
   ),
   dice: `<svg width="24" height="24" viewBox="0 0 12 12" fill="currentColor"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="4" cy="4" r="0.8"/><circle cx="8" cy="4" r="0.8"/><circle cx="6" cy="6" r="0.8"/><circle cx="4" cy="8" r="0.8"/><circle cx="8" cy="8" r="0.8"/></svg>`,
-  explore: `<svg width="24" height="24" viewBox="0 0 12 12" fill="currentColor"><rect x="5" y="5" width="2" height="2"/><rect x="5" y="1" width="2" height="2"/><rect x="9" y="5" width="2" height="2"/><rect x="5" y="9" width="2" height="2"/><rect x="1" y="5" width="2" height="2"/></svg>`,
+  explore: `<svg width="24" height="24" viewBox="0 0 12 12" fill="currentColor"><rect x="4.15" y="4.15" width="3.7" height="3.7"/><rect x="5.25" y="0.35" width="1.5" height="1.5"/><rect x="9.15" y="1.4" width="1.5" height="1.5"/><rect x="10.15" y="5.25" width="1.5" height="1.5"/><rect x="9.15" y="9.1" width="1.5" height="1.5"/><rect x="5.25" y="10.15" width="1.5" height="1.5"/><rect x="1.35" y="9.1" width="1.5" height="1.5"/><rect x="0.35" y="5.25" width="1.5" height="1.5"/><rect x="1.35" y="1.4" width="1.5" height="1.5"/></svg>`,
 };
 
 function ticks(frac: number): string {
@@ -115,10 +117,9 @@ function ticks(frac: number): string {
   );
 }
 
-function formatPct(frac: number): string {
-  const pct = frac * 100;
-  if (pct > 0 && pct < 0.05) return "<0.1";
-  return `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}`;
+/** Concurrent / allocated seats for a regime pool. */
+function formatSpend(active: number, share: number): string {
+  return `${Math.round(active)}/${Math.round(share)}`;
 }
 
 export function mountControls(
@@ -146,10 +147,16 @@ export function mountControls(
           <div class="data-meta">
             <span>SPEND</span><b id="st-spend">—</b>
             <span>BUDGET</span><b id="st-budget">—</b>
-            <span>CLIP</span><b id="st-peak">—</b>
             <span>STEP</span><b id="st-step">0</b>
           </div>
-          <p class="data-hint">Sonic Laws V5 — HSV polar material (frozen window) · pan/Y/L-R follow · neutral loudness</p>
+          <div class="data-out" id="vu" title="Drag to set output">
+            <span class="k">OUTPUT</span>
+            <div class="vu-track">
+              <div class="vu-leds" id="tk-out"></div>
+              <div class="vu-cap" id="vu-cap"></div>
+            </div>
+            <span class="n" id="st-out">—</span>
+          </div>
           <label class="data-row" style="margin-top:6px">
             <span class="k">SIM</span>
             <select id="sim-source">
@@ -161,8 +168,8 @@ export function mountControls(
       </aside>
     </nav>
     <nav class="hud-corner hud-bl">
-      <button type="button" class="hud-cell" id="audio-toggle" title="Audio">${ICO.audio}</button>
-      <label class="hud-cell" id="load-btn" title="Load audio">${ICO.wave}
+      <button type="button" class="hud-cell" id="audio-toggle" title="Mute">${ICO.audio}</button>
+      <label class="hud-cell" id="load-btn" title="Load audio">${ICO.load}
         <input id="file" type="file" accept="audio/*,.wav,.mp3,.aiff,.aif,.ogg" hidden />
       </label>
       <button type="button" class="hud-cell" id="reset" title="Reset colours">${ICO.reset}</button>
@@ -178,14 +185,14 @@ export function mountControls(
   `;
   parent.appendChild(root);
 
-  const readout = document.createElement("div");
-  readout.className = "readout";
-  readout.innerHTML = `<span class="eq-tokens" id="eq-tokens"></span><span class="eq-meta" id="eq-meta"></span>`;
+  const caption = document.createElement("div");
+  caption.className = "caption";
+  caption.innerHTML = `<div class="coord" id="eq-meta"></div><div class="readout"><span class="eq-tokens" id="eq-tokens"></span></div>`;
   const scope = document.getElementById("scope");
-  (scope ?? parent).appendChild(readout);
+  (scope ?? parent).appendChild(caption);
 
-  const tokensEl = readout.querySelector("#eq-tokens") as HTMLElement;
-  const metaEl = readout.querySelector("#eq-meta") as HTMLElement;
+  const tokensEl = caption.querySelector("#eq-tokens") as HTMLElement;
+  const metaEl = caption.querySelector("#eq-meta") as HTMLElement;
   const pauseBtn = root.querySelector("#pause") as HTMLButtonElement;
   const audioBtn = root.querySelector("#audio-toggle") as HTMLButtonElement;
   const recordBtn = root.querySelector("#record-toggle") as HTMLButtonElement;
@@ -201,6 +208,57 @@ export function mountControls(
     exploreBtn,
     ...depthBtns,
   ];
+  const vuEl = root.querySelector("#vu") as HTMLElement;
+  const vuCap = root.querySelector("#vu-cap") as HTMLElement;
+  const vuLedsEl = root.querySelector("#tk-out") as HTMLElement;
+  const VU_N = 20;
+  vuLedsEl.innerHTML = Array.from({ length: VU_N }, (_, i) => {
+    const zone = i >= 18 ? "red" : i >= 14 ? "ora" : "grn";
+    return `<i class="vu-led ${zone}"></i>`;
+  }).join("");
+  const vuLeds = [...vuLedsEl.querySelectorAll("i")];
+
+  function setVuLevel(frac: number) {
+    const n = Math.max(0, Math.min(VU_N, Math.round(frac * VU_N)));
+    for (let i = 0; i < VU_N; i++) vuLeds[i]!.classList.toggle("is-lit", i < n);
+  }
+
+  function setVuCap(gain: number) {
+    vuCap.style.width = `${Math.max(0, Math.min(1, gain)) * 100}%`;
+  }
+
+  function gainFromPointer(e: PointerEvent): number {
+    const track = vuEl.querySelector(".vu-track") as HTMLElement;
+    const box = track.getBoundingClientRect();
+    if (box.width <= 0) return 0;
+    return Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
+  }
+
+  let draggingVu = false;
+  vuEl.addEventListener("pointerdown", (e) => {
+    draggingVu = true;
+    vuEl.setPointerCapture(e.pointerId);
+    const g = gainFromPointer(e);
+    setVuCap(g);
+    handlers.onSetOutputGain(g);
+  });
+  vuEl.addEventListener("pointermove", (e) => {
+    if (!draggingVu) return;
+    const g = gainFromPointer(e);
+    setVuCap(g);
+    handlers.onSetOutputGain(g);
+  });
+  vuEl.addEventListener("pointerup", () => {
+    draggingVu = false;
+  });
+  vuEl.addEventListener("pointercancel", () => {
+    draggingVu = false;
+  });
+
+  function formatPeakDb(peak: number): string {
+    if (peak <= 0.0001) return "−∞ dB";
+    return `${(20 * Math.log10(peak)).toFixed(1)} dB`;
+  }
 
   function renderTokens(program: TypeUProgram | null, eq: string) {
     tokensEl.replaceChildren();
@@ -266,8 +324,9 @@ export function mountControls(
     handlers.onRandomEquation();
   });
   audioBtn.addEventListener("click", () => {
-    void handlers.onToggleAudio().then((enabled) => {
-      audioBtn.classList.toggle("is-on", enabled);
+    void handlers.onToggleAudio().then((audible) => {
+      audioBtn.classList.toggle("is-on", audible);
+      audioBtn.title = audible ? "Mute" : "Unmute";
     });
   });
   for (const btn of depthBtns) {
@@ -355,8 +414,9 @@ export function mountControls(
       pauseBtn.title = paused ? "Play" : "Pause";
       pauseBtn.classList.toggle("is-on", !paused);
     },
-    setAudioEnabled(enabled) {
-      audioBtn.classList.toggle("is-on", enabled);
+    setAudioEnabled(audible) {
+      audioBtn.classList.toggle("is-on", audible);
+      audioBtn.title = audible ? "Mute" : "Unmute";
     },
     setRecording(recording) {
       setRecordingUi(recording);
@@ -376,6 +436,9 @@ export function mountControls(
     setHasSource(has) {
       loadBtn.classList.toggle("is-on", has);
     },
+    setOutputGain(gain) {
+      setVuCap(gain);
+    },
     setStats(s) {
       (root.querySelector("#st-step") as HTMLElement).textContent = String(s.step);
       const f = s.field;
@@ -385,29 +448,39 @@ export function mountControls(
           if (el) el.textContent = "—";
         }
       } else {
-        (root.querySelector("#st-calm") as HTMLElement).textContent = formatPct(f.calmPct);
+        const budget = Math.max(1, f.budget);
+        const shareCalm = f.shareCalm ?? 0;
+        const shareTexture = f.shareTexture ?? 0;
+        const shareChaos = f.shareChaos ?? 0;
+        const shareOsc = f.shareOsc ?? 0;
+        const shareFlow = f.shareFlow ?? 0;
+        // Regime meters = grain-budget use (concurrent/share), not field cell %.
+        (root.querySelector("#st-calm") as HTMLElement).textContent =
+          formatSpend(f.calmGrains, shareCalm);
         (root.querySelector("#st-static") as HTMLElement).textContent =
-          typeof f.staticPct === "number" ? formatPct(f.staticPct) : "—";
-        (root.querySelector("#st-chaos") as HTMLElement).textContent = formatPct(f.chaosPct);
+          formatSpend(f.textureGrains ?? 0, shareTexture);
+        (root.querySelector("#st-chaos") as HTMLElement).textContent =
+          formatSpend(f.chaosGrains, shareChaos);
         (root.querySelector("#st-osc") as HTMLElement).textContent =
-          typeof f.oscPct === "number" ? formatPct(f.oscPct) : "—";
+          formatSpend(f.oscGrains ?? 0, shareOsc);
         (root.querySelector("#st-flow") as HTMLElement).textContent =
-          typeof f.flowPct === "number" ? formatPct(f.flowPct) : "—";
-        setBar("#tk-calm", f.calmPct);
-        setBar("#tk-static", f.staticPct ?? 0);
-        setBar("#tk-chaos", f.chaosPct);
-        setBar("#tk-osc", f.oscPct ?? 0);
-        setBar("#tk-flow", f.flowPct ?? 0);
+          formatSpend(f.flowGrains ?? 0, shareFlow);
+        setBar("#tk-calm", shareCalm / budget);
+        setBar("#tk-static", shareTexture / budget);
+        setBar("#tk-chaos", shareChaos / budget);
+        setBar("#tk-osc", shareOsc / budget);
+        setBar("#tk-flow", shareFlow / budget);
         (root.querySelector("#st-budget") as HTMLElement).textContent =
           `${f.predictedActive}/${f.budget}`;
-        const fmt = (a: number, sh: number) => `${Math.round(a)}/${Math.round(sh)}`;
         (root.querySelector("#st-spend") as HTMLElement).textContent =
-          `c ${fmt(f.calmGrains, f.shareCalm ?? 0)} · s ${fmt(f.textureGrains ?? 0, f.shareTexture ?? 0)} · x ${fmt(f.chaosGrains, f.shareChaos ?? 0)} · o ${fmt(f.oscGrains ?? 0, f.shareOsc ?? 0)} · f ${fmt(f.flowGrains ?? 0, f.shareFlow ?? 0)}`;
+          `c ${formatSpend(f.calmGrains, shareCalm)} · s ${formatSpend(f.textureGrains ?? 0, shareTexture)} · x ${formatSpend(f.chaosGrains, shareChaos)} · o ${formatSpend(f.oscGrains ?? 0, shareOsc)} · f ${formatSpend(f.flowGrains ?? 0, shareFlow)}`;
       }
       const m = s.meter;
-      (root.querySelector("#st-peak") as HTMLElement).textContent = m
-        ? m.peak.toFixed(2)
+      const peak = m ? Math.min(1, m.peak) : 0;
+      (root.querySelector("#st-out") as HTMLElement).textContent = m
+        ? formatPeakDb(peak)
         : "—";
+      setVuLevel(peak);
     },
   };
 }

@@ -4,11 +4,11 @@ import type { AudioStats } from "../audio/AudioEngine.ts";
 
 /** One colour per regime — diagnosis, not region identity. */
 export const REGIME_HEX = {
-  calm: "#c4a35a",
-  tex: "#96969b",
-  chaos: "#e64824",
-  osc: "#3782be",
-  flow: "#46af78",
+  calm: "#e8c04a",
+  tex: "#c2c2c8",
+  chaos: "#ff3d1f",
+  osc: "#3aa0ff",
+  flow: "#2ee08a",
 } as const;
 
 /**
@@ -59,7 +59,7 @@ export class RegionOverlay {
     const cw = css.w / gridW;
     const ch = css.h / gridH;
 
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 2;
     ctx.lineCap = "butt";
     ctx.lineJoin = "miter";
     ctx.setLineDash([]);

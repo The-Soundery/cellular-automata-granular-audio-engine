@@ -62,9 +62,23 @@ export const FIELD_OBS = {
    */
   oscClusterJoin: 2,
   /** Max cells a colour may travel in one step and still count as flow. */
-  flowSearchRadius: 12,
+  flowSearchRadius: 14,
   /** Same scale as regionColourEps — a travelling colour must stay itself. */
   flowColourEps: 0.12,
+  /**
+   * Hue wrap distance (0..0.5) for same-colour match when RGB eps fails.
+   * Value flicker of one hue is still that colour; tint walks are not.
+   */
+  flowHueEps: 0.04,
+  /** Saturation window paired with flowHueEps. */
+  flowSatEps: 0.28,
+  /** Below this sat, hue is unstable — RGB eps only (greys). */
+  flowSatMin: 0.2,
+  /**
+   * Chromaticity (RGB / sum) distance for value flicker of one colour.
+   * Scaled RGB stays near 0; random scramble does not.
+   */
+  flowChromaEps: 0.07,
   /** Frames of consistent heading before a flow is confirmed (~0.3s at 26fps). */
   flowConfirmSteps: 8,
   /**
@@ -80,6 +94,11 @@ export const FIELD_OBS = {
   flowVelEps: 0.85,
   /** Colour occupying more than this fraction of the grid is background, unless it is changing. */
   flowCommonFrac: 0.25,
+  /**
+   * Skip the mode colour only as a still-bg wake. If this fraction of that
+   * bin is itself active, the colour is travelling (dithered sheet) — keep it.
+   */
+  flowModeWakeFrac: 0.32,
   /**
    * Flow is organised *change*: member cells must be temporally active.
    * Same floor as chaos, so a still colour block cannot be flow.
@@ -98,7 +117,7 @@ export const FIELD_OBS = {
    */
   flowScrambleFrac: 0.72,
   /** Block budget when the field is scrambling. */
-  flowMaxBlocksScramble: 96,
+  flowMaxBlocksScramble: 160,
   /**
    * Overlay dilate radius (cells). Detection no longer flood-fills here.
    */
@@ -110,8 +129,15 @@ export const FIELD_OBS = {
   flowStreamJoin: 22,
   /** Max cross-track width (cells) relative to shared heading when chaining. */
   flowLaneWidth: 8,
+  /**
+   * Same-heading blocks within this Chebyshev bin gap join as a 2D sheet
+   * even when they fail the thin-lane test. 2 stays below sparse-dot spacing.
+   */
+  flowSheetCheb: 2,
   /** Min heading cosine to stitch two moving blocks into one stream. */
   flowStitchHeadingCos: 0.5,
+  /** Unconfirmed track match: heading may bend this far (cos) before ID break. */
+  flowTrackHeadingCos: 0.35,
   /** New flow: at least this many active cells in the cluster. */
   flowMinCellsTight: 4,
   /** Keep tracking / measure velocity down to this size. */
@@ -129,6 +155,13 @@ export const FIELD_OBS = {
   /** Both axes must be at least this thick for the solid-fill reject. */
   flowSolidMinSpan: 4,
   /**
+   * Wide+tall bbox with fill below this is 2D scatter (scramble dust), not a
+   * dithered sheet. Sheets occupy their patch; flicker does not.
+   */
+  flowScatterFillMax: 0.12,
+  /** Min bbox fraction of the grid (both axes) to apply the scatter reject. */
+  flowScatterSpanFrac: 0.55,
+  /**
    * Fraction of blob cells with a same-colour calm Chebyshev neighbour.
    * Only rejects dense/low-hop packs (stamp glued to a mass). Thin travelling
    * colour may sit on a calm edge (live wavefronts).
@@ -138,20 +171,21 @@ export const FIELD_OBS = {
   flowMinStraightness: 0.35,
   /**
    * If this fraction of members have an emerging oscillator period, defer
-   * flow emit (confirmed osc already excluded via oscMask).
+   * flow emit while the pack is still slow. Detection may see oscMask cells
+   * (dashed streams); confirmed Flow then punches those cells out of Osc.
    */
   flowEmergingOscFrac: 0.5,
   /**
    * Mean fraction of Chebyshev-1 neighbours that are also members.
    * At/above this the blob is stamp-like (solid body), not a gappy pattern.
-   * Raised so denser joined cascades can still count as flow.
+   * Raised so denser joined cascades / dithered sheets can still count as flow.
    */
-  flowMaxLocalDensity: 0.72,
+  flowMaxLocalDensity: 0.8,
   /**
    * Member cells / dilated footprint cap — travelling stamps fill the patch;
-   * sparse / uneven packs sit below. Raised for denser cascades.
+   * sparse / uneven packs sit below. Raised for denser cascades and sheets.
    */
-  flowMaxPackT: 0.65,
+  flowMaxPackT: 0.72,
   /** EMA blend for local density during confirm. */
   flowDensityEma: 0.35,
   /** Reject absurd COM jumps (noise matching), keep fast blobs (~5 cells/frame). */
@@ -250,6 +284,8 @@ export interface FlowGroup {
   meanG: number;
   meanB: number;
   cells: Uint32Array;
+  /** Modal site period on members (0 = none). Pulses Flow grains; exclusive of Osc. */
+  period: number;
 }
 
 /** Confirmed periodic cells grouped by period (re-derived every frame). */
@@ -285,6 +321,8 @@ export interface FieldObservation {
   chaosAreaFraction: number;
   texturedAreaFraction: number;
   flowAreaFraction: number;
+  /** Per-frame candidate reject counts (overlay debug / verify). */
+  flowRejects: Record<string, number>;
 }
 
 type PrevRegion = {
@@ -360,6 +398,9 @@ type FlowCluster = {
   cells: number[];
   comX: number;
   comY: number;
+  /** Circular concentration about each axis (1 = localised, 0 = wraps torus). */
+  comConcX: number;
+  comConcY: number;
   width: number;
   height: number;
   meanR: number;
@@ -411,6 +452,7 @@ export class FieldObserver {
   private prevOscClusters: PrevOscCluster[] = [];
   private primed = false;
   private flowFracDisp = 0;
+  private flowRejects: Record<string, number> = {};
   private last: FieldObservation;
 
   constructor(width: number, height: number) {
@@ -475,6 +517,7 @@ export class FieldObserver {
     this.prevOscClusters = [];
     this.primed = false;
     this.flowFracDisp = 0;
+    this.flowRejects = {};
     this.last = emptyObservation(
       this.width,
       this.height,
@@ -530,11 +573,13 @@ export class FieldObserver {
     this.pushHistory(current);
     this.updateOscillators(current);
     this.suppressTravellingOscillators(current, previous);
-    const oscillators = this.buildOscillatorGroups(current);
-
+    // Calm excludes sitting Osc; Flow may still inspect Osc-looking cells
+    // (dashed streams). Confirmed Flow then punches Osc so bags stay exclusive.
     const coherent = this.extractRegions(current);
     const flows = this.extractFlows(current, previous, coherent);
     const flowCells = this.markFlowFootprint(flows);
+    this.punchFlowFromOscillators(flows);
+    const oscillators = this.buildOscillatorGroups(current);
     const measured = flowCells / n;
     if (measured >= this.flowFracDisp) {
       this.flowFracDisp = measured;
@@ -574,6 +619,7 @@ export class FieldObserver {
       chaosAreaFraction: chaotic.area / n,
       texturedAreaFraction: textured.area / n,
       flowAreaFraction: this.flowFracDisp,
+      flowRejects: this.flowRejects,
     };
     return this.last;
   }
@@ -649,6 +695,10 @@ export class FieldObserver {
           y * w + ((x - 1 + w) % w),
           ((y + 1) % h) * w + x,
           ((y - 1 + h) % h) * w + x,
+          ((y + 1) % h) * w + ((x + 1) % w),
+          ((y + 1) % h) * w + ((x - 1 + w) % w),
+          ((y - 1 + h) % h) * w + ((x + 1) % w),
+          ((y - 1 + h) % h) * w + ((x - 1 + w) % w),
         ];
         for (const j of nIdx) {
           if (!this.calmMask[j] || this.labels[j]! >= 0) continue;
@@ -841,11 +891,16 @@ export class FieldObserver {
       this.prevFlows = [];
       this.prevFlowClusters = [];
       this.prevFlowBlocks = [];
+      this.flowRejects = {};
       return [];
     }
 
     const { width: w, height: h } = this;
     const n = w * h;
+    const rejects: Record<string, number> = {};
+    const bump = (key: string) => {
+      rejects[key] = (rejects[key] ?? 0) + 1;
+    };
     const dMin = FIELD_OBS.flowDeltaMin;
     const skipNow = new Uint8Array(n);
     let skipped = 0;
@@ -853,17 +908,17 @@ export class FieldObserver {
       // Do not skip oscMask here: dashed streams revisit sites every 2 steps
       // and look like period-2 at the cell, but are flow in aggregate.
       // Confirmed still blinkers fail travel/speed; emergingOscDefer remains.
-      if (this.calmMask[i] || this.deltaSmooth[i]! < dMin) {
+      if (this.calmMask[i] || (this.deltaSmooth[i]! < dMin && this.delta[i]! < dMin)) {
         skipNow[i] = 1;
         skipped += 1;
       }
     }
     const changing = n - skipped;
-    const scrambling =
-      changing > n * FIELD_OBS.flowScrambleFrac && this.prevFlows.length === 0;
+    const scrambling = changing > n * FIELD_OBS.flowScrambleFrac;
     const blockCap = scrambling
       ? FIELD_OBS.flowMaxBlocksScramble
       : FIELD_OBS.flowMaxBlocks;
+    if (scrambling) bump("scramble");
 
     const blocks = this.accumulateFlowBlocks(
       current,
@@ -871,22 +926,26 @@ export class FieldObserver {
       skipNow,
       blockCap,
     );
-    this.matchBlockCorrespondence(blocks, this.prevFlowBlocks);
+    const busy = changing > n * 0.4;
+    this.matchBlockCorrespondence(blocks, this.prevFlowBlocks, busy);
     // Cluster by colour + heading + lane (similarity travel), not pack-COM.
     let clusters = this.clusterFlowBlocks(blocks);
     // Pack velocity: cluster COM correspondence (block votes are too noisy
     // inside 4×4 bins). Block vels already informed the stitch.
-    this.matchClusterVelocity(clusters, this.prevFlowClusters);
+    this.matchClusterVelocity(clusters, this.prevFlowClusters, busy);
     this.suppressClusterFieldShift(clusters);
     this.prevFlowBlocks = blocks;
     this.prevFlowClusters = clusters;
-    clusters = clusters.filter((c) => clusterLooksLikeFlow(c, w, h));
+    clusters = clusters.filter((c) => {
+      if (clusterLooksLikeFlow(c, w, h)) return true;
+      bump("shape");
+      return false;
+    });
 
     const flows: FlowGroup[] = [];
     const usedCluster = new Set<number>();
     const usedPrev = new Set<number>();
     const nextPrev: PrevFlow[] = [];
-    const colourEps = FIELD_OBS.idColourEps;
     const maxDist = FIELD_OBS.flowSearchRadius;
     const need = FIELD_OBS.flowConfirmSteps;
     const holdMax = FIELD_OBS.flowHoldFrames;
@@ -897,34 +956,38 @@ export class FieldObserver {
     const duplicatesCalm = (c: FlowCluster, velX: number, velY: number) =>
       coherent.some((r) => {
         if (
-          rgbDelta(
+          !flowColoursMatch(
             c.meanR,
             c.meanG,
             c.meanB,
             r.meanR,
             r.meanG,
             r.meanB,
-          ) > FIELD_OBS.flowColourEps
+          )
         ) {
           return false;
-        }
-        const speed = Math.hypot(velX, velY);
-        const rSpeed = Math.hypot(r.velX, r.velY);
-        if (Math.hypot(velX - r.velX, velY - r.velY) < FIELD_OBS.flowVelEps) {
-          return true;
         }
         const comDist = Math.hypot(
           toroidalDelta(c.comX, r.comX, w),
           toroidalDelta(c.comY, r.comY, h),
         );
         if (comDist > maxDist) return false;
+        const speed = Math.hypot(velX, velY);
+        const rSpeed = Math.hypot(r.velX, r.velY);
+        if (Math.hypot(velX - r.velX, velY - r.velY) < FIELD_OBS.flowVelEps) {
+          return true;
+        }
         if (speed < 1e-4 || rSpeed < FIELD_OBS.flowMinSpeedExit) return false;
         const cos = (velX * r.velX + velY * r.velY) / (speed * rSpeed);
         return cos >= 0.5;
       });
 
-    const rejectCluster = (c: FlowCluster, velX: number, velY: number) => {
-      if (duplicatesCalm(c, velX, velY)) return true;
+    const rejectCluster = (
+      c: FlowCluster,
+      velX: number,
+      velY: number,
+    ): string | null => {
+      if (duplicatesCalm(c, velX, velY)) return "calmDup";
       const stamp = memberAabbStats(c.cells, w, h);
       // Thin / gappy travelling colour may ride a calm mass (clip-3 wavefronts).
       // Only treat calm-adjacency as "edge of a stamp" when the pack is dense
@@ -934,7 +997,7 @@ export class FieldObserver {
           (stamp.fill >= FIELD_OBS.flowPersistFillReject &&
             stamp.minSpan >= 5) ||
           c.hopT < FIELD_OBS.flowMinHopT;
-        if (denseEdge) return true;
+        if (denseEdge) return "calmEdge";
       }
       // Sliding stamp: high persist + filled AABB with real 2D extent,
       // or large body with low hop churn (fragmented L still slides).
@@ -948,30 +1011,56 @@ export class FieldObserver {
         c.persistT >= FIELD_OBS.flowMaxPersistT &&
         (stampShape || stampHop)
       ) {
-        return true;
+        return "persistStamp";
       }
-      if (c.density >= FIELD_OBS.flowMaxLocalDensity) return true;
+      if (c.density >= FIELD_OBS.flowMaxLocalDensity) return "density";
       const packT = c.cells.length / Math.max(1, c.regionArea);
-      return packT > FIELD_OBS.flowMaxPackT;
+      return packT > FIELD_OBS.flowMaxPackT ? "packT" : null;
     };
 
-    const emit = (row: PrevFlow) => {
-      if (row.streak < need) return;
+    /** Emit confirmed flow; return false if a gate blocked (tallied in flowRejects). */
+    const emit = (row: PrevFlow): boolean => {
+      if (row.streak < need) {
+        bump("streak");
+        return false;
+      }
       const speed = Math.hypot(row.velX, row.velY);
-      if (speed < FIELD_OBS.flowMinSpeedExit) return;
+      if (speed < FIELD_OBS.flowMinSpeedExit) {
+        bump("speed");
+        return false;
+      }
       const directed = Math.abs(
         (row.accumDx * row.velX + row.accumDy * row.velY) / speed,
       );
-      if (directed < minTravel) return;
-      if (row.pathLength > 1e-3 && Math.hypot(row.accumDx, row.accumDy) / row.pathLength < minStraight) return;
-      if (row.slowFrames > row.streak * 0.7) return;
-      if (row.densityEma >= FIELD_OBS.flowMaxLocalDensity) return;
-      if (row.hopEma < FIELD_OBS.flowMinHopT) return;
+      if (directed < minTravel) {
+        bump("travel");
+        return false;
+      }
+      if (
+        row.pathLength > 1e-3 &&
+        Math.hypot(row.accumDx, row.accumDy) / row.pathLength < minStraight
+      ) {
+        bump("straight");
+        return false;
+      }
+      if (row.slowFrames > row.streak * 0.7) {
+        bump("slow");
+        return false;
+      }
+      if (row.densityEma >= FIELD_OBS.flowMaxLocalDensity) {
+        bump("emitDensity");
+        return false;
+      }
+      if (row.hopEma < FIELD_OBS.flowMinHopT) {
+        bump("emitHop");
+        return false;
+      }
       if (
         row.cells.length / Math.max(1, row.regionArea) >
         FIELD_OBS.flowMaxPackT
       ) {
-        return;
+        bump("emitPackT");
+        return false;
       }
       // Moving packs win over site-revisit "osc" (dashed streams look period-2).
       // Still / jittering emerging blinkers still defer.
@@ -979,7 +1068,8 @@ export class FieldObserver {
         speed < FIELD_OBS.flowMinSpeed &&
         this.emergingOscDefer(row.cells)
       ) {
-        return;
+        bump("oscDefer");
+        return false;
       }
       flows.push({
         id: row.id,
@@ -993,7 +1083,9 @@ export class FieldObserver {
         meanG: row.meanG,
         meanB: row.meanB,
         cells: row.cells,
+        period: this.flowSitePeriod(row.cells),
       });
+      return true;
     };
 
     for (let p = 0; p < this.prevFlows.length; p++) {
@@ -1011,12 +1103,32 @@ export class FieldObserver {
           prev.meanG,
           prev.meanB,
         );
-        if (colourD > colourEps) continue;
+        if (
+          busy
+            ? rgbDelta(
+                t.meanR,
+                t.meanG,
+                t.meanB,
+                prev.meanR,
+                prev.meanG,
+                prev.meanB,
+              ) > FIELD_OBS.flowColourEps
+            : !flowColoursMatch(
+                t.meanR,
+                t.meanG,
+                t.meanB,
+                prev.meanR,
+                prev.meanG,
+                prev.meanB,
+              )
+        ) {
+          continue;
+        }
         const confirmed = prev.streak >= need;
         const areaRatio =
           Math.min(t.cells.length, prev.cells.length) /
           Math.max(t.cells.length, prev.cells.length);
-        if (areaRatio < (confirmed ? 0.08 : 0.12)) continue;
+        if (areaRatio < (confirmed ? 0.08 : 0.06)) continue;
         const dist = Math.hypot(
           toroidalDelta(t.comX, prev.comX + prev.velX, w),
           toroidalDelta(t.comY, prev.comY + prev.velY, h),
@@ -1034,16 +1146,32 @@ export class FieldObserver {
       const t = clusters[best]!;
       const comDx = toroidalDelta(t.comX, prev.comX, w);
       const comDy = toroidalDelta(t.comY, prev.comY, h);
-      // Correspondence (block match) is the motion primitive. COM of the
-      // active pack is only a fallback when similarity travel is silent.
+      // Correspondence (block match) is the motion primitive. Prefer hop when
+      // it dominates COM; otherwise COM is the fallback. Absurd COM jumps
+      // (wrapping packs) keep block correspondence when it is usable.
       let instX = t.velX;
       let instY = t.velY;
       const blockSpeed = Math.hypot(instX, instY);
       const comSpeed = Math.hypot(comDx, comDy);
       const prevSpeed = Math.hypot(prev.velX, prev.velY);
-      if (blockSpeed < FIELD_OBS.flowMinSpeedExit) {
-        instX = comDx;
-        instY = comDy;
+      const comJump = comSpeed > FIELD_OBS.flowMaxSpeed;
+      const diagHop =
+        blockSpeed >= FIELD_OBS.flowMinSpeedExit &&
+        Math.abs(instX) >= FIELD_OBS.flowMinSpeedExit &&
+        Math.abs(instY) >= FIELD_OBS.flowMinSpeedExit;
+      const hopDominates =
+        blockSpeed >= FIELD_OBS.flowMinSpeedExit &&
+        (comJump ||
+          diagHop ||
+          blockSpeed >= comSpeed * FIELD_OBS.flowHopDominate);
+      if (!hopDominates) {
+        if (comSpeed >= FIELD_OBS.flowMinSpeedExit && !comJump) {
+          instX = comDx;
+          instY = comDy;
+        } else if (blockSpeed < FIELD_OBS.flowMinSpeedExit) {
+          instX = comDx;
+          instY = comDy;
+        }
       }
       let speed = Math.hypot(instX, instY);
       if (speed < FIELD_OBS.flowMinSpeedExit) {
@@ -1055,9 +1183,10 @@ export class FieldObserver {
           continue;
         }
       }
-      // Absurd COM jumps (wrapping structures): coast on previous heading.
+      // Absurd jumps with no usable correspondence: coast or drop.
       if (speed > FIELD_OBS.flowMaxSpeed) {
         if (
+          !comJump &&
           comSpeed <= FIELD_OBS.flowMaxSpeed &&
           comSpeed >= FIELD_OBS.flowMinSpeedExit
         ) {
@@ -1075,9 +1204,19 @@ export class FieldObserver {
       if (prev.streak < need && prevSpeed > 0.4 && speed > 0.4) {
         const cos =
           (instX * prev.velX + instY * prev.velY) / (speed * prevSpeed);
-        if (cos < 0.5) continue;
+        if (
+          cos < FIELD_OBS.flowTrackHeadingCos &&
+          !staircaseHeadingOk(prev.velX, prev.velY, instX, instY)
+        ) {
+          bump("heading");
+          continue;
+        }
       }
-      if (rejectCluster(t, instX, instY)) continue;
+      const reject = rejectCluster(t, instX, instY);
+      if (reject) {
+        bump(reject);
+        continue;
+      }
       usedCluster.add(best);
       usedPrev.add(p);
       const small =
@@ -1085,6 +1224,26 @@ export class FieldObserver {
       const slowAdd = speed < FIELD_OBS.flowMinSpeed ? 1 : 0;
       const densEma = FIELD_OBS.flowDensityEma;
       const hopEmaBlend = FIELD_OBS.flowHopEma;
+      let densityEma =
+        prev.densityEma + densEma * (t.density - prev.densityEma);
+      let hopEma = prev.hopEma + hopEmaBlend * (t.hopT - prev.hopEma);
+      // Confirmed tracks: never poison hop/density EMAs with a sample that
+      // would fail emit. A match that updated EMAs then failed emit left the
+      // track in prevFlows but off overlay/meters; hold-coast could not help.
+      const wasConfirmed = prev.streak >= need;
+      if (wasConfirmed) {
+        const densBad = densityEma >= FIELD_OBS.flowMaxLocalDensity;
+        const hopBad = hopEma < FIELD_OBS.flowMinHopT;
+        const prevOk =
+          prev.densityEma < FIELD_OBS.flowMaxLocalDensity &&
+          prev.hopEma >= FIELD_OBS.flowMinHopT;
+        if ((densBad || hopBad) && prevOk) {
+          if (densBad) bump("emaProtectDensity");
+          if (hopBad) bump("emaProtectHop");
+          densityEma = prev.densityEma;
+          hopEma = prev.hopEma;
+        }
+      }
       const row: PrevFlow = {
         id: prev.id,
         comX: t.comX,
@@ -1102,8 +1261,8 @@ export class FieldObserver {
         accumDy: prev.accumDy + instY,
         pathLength: prev.pathLength + speed,
         slowFrames: prev.slowFrames + slowAdd,
-        densityEma: prev.densityEma + densEma * (t.density - prev.densityEma),
-        hopEma: prev.hopEma + hopEmaBlend * (t.hopT - prev.hopEma),
+        densityEma,
+        hopEma,
         regionArea: t.regionArea,
         cells: Uint32Array.from(t.cells),
       };
@@ -1119,11 +1278,28 @@ export class FieldObserver {
     for (let i = 0; i < clusters.length; i++) {
       if (usedCluster.has(i)) continue;
       const t = clusters[i]!;
-      if (t.cells.length < minNewCells) continue;
+      if (t.cells.length < minNewCells) {
+        bump("size");
+        continue;
+      }
+      if (scrambling && t.density >= 0.45) {
+        bump("scrambleDens");
+        continue;
+      }
       const speed = Math.hypot(t.velX, t.velY);
-      if (speed < FIELD_OBS.flowMinSpeed) continue;
-      if (speed > FIELD_OBS.flowMaxSpeed) continue;
-      if (rejectCluster(t, t.velX, t.velY)) continue;
+      if (speed < FIELD_OBS.flowMinSpeed) {
+        bump("speed");
+        continue;
+      }
+      if (speed > FIELD_OBS.flowMaxSpeed) {
+        bump("maxSpeed");
+        continue;
+      }
+      const reject = rejectCluster(t, t.velX, t.velY);
+      if (reject) {
+        bump(reject);
+        continue;
+      }
       const row: PrevFlow = {
         id: this.nextFlowId++,
         comX: t.comX,
@@ -1167,6 +1343,7 @@ export class FieldObserver {
     }
 
     this.prevFlows = nextPrev;
+    this.flowRejects = rejects;
     return flows;
   }
 
@@ -1195,8 +1372,21 @@ export class FieldObserver {
       }
     }
     // Skip still-dominant background colour so motion *wake* does not become
-    // flow. Travelling rare hues are kept (clip-3 red-on-gold is a different bin).
-    const skipMode = modeCount > commonCut ? modeBin : -1;
+    // flow. Travelling rare hues are kept. If a large share of the mode bin
+    // is itself active, that colour is a sheet — keep it.
+    let skipMode = -1;
+    if (modeCount > commonCut) {
+      let modeActive = 0;
+      for (let i = 0; i < n; i++) {
+        if (skip[i]) continue;
+        if (colourBin(current.r[i]!, current.g[i]!, current.b[i]!) === modeBin) {
+          modeActive += 1;
+        }
+      }
+      if (modeActive < modeCount * FIELD_OBS.flowModeWakeFrac) {
+        skipMode = modeBin;
+      }
+    }
 
     // Spatially binned *per colour* so noise in the same 4×4 cannot muddy a
     // rare stream hue (busy live fields).
@@ -1312,6 +1502,7 @@ export class FieldObserver {
   private matchBlockCorrespondence(
     current: FlowBlock[],
     previous: FlowBlock[],
+    strictColour = false,
   ): void {
     if (previous.length === 0) return;
     const { width: w, height: h } = this;
@@ -1326,18 +1517,24 @@ export class FieldObserver {
       let bestDist = maxDist + 1e-6;
       for (let p = 0; p < previous.length; p++) {
         const prev = previous[p]!;
-        if (
-          rgbDelta(
-            cur.meanR,
-            cur.meanG,
-            cur.meanB,
-            prev.meanR,
-            prev.meanG,
-            prev.meanB,
-          ) > colourEps
-        ) {
-          continue;
-        }
+        const colourOk = strictColour
+          ? rgbDelta(
+              cur.meanR,
+              cur.meanG,
+              cur.meanB,
+              prev.meanR,
+              prev.meanG,
+              prev.meanB,
+            ) <= colourEps
+          : flowColoursMatch(
+              cur.meanR,
+              cur.meanG,
+              cur.meanB,
+              prev.meanR,
+              prev.meanG,
+              prev.meanB,
+            );
+        if (!colourOk) continue;
         const dist = Math.hypot(
           toroidalDelta(cur.comX, prev.comX, w),
           toroidalDelta(cur.comY, prev.comY, h),
@@ -1355,15 +1552,20 @@ export class FieldObserver {
     }
   }
 
-  /** Cluster COM correspondence — stable pack velocity after stitch. */
+  /**
+   * Cluster velocity after stitch. COM is the usual pack velocity; when COM
+   * jumps absurdly on a torus, keep the block correspondence vote instead.
+   */
   private matchClusterVelocity(
     current: FlowCluster[],
     previous: FlowCluster[],
+    strictColour = false,
   ): void {
     if (previous.length === 0) return;
     const { width: w, height: h } = this;
     const maxDist = FIELD_OBS.flowSearchRadius;
     const colourEps = FIELD_OBS.flowColourEps;
+    const maxSpeed = FIELD_OBS.flowMaxSpeed;
     const used = new Set<number>();
     const order = current.map((_, i) => i);
     order.sort(
@@ -1377,22 +1579,28 @@ export class FieldObserver {
       for (let p = 0; p < previous.length; p++) {
         if (used.has(p)) continue;
         const prev = previous[p]!;
-        if (
-          rgbDelta(
-            cur.meanR,
-            cur.meanG,
-            cur.meanB,
-            prev.meanR,
-            prev.meanG,
-            prev.meanB,
-          ) > colourEps
-        ) {
-          continue;
-        }
+        const colourOk = strictColour
+          ? rgbDelta(
+              cur.meanR,
+              cur.meanG,
+              cur.meanB,
+              prev.meanR,
+              prev.meanG,
+              prev.meanB,
+            ) <= colourEps
+          : flowColoursMatch(
+              cur.meanR,
+              cur.meanG,
+              cur.meanB,
+              prev.meanR,
+              prev.meanG,
+              prev.meanB,
+            );
+        if (!colourOk) continue;
         const areaRatio =
           Math.min(cur.cells.length, prev.cells.length) /
           Math.max(cur.cells.length, prev.cells.length);
-        if (areaRatio < 0.12) continue;
+        if (areaRatio < 0.08) continue;
         const dist = Math.hypot(
           toroidalDelta(cur.comX, prev.comX, w),
           toroidalDelta(cur.comY, prev.comY, h),
@@ -1406,8 +1614,13 @@ export class FieldObserver {
       if (best < 0) continue;
       const prev = previous[best]!;
       used.add(best);
-      cur.velX = toroidalDelta(cur.comX, prev.comX, w);
-      cur.velY = toroidalDelta(cur.comY, prev.comY, h);
+      const comDx = toroidalDelta(cur.comX, prev.comX, w);
+      const comDy = toroidalDelta(cur.comY, prev.comY, h);
+      const comSpeed = Math.hypot(comDx, comDy);
+      // Absurd COM jump — keep block correspondence already on the cluster.
+      if (comSpeed > maxSpeed) continue;
+      cur.velX = comDx;
+      cur.velY = comDy;
     }
   }
 
@@ -1440,10 +1653,9 @@ export class FieldObserver {
   }
 
   /**
-   * Join same-colour blocks that share a heading and a thin lane.
-   * Adjacent always merge. Longer gaps stitch by lane even before velocity
-   * exists (dashed streams / wavefronts). 2D scatter stays unglued because
-   * it fails lane geometry.
+   * Join same-colour blocks that share a heading.
+   * Adjacent always merge. Longer gaps stitch by lane (streams) or by nearby
+   * Chebyshev bins (dithered sheets). Isolated 2D scatter stays unglued.
    */
   private clusterFlowBlocks(blocks: FlowBlock[]): FlowCluster[] {
     if (blocks.length === 0) return [];
@@ -1453,7 +1665,7 @@ export class FieldObserver {
     const bh = Math.ceil(h / bin);
     const join = FIELD_OBS.flowStreamJoin;
     const lane = FIELD_OBS.flowLaneWidth;
-    const colourEps = FIELD_OBS.flowColourEps;
+    const sheetCheb = FIELD_OBS.flowSheetCheb;
     const minSpeed = FIELD_OBS.flowMinSpeedExit;
     const headingCos = FIELD_OBS.flowStitchHeadingCos;
     const velEps = FIELD_OBS.flowVelEps;
@@ -1475,8 +1687,7 @@ export class FieldObserver {
       for (let j = i + 1; j < blocks.length; j++) {
         const b = blocks[j]!;
         if (
-          rgbDelta(a.meanR, a.meanG, a.meanB, b.meanR, b.meanG, b.meanB) >
-          colourEps
+          !flowColoursMatch(a.meanR, a.meanG, a.meanB, b.meanR, b.meanG, b.meanB)
         ) {
           continue;
         }
@@ -1536,6 +1747,21 @@ export class FieldObserver {
           } else if (strip) {
             // Cold start / no vel yet: same-hue thin lane is similarity travel
             // waiting for a correspondence vote (dashes, wavefront edges).
+            chainable = true;
+          }
+        }
+        if (
+          !chainable &&
+          blockCheb <= sheetCheb &&
+          speedA >= minSpeed &&
+          speedB >= minSpeed
+        ) {
+          const cos =
+            (a.velX * b.velX + a.velY * b.velY) / (speedA * speedB);
+          if (
+            cos >= headingCos &&
+            Math.hypot(a.velX - b.velX, a.velY - b.velY) <= velEps
+          ) {
             chainable = true;
           }
         }
@@ -1624,6 +1850,8 @@ export class FieldObserver {
         cells,
         comX,
         comY,
+        comConcX: Math.hypot(sumXCos, sumXSin) / nCells,
+        comConcY: Math.hypot(sumYCos, sumYSin) / nCells,
         width: Math.max(1, (maxBx - minBx + 1) * bin),
         height: Math.max(1, (maxBy - minBy + 1) * bin),
         meanR: sumR / nCells,
@@ -1643,7 +1871,6 @@ export class FieldObserver {
 
   private clusterAdjacentToCalm(c: FlowCluster, field: RgbField): boolean {
     const { width: w, height: h } = this;
-    const colourEps = FIELD_OBS.flowColourEps;
     const need = FIELD_OBS.flowCalmAdjFrac;
     if (c.cells.length === 0) return false;
     // Sample up to 32 members for cost control.
@@ -1662,14 +1889,14 @@ export class FieldObserver {
           const j = ((y + dy + h) % h) * w + ((x + dx + w) % w);
           if (!this.calmMask[j]) continue;
           if (
-            rgbDelta(
+            flowColoursMatch(
               field.r[j]!,
               field.g[j]!,
               field.b[j]!,
               c.meanR,
               c.meanG,
               c.meanB,
-            ) <= colourEps
+            )
           ) {
             hit = true;
           }
@@ -1692,6 +1919,29 @@ export class FieldObserver {
     return emerging / cells.length >= FIELD_OBS.flowEmergingOscFrac;
   }
 
+  /** Modal confirmed site period on members, or 0. */
+  private flowSitePeriod(cells: Uint32Array): number {
+    if (cells.length === 0) return 0;
+    const counts = new Map<number, number>();
+    let hit = 0;
+    for (let c = 0; c < cells.length; c++) {
+      const p = this.oscPeriod[cells[c]!]!;
+      if (p < 2) continue;
+      hit += 1;
+      counts.set(p, (counts.get(p) ?? 0) + 1);
+    }
+    if (hit / cells.length < FIELD_OBS.flowEmergingOscFrac) return 0;
+    let best = 0;
+    let bestN = 0;
+    for (const [p, n] of counts) {
+      if (n > bestN) {
+        bestN = n;
+        best = p;
+      }
+    }
+    return best;
+  }
+
   /** Mark flow member cells for chaos punch-out (no expensive dilate). */
   private markFlowFootprint(flows: FlowGroup[]): number {
     this.flowMark.fill(0);
@@ -1708,6 +1958,23 @@ export class FieldObserver {
     return n;
   }
 
+  /**
+   * Confirmed Flow wins over Osc: clear period state on flow members so
+   * oscillator bags and grain share stay exclusive. Detection may still
+   * inspect Osc-looking cells before emit (dashed streams).
+   */
+  private punchFlowFromOscillators(flows: FlowGroup[]): void {
+    for (const f of flows) {
+      const cells = f.cells;
+      for (let c = 0; c < cells.length; c++) {
+        const i = cells[c]!;
+        this.oscMask[i] = 0;
+        this.oscPeriod[i] = 0;
+        this.oscStreak[i] = 0;
+      }
+    }
+  }
+
   private buildRemainder(
     coherent: CoherentRegion[],
     current: RgbField,
@@ -1720,6 +1987,7 @@ export class FieldObserver {
 
   private buildChaotic(coherent: CoherentRegion[]): ChaoticArea {
     const n = this.width * this.height;
+    const { width: w, height: h } = this;
     const inCalm = new Uint8Array(n);
     for (const r of coherent) {
       for (let i = 0; i < r.cells.length; i++) {
@@ -1737,6 +2005,24 @@ export class FieldObserver {
       if (inCalm[i] || this.oscMask[i] || this.flowMark[i]) continue;
       const d = this.deltaSmooth[i]!;
       if (d < chaosMin) continue;
+      // 3×3 δ blur leaks past chaosDeltaMin into neighbours of Osc/Flow/Calm
+      // cells. Skip leftover cells whose raw δ is still below the floor —
+      // independently flickering cells (raw δ high) stay Chaos.
+      if (this.delta[i]! < chaosMin) {
+        const x = i % w;
+        const y = (i / w) | 0;
+        let claimedNeighbour = false;
+        for (let dy = -1; dy <= 1 && !claimedNeighbour; dy++) {
+          for (let dx = -1; dx <= 1 && !claimedNeighbour; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const j = ((y + dy + h) % h) * w + ((x + dx + w) % w);
+            if (inCalm[j] || this.oscMask[j] || this.flowMark[j]) {
+              claimedNeighbour = true;
+            }
+          }
+        }
+        if (claimedNeighbour) continue;
+      }
       cells.push(i);
       sumD += d;
       sumK += this.coherence[i]!;
@@ -1938,12 +2224,14 @@ export class FieldObserver {
         const cr = current.r[i]!;
         const cg = current.g[i]!;
         const cb = current.b[i]!;
+        // Collect every nearest-distance match (skip same-cell). A single
+        // first-hit invents a heading on wavelength-2 lines / checkerboards
+        // where ±1 along the axis cancel when averaged.
         let bestDist = Infinity;
-        let bestDx = 0;
-        let bestDy = 0;
-        let found = false;
+        const matches: { dx: number; dy: number }[] = [];
         for (let dy = -hopR; dy <= hopR; dy++) {
           for (let dx = -hopR; dx <= hopR; dx++) {
+            if (dx === 0 && dy === 0) continue;
             const j = ((y + dy + h) % h) * w + ((x + dx + w) % w);
             const d = rgbDelta(
               cr,
@@ -1955,17 +2243,25 @@ export class FieldObserver {
             );
             if (d >= eps) continue;
             const dist = dx * dx + dy * dy;
-            if (dist >= bestDist) continue;
-            found = true;
-            bestDist = dist;
-            bestDx = dx;
-            bestDy = dy;
+            if (dist < bestDist) {
+              bestDist = dist;
+              matches.length = 0;
+              matches.push({ dx, dy });
+            } else if (dist === bestDist) {
+              matches.push({ dx, dy });
+            }
           }
         }
-        if (!found) continue;
+        if (matches.length === 0) continue;
         hopN += 1;
-        hopDx += bestDx;
-        hopDy += bestDy;
+        let cellDx = 0;
+        let cellDy = 0;
+        for (const m of matches) {
+          cellDx += m.dx;
+          cellDy += m.dy;
+        }
+        hopDx += cellDx / matches.length;
+        hopDy += cellDy / matches.length;
       }
 
       clusters.push({
@@ -1983,6 +2279,7 @@ export class FieldObserver {
 
     const usedPrev = new Set<number>();
     const nextPrev: PrevOscCluster[] = [];
+    const headingCosMin = FIELD_OBS.flowTrackHeadingCos;
     for (const c of clusters) {
       let best = -1;
       let bestDist: number = maxDist;
@@ -2004,14 +2301,19 @@ export class FieldObserver {
       let velY = 0;
       let prevStreak = 0;
       let comSpeed = 0;
+      let prevVelX = 0;
+      let prevVelY = 0;
       if (best >= 0) {
         const prev = this.prevOscClusters[best]!;
         usedPrev.add(best);
         prevStreak = prev.travelStreak;
+        prevVelX = prev.velX;
+        prevVelY = prev.velY;
         const rawVx = toroidalDelta(c.comX, prev.comX, w);
         const rawVy = toroidalDelta(c.comY, prev.comY, h);
         velX = prev.velX + (rawVx - prev.velX) * va;
         velY = prev.velY + (rawVy - prev.velY) * va;
+        // Only trust COM on localised clusters (wrapping rings have conc≈0).
         const useVx = c.concX >= concMin ? rawVx : 0;
         const useVy = c.concY >= concMin ? rawVy : 0;
         comSpeed = Math.hypot(useVx, useVy);
@@ -2019,19 +2321,38 @@ export class FieldObserver {
 
       const hopSpeed = Math.hypot(c.hopX, c.hopY);
       const hopTravel = c.hopFrac >= 0.5 && hopSpeed >= hopMin;
-      const travellingNow = comSpeed >= speedMin || hopTravel;
+      const comTravel = comSpeed >= speedMin;
+      let travellingNow = comTravel || hopTravel;
+      // Heading flip resets streak: sitting wavelength-2 lines wobble ±1
+      // along the axis; a translating blinker block keeps one heading.
+      if (travellingNow && prevStreak > 0) {
+        const prevSpeed = Math.hypot(prevVelX, prevVelY);
+        if (prevSpeed > 0.4) {
+          const curVx = hopTravel ? c.hopX : velX;
+          const curVy = hopTravel ? c.hopY : velY;
+          const curSpeed = Math.hypot(curVx, curVy);
+          if (curSpeed > 0.4) {
+            const cos =
+              (curVx * prevVelX + curVy * prevVelY) / (curSpeed * prevSpeed);
+            if (cos < headingCosMin) travellingNow = false;
+          }
+        }
+      }
       const travelStreak = travellingNow ? prevStreak + 1 : 0;
 
       if (travelStreak >= need) {
         for (const i of c.cells) this.oscMask[i] = 0;
       }
 
+      // Store the travel signal used for heading (hop when that drove travel).
+      const storeVx = hopTravel && hopSpeed >= comSpeed ? c.hopX : velX;
+      const storeVy = hopTravel && hopSpeed >= comSpeed ? c.hopY : velY;
       nextPrev.push({
         period: c.period,
         comX: c.comX,
         comY: c.comY,
-        velX,
-        velY,
+        velX: storeVx,
+        velY: storeVy,
         concX: c.concX,
         concY: c.concY,
         travelStreak,
@@ -2195,11 +2516,79 @@ export function rgbDelta(
   return Math.sqrt(dr * dr + dg * dg + db * db);
 }
 
+/** Same travelling colour: RGB eps, or same chromaticity (value flicker). */
+function flowColoursMatch(
+  r0: number,
+  g0: number,
+  b0: number,
+  r1: number,
+  g1: number,
+  b1: number,
+): boolean {
+  if (rgbDelta(r0, g0, b0, r1, g1, b1) <= FIELD_OBS.flowColourEps) return true;
+  const s0 = r0 + g0 + b0;
+  const s1 = r1 + g1 + b1;
+  if (s0 < 0.12 || s1 < 0.12) return false;
+  const dr = r0 / s0 - r1 / s1;
+  const dg = g0 / s0 - g1 / s1;
+  const db = b0 / s0 - b1 / s1;
+  if (Math.hypot(dr, dg, db) > FIELD_OBS.flowChromaEps) return false;
+  const a = rgbToHsvLite(r0, g0, b0);
+  const b = rgbToHsvLite(r1, g1, b1);
+  if (a.s < FIELD_OBS.flowSatMin || b.s < FIELD_OBS.flowSatMin) return false;
+  let dh = Math.abs(a.h - b.h);
+  if (dh > 0.5) dh = 1 - dh;
+  return dh <= FIELD_OBS.flowHueEps && Math.abs(a.s - b.s) <= FIELD_OBS.flowSatEps;
+}
+
+function rgbToHsvLite(
+  r: number,
+  g: number,
+  b: number,
+): { h: number; s: number; v: number } {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const v = max;
+  const d = max - min;
+  const s = max > 1e-6 ? d / max : 0;
+  if (d < 1e-6) return { h: 0, s, v };
+  let h: number;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return { h, s, v };
+}
+
 export function toroidalDelta(a: number, b: number, period: number): number {
   let d = a - b;
   if (d > period * 0.5) d -= period;
   if (d < -period * 0.5) d += period;
   return d;
+}
+
+/** Stair-step +x/+y is the same diagonal heading (4×4 bins chatter). */
+function staircaseHeadingOk(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): boolean {
+  const sax = axisSign(ax);
+  const say = axisSign(ay);
+  const sbx = axisSign(bx);
+  const sby = axisSign(by);
+  if (sax !== 0 && sbx !== 0 && sax !== sbx) return false;
+  if (say !== 0 && sby !== 0 && say !== sby) return false;
+  if ((sax !== 0 && sax === sbx) || (say !== 0 && say === sby)) return true;
+  if (sax !== 0 && sby !== 0 && sbx === 0 && say === 0) return true;
+  if (say !== 0 && sbx !== 0 && sby === 0 && sax === 0) return true;
+  return sax === sbx && say === sby;
+}
+
+function axisSign(v: number): number {
+  if (v > 0.35) return 1;
+  if (v < -0.35) return -1;
+  return 0;
 }
 
 function cellIoU(a: Uint32Array, b: Uint32Array): number {
@@ -2218,7 +2607,9 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-/** Inverse of mean squared colour distance to 8 neighbours (toroidal). */
+/** Inverse of mean squared colour distance to 8 neighbours (toroidal),
+ *  or along the best 1-cell spine (H / V / two diagonals) so a thin
+ *  same-colour line is coherent even when most 8-neighbours are background. */
 function localSimilarity(
   field: RgbField,
   x: number,
@@ -2245,8 +2636,29 @@ function localSimilarity(
       count += 1;
     }
   }
-  const meanVar = varSum / Math.max(1, count);
-  return 1 / (1 + meanVar * 8);
+  const s8 = 1 / (1 + (varSum / Math.max(1, count)) * 8);
+  const axes: [number, number][] = [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [1, -1],
+  ];
+  let sSpine = 0;
+  for (const [dx, dy] of axes) {
+    let axisVar = 0;
+    for (const sign of [-1, 1]) {
+      const nx = (x + sign * dx + w) % w;
+      const ny = (y + sign * dy + h) % h;
+      const j = ny * w + nx;
+      const dr = r0 - field.r[j]!;
+      const dg = g0 - field.g[j]!;
+      const db = b0 - field.b[j]!;
+      axisVar += dr * dr + dg * dg + db * db;
+    }
+    const s = 1 / (1 + (axisVar / 2) * 8);
+    if (s > sSpine) sSpine = s;
+  }
+  return s8 > sSpine ? s8 : sSpine;
 }
 
 /** One-pass 3×3 toroidal box blur of per-cell δ. */
@@ -2314,6 +2726,7 @@ function emptyObservation(
     chaosAreaFraction: 1,
     texturedAreaFraction: 0,
     flowAreaFraction: 0,
+    flowRejects: {},
   };
 }
 
@@ -2331,15 +2744,43 @@ function clusterLooksLikeFlow(
   gridH: number,
 ): boolean {
   if (c.cells.length < FIELD_OBS.flowMinCellsKeep) return false;
+  const speed = Math.hypot(c.velX, c.velY);
+  let thinStream = false;
+  if (speed >= FIELD_OBS.flowMinSpeedExit && c.cells.length > 0) {
+    const hx = c.velX / speed;
+    const hy = c.velY / speed;
+    let minC = Infinity;
+    let maxC = -Infinity;
+    for (let t = 0; t < c.cells.length; t++) {
+      const i = c.cells[t]!;
+      const x = i % gridW;
+      const y = (i / gridW) | 0;
+      const dx = toroidalDelta(x, c.comX, gridW);
+      const dy = toroidalDelta(y, c.comY, gridH);
+      const cross = dx * hy - dy * hx;
+      if (cross < minC) minC = cross;
+      if (cross > maxC) maxC = cross;
+    }
+    thinStream = maxC - minC <= FIELD_OBS.flowLaneWidth;
+  }
   if (
+    !thinStream &&
     c.width > gridW * FIELD_OBS.flowMaxSpanFrac &&
     c.height > gridH * FIELD_OBS.flowMaxSpanFrac
   ) {
     return false;
   }
+  const fill = c.cells.length / Math.max(1, c.width * c.height);
+  if (
+    !thinStream &&
+    c.width > gridW * FIELD_OBS.flowScatterSpanFrac &&
+    c.height > gridH * FIELD_OBS.flowScatterSpanFrac &&
+    fill < FIELD_OBS.flowScatterFillMax
+  ) {
+    return false;
+  }
   const spanOk =
     Math.min(c.width, c.height) >= FIELD_OBS.flowSolidMinSpan;
-  const fill = c.cells.length / Math.max(1, c.width * c.height);
   if (spanOk && fill >= FIELD_OBS.flowSolidFillMin) return false;
   if (c.density >= FIELD_OBS.flowMaxLocalDensity) return false;
   return true;

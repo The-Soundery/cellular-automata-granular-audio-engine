@@ -17,6 +17,25 @@ function assert(label, ok) {
   }
 }
 
+/** Confirmed Flow members must not also sit in Osc bags (exclusive order). */
+function assertOscFlowExclusive(label, obs) {
+  const flowCells = new Set();
+  for (const f of obs.flows ?? []) {
+    for (const i of f.cells) flowCells.add(i);
+  }
+  if (flowCells.size === 0) {
+    assert(`${label}: osc∩flow empty (no flow)`, true);
+    return;
+  }
+  let overlap = 0;
+  for (const g of obs.oscillators ?? []) {
+    for (const i of g.cells) {
+      if (flowCells.has(i)) overlap += 1;
+    }
+  }
+  assert(`${label}: osc∩flow empty`, overlap === 0);
+}
+
 // --- static tree checks ---
 const main = readFileSync(join(root, "src/main.ts"), "utf8");
 const fieldSrc = readFileSync(join(root, "src/field/FieldObserver.ts"), "utf8");
@@ -29,6 +48,14 @@ assert("main does not import FieldReducer", !/FieldReducer/.test(main));
 assert("observes δ / similarity / κ", /deltaEma/.test(fieldSrc) && /kappaThreshold/.test(fieldSrc));
 assert("soft colour gate", /regionColourEps/.test(fieldSrc));
 assert("κ hysteresis enter/exit", /kappaEnter/.test(fieldSrc) && /kappaExit/.test(fieldSrc));
+assert(
+  "confirmed flow EMAs are protected from emit-poison matches",
+  /emaProtectHop/.test(fieldSrc) && /emaProtectDensity/.test(fieldSrc),
+);
+assert(
+  "emit hop/density failures are tallied separately from match rejects",
+  /emitHop/.test(fieldSrc) && /emitDensity/.test(fieldSrc),
+);
 assert("fillRatio on regions", /fillRatio/.test(fieldSrc));
 assert("no per-cell coherence length", !/meanLength/.test(fieldSrc) && !/measureCoherenceLength/.test(fieldSrc));
 assert("extracts coherent regions", /extractRegions/.test(fieldSrc));
@@ -38,6 +65,15 @@ assert(
   "osc travel is stripped from sitting-period bags",
   /suppressTravellingOscillators/.test(fieldSrc),
 );
+assert(
+  "confirmed flow punches members out of oscillator bags",
+  /punchFlowFromOscillators/.test(fieldSrc),
+);
+assert(
+  "thin-line calm uses spine similarity and 8-connect",
+  /sSpine/.test(fieldSrc) && /staircaseHeadingOk/.test(fieldSrc),
+);
+assert("flow snapshots site period", /flowSitePeriod/.test(fieldSrc));
 
 // --- runtime synthetic field (via vite-less dynamic import of compiled? use tsx? ) ---
 // FieldObserver is TypeScript — run logic checks by spawning tsc-free duplicate test
@@ -234,7 +270,7 @@ async function runtimeCheck() {
     [18, 30],
   ];
   let flowPrev = bg;
-  for (let t = 0; t < 8; t++) {
+  for (let t = 0; t < 36; t++) {
     const flowCur = field((r, g, b, i) => {
       r[i] = 0.1;
       g[i] = 0.1;
@@ -330,6 +366,7 @@ async function runtimeCheck() {
     "flow cells are not also counted as chaos",
     ![...denseOut.chaotic.cells].some((i) => denseFlowCells.has(i)),
   );
+  assertOscFlowExclusive("dense pack", denseOut);
 
   const earlyObs = new FieldObserver(w, h);
   let earlyPrev = bg;
@@ -393,6 +430,7 @@ async function runtimeCheck() {
     "a dashed travelling stream is a flow",
     (streamObs.observation.flows ?? []).reduce((s, f) => s + f.area, 0) >= 10,
   );
+  assertOscFlowExclusive("dashed stream", streamObs.observation);
 
   // 10 spaced cells (gappy hop) — min-size gate; solid adjacent packs are calm.
   const pack10Obs = new FieldObserver(w, h);
@@ -623,6 +661,292 @@ async function runtimeCheck() {
     trainVelY > 0.7 && Math.abs(trainVelY) > Math.abs(trainVelX) * 1.5,
   );
 
+  // Spacing-2 short hopping train (wavelength-2 dash) — still Flow.
+  const hop2Obs = new FieldObserver(w, h);
+  let hop2Prev = bg;
+  for (let t = 0; t < 40; t++) {
+    const cur = field((r, g, b, i) => {
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+    });
+    const xDrift = (2 + Math.floor(t / 5) + w) % w;
+    const y0 = (4 + t + h) % h;
+    for (let k = 0; k < 10; k++) {
+      const i = ((y0 + k * 2) % h) * w + xDrift;
+      cur.r[i] = 0.2;
+      cur.g[i] = 0.9;
+      cur.b[i] = 0.35;
+    }
+    hop2Obs.observe(cur, hop2Prev);
+    hop2Prev = cur;
+  }
+  assert(
+    "a spacing-2 hopping train is a flow",
+    (hop2Obs.observation.flows ?? []).reduce((s, f) => s + f.area, 0) >= 6,
+  );
+  assertOscFlowExclusive("spacing-2 hop train", hop2Obs.observation);
+  assert(
+    "a spacing-2 hopping train keeps a site period",
+    (hop2Obs.observation.flows ?? []).some((f) => f.period === 2),
+  );
+
+  // Dashed diagonal train: hop +1,+1.
+  const diagTrainObs = new FieldObserver(w, h);
+  let diagTrainPrev = bg;
+  for (let t = 0; t < 40; t++) {
+    const cur = field((r, g, b, i) => {
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+    });
+    const x0 = (3 + t + w) % w;
+    const y0 = (4 + t + h) % h;
+    for (let k = 0; k < 10; k++) {
+      const i = ((y0 + k * 2) % h) * w + ((x0 + k * 2) % w);
+      cur.r[i] = 0.2;
+      cur.g[i] = 0.9;
+      cur.b[i] = 0.35;
+    }
+    diagTrainObs.observe(cur, diagTrainPrev);
+    diagTrainPrev = cur;
+  }
+  const diagTrainFlows = diagTrainObs.observation.flows ?? [];
+  const diagTrainArea = diagTrainFlows.reduce((s, f) => s + f.area, 0);
+  const diagTrainVelX =
+    diagTrainArea > 0
+      ? diagTrainFlows.reduce((s, f) => s + f.velX * f.area, 0) / diagTrainArea
+      : 0;
+  const diagTrainVelY =
+    diagTrainArea > 0
+      ? diagTrainFlows.reduce((s, f) => s + f.velY * f.area, 0) / diagTrainArea
+      : 0;
+  assert("a dashed diagonal train is a flow", diagTrainArea >= 6);
+  assert(
+    "diagonal train velocity has both +x and +y",
+    diagTrainVelX > 0.5 && diagTrainVelY > 0.5,
+  );
+
+  // Still 1-cell-wide strip → Calm (spine κ), not Flow / leftover Static-only.
+  const stillStripObs = new FieldObserver(w, h);
+  const stillStrip = field((r, g, b, i) => {
+    const x = i % w;
+    const y = (i / w) | 0;
+    if (y === 10) {
+      r[i] = 0.2;
+      g[i] = 0.9;
+      b[i] = 0.35;
+    } else {
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+    }
+  });
+  stillStripObs.observe(stillStrip, bg);
+  for (let t = 0; t < 12; t++) stillStripObs.observe(stillStrip, stillStrip);
+  const stillStripCalm = stillStripObs.observation.coherent.reduce(
+    (s, r) => s + r.area,
+    0,
+  );
+  assert("a still 1-cell strip is a calm region", stillStripCalm >= 24);
+  assert(
+    "a still 1-cell strip is not flow",
+    (stillStripObs.observation.flows ?? []).length === 0,
+  );
+
+  const stillDiagObs = new FieldObserver(w, h);
+  const stillDiag = field((r, g, b, i) => {
+    const x = i % w;
+    const y = (i / w) | 0;
+    if (x >= 2 && x < 28 && y === x) {
+      r[i] = 0.2;
+      g[i] = 0.9;
+      b[i] = 0.35;
+    } else {
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+    }
+  });
+  stillDiagObs.observe(stillDiag, bg);
+  for (let t = 0; t < 12; t++) stillDiagObs.observe(stillDiag, stillDiag);
+  assert(
+    "a still diagonal 1-cell strip is a calm region",
+    stillDiagObs.observation.coherent.reduce((s, r) => s + r.area, 0) >= 24,
+  );
+
+  // Travelling 1-cell-wide *solid* strip: persist silhouette → Calm, not Flow.
+  const slideStripObs = new FieldObserver(w, h);
+  let slidePrev = bg;
+  for (let t = 0; t < 40; t++) {
+    const cur = field((r, g, b, i) => {
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+    });
+    const x0 = (2 + t + w) % w;
+    for (let k = 0; k < 28; k++) {
+      const i = 10 * w + ((x0 + k) % w);
+      cur.r[i] = 0.2;
+      cur.g[i] = 0.9;
+      cur.b[i] = 0.35;
+    }
+    slideStripObs.observe(cur, slidePrev);
+    slidePrev = cur;
+  }
+  const slideCalm = slideStripObs.observation.coherent.filter(
+    (r) => r.meanG > 0.5,
+  );
+  const slideCalmArea = slideCalm.reduce((s, r) => s + r.area, 0);
+  const slideVelX =
+    slideCalmArea > 0
+      ? slideCalm.reduce((s, r) => s + r.velX * r.area, 0) / slideCalmArea
+      : 0;
+  assert(
+    "a travelling 1-cell solid strip is a calm region",
+    slideCalmArea >= 24,
+  );
+  assert(
+    "travelling 1-cell solid strip velocity is +x",
+    slideVelX > 0.7 && slideVelX < 1.4,
+  );
+  assert(
+    "a travelling 1-cell solid strip is not flow",
+    (slideStripObs.observation.flows ?? []).reduce((s, f) => s + f.area, 0) ===
+      0,
+  );
+
+  // Sitting wavelength-2 line: period-2 at sites, cancelling hops → Osc.
+  const sitLineObs = new FieldObserver(w, h);
+  let sitLinePrev = bg;
+  const sitLinePainted = new Set();
+  for (let t = 0; t < 24; t++) {
+    sitLinePainted.clear();
+    const cur = field((r, g, b, i) => {
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+    });
+    const phase = t % 2;
+    const x = 12;
+    const y0 = 8;
+    for (let k = 0; k < 10; k++) {
+      if (k % 2 !== phase) continue;
+      const i = (y0 + k) * w + x;
+      cur.r[i] = 0.2;
+      cur.g[i] = 0.9;
+      cur.b[i] = 0.35;
+      sitLinePainted.add(i);
+    }
+    sitLineObs.observe(cur, sitLinePrev);
+    sitLinePrev = cur;
+  }
+  const sitLineOsc = (sitLineObs.observation.oscillators ?? []).reduce(
+    (s, g) => s + g.area,
+    0,
+  );
+  const sitLineFlow = (sitLineObs.observation.flows ?? []).reduce(
+    (s, f) => s + f.area,
+    0,
+  );
+  const sitLineChaosPainted = [...sitLinePainted].filter((i) =>
+    [...sitLineObs.observation.chaotic.cells].includes(i),
+  ).length;
+  assert("a sitting spacing-2 blinker line is an oscillator", sitLineOsc >= 4);
+  assert("a sitting spacing-2 blinker line is not flow", sitLineFlow === 0);
+  assert(
+    "sitting blinker line painted cells are not chaos",
+    sitLineChaosPainted === 0,
+  );
+
+  // Full-height wrapping spacing-2 line: Osc (cancelling hops), not Chaos.
+  const wrapW = 64;
+  const wrapH = 64;
+  const wrapN = wrapW * wrapH;
+  function wrapField(fill) {
+    const r = new Float32Array(wrapN);
+    const g = new Float32Array(wrapN);
+    const b = new Float32Array(wrapN);
+    for (let i = 0; i < wrapN; i++) fill(r, g, b, i);
+    return { width: wrapW, height: wrapH, r, g, b };
+  }
+  const wrapObs = new FieldObserver(wrapW, wrapH);
+  let wrapPrev = wrapField((r, g, b) => {
+    r.fill(0.1);
+    g.fill(0.1);
+    b.fill(0.12);
+  });
+  const wrapPainted = new Set();
+  for (let t = 0; t < 24; t++) {
+    wrapPainted.clear();
+    const cur = wrapField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    const phase = t % 2;
+    const x = 12;
+    for (let y = 0; y < wrapH; y++) {
+      if (y % 2 !== phase) continue;
+      const i = y * wrapW + x;
+      cur.r[i] = 0.2;
+      cur.g[i] = 0.9;
+      cur.b[i] = 0.35;
+      wrapPainted.add(i);
+    }
+    wrapObs.observe(cur, wrapPrev);
+    wrapPrev = cur;
+  }
+  const wrapOsc = (wrapObs.observation.oscillators ?? []).reduce(
+    (s, g) => s + g.area,
+    0,
+  );
+  const wrapChaosPainted = [...wrapPainted].filter((i) =>
+    [...wrapObs.observation.chaotic.cells].includes(i),
+  ).length;
+  assert(
+    "a wrapping spacing-2 blinker line is an oscillator",
+    wrapOsc >= wrapH / 2 - 2,
+  );
+  assert(
+    "wrapping blinker line painted cells are not chaos",
+    wrapChaosPainted === 0,
+  );
+  assert(
+    "wrapping blinker line is not flow",
+    (wrapObs.observation.flows ?? []).reduce((s, f) => s + f.area, 0) === 0,
+  );
+
+  // 16×16 sitting checkerboard → Osc (cancelling orthogonal hops).
+  const checkObs = new FieldObserver(w, h);
+  let checkPrev = bg;
+  for (let t = 0; t < 24; t++) {
+    const phase = t % 2;
+    const cur = field((r, g, b, i) => {
+      const x = i % w;
+      const y = (i / w) | 0;
+      r[i] = 0.1;
+      g[i] = 0.1;
+      b[i] = 0.12;
+      if (x >= 8 && x < 24 && y >= 8 && y < 24 && (x + y) % 2 === phase) {
+        r[i] = 0.9;
+        g[i] = 0.25;
+        b[i] = 0.2;
+      }
+    });
+    checkObs.observe(cur, checkPrev);
+    checkPrev = cur;
+  }
+  const checkOsc = (checkObs.observation.oscillators ?? []).reduce(
+    (s, g) => s + g.area,
+    0,
+  );
+  assert("a sitting checkerboard is an oscillator", checkOsc >= 100);
+  assert(
+    "a sitting checkerboard is not flow",
+    (checkObs.observation.flows ?? []).reduce((s, f) => s + f.area, 0) === 0,
+  );
+
   // Filled L-stamp: high local density translating body — calm/chaos, not flow.
   const ellObs = new FieldObserver(w, h);
   let ellPrev = bg;
@@ -819,6 +1143,151 @@ async function runtimeCheck() {
     denseCascArea >= 10,
   );
 
+  // Dithered sheet: same-hue speckles occupying a 2D band, translating +1 x.
+  const ditherW = 64;
+  const ditherH = 64;
+  const ditherN = ditherW * ditherH;
+  function ditherField(fill) {
+    const r = new Float32Array(ditherN);
+    const g = new Float32Array(ditherN);
+    const b = new Float32Array(ditherN);
+    for (let i = 0; i < ditherN; i++) fill(r, g, b, i);
+    return { width: ditherW, height: ditherH, r, g, b };
+  }
+  const ditherBg = ditherField((r, g, b) => {
+    r.fill(0.1);
+    g.fill(0.1);
+    b.fill(0.12);
+  });
+  const ditherObs = new FieldObserver(ditherW, ditherH);
+  let ditherPrev = ditherBg;
+  for (let t = 0; t < 40; t++) {
+    const cur = ditherField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    const x0 = (8 + t + ditherW) % ditherW;
+    const y0 = 18;
+    const bw = 28;
+    const bh = 16;
+    for (let iy = 0; iy < bh; iy++) {
+      for (let ix = 0; ix < bw; ix++) {
+        if ((ix * 19 + iy * 47) % 100 >= 42) continue;
+        const i = ((y0 + iy) % ditherH) * ditherW + ((x0 + ix) % ditherW);
+        cur.r[i] = 0.92;
+        cur.g[i] = 0.78;
+        cur.b[i] = 0.22;
+      }
+    }
+    ditherObs.observe(cur, ditherPrev);
+    ditherPrev = cur;
+  }
+  const ditherArea = (ditherObs.observation.flows ?? []).reduce(
+    (s, f) => s + f.area,
+    0,
+  );
+  assert("a dithered translating speckle sheet is a flow", ditherArea >= 20);
+  assertOscFlowExclusive("dither sheet", ditherObs.observation);
+
+  // Once confirmed, matched updates must not blank emit via hop/density EMA poison.
+  let ditherGaps = 0;
+  let ditherEmitPoison = 0;
+  for (let t = 40; t < 100; t++) {
+    const cur = ditherField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    const bw = 28;
+    const bh = 16;
+    const x0 = (8 + t + ditherW) % ditherW;
+    const y0 = 18;
+    for (let iy = 0; iy < bh; iy++) {
+      for (let ix = 0; ix < bw; ix++) {
+        if ((ix * 19 + iy * 47) % 100 >= 42) continue;
+        const i = ((y0 + iy) % ditherH) * ditherW + ((x0 + ix) % ditherW);
+        cur.r[i] = 0.92;
+        cur.g[i] = 0.78;
+        cur.b[i] = 0.22;
+      }
+    }
+    ditherObs.observe(cur, ditherPrev);
+    ditherPrev = cur;
+    const flows = ditherObs.observation.flows ?? [];
+    if (flows.length === 0) ditherGaps += 1;
+    const rej = ditherObs.observation.flowRejects ?? {};
+    ditherEmitPoison += (rej.emitHop ?? 0) + (rej.emitDensity ?? 0);
+  }
+  assert(
+    "confirmed dither sheet stays emitted (no EMA-poison gaps)",
+    ditherGaps === 0,
+  );
+  assert(
+    "confirmed dither sheet does not emitHop/emitDensity fail",
+    ditherEmitPoison === 0,
+  );
+
+  // Two discrete hues in one sliding band: interacting streams, not tint-glue.
+  const multiObs = new FieldObserver(ditherW, ditherH);
+  let multiPrev = ditherBg;
+  const multiPal = [
+    [0.92, 0.78, 0.22],
+    [0.2, 0.75, 0.55],
+  ];
+  for (let t = 0; t < 40; t++) {
+    const cur = ditherField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    const x0 = (8 + t + ditherW) % ditherW;
+    const y0 = 18;
+    for (let iy = 0; iy < 16; iy++) {
+      for (let ix = 0; ix < 28; ix++) {
+        if ((ix * 19 + iy * 47) % 100 >= 42) continue;
+        const pal = multiPal[(ix + iy) % 2];
+        const i = ((y0 + iy) % ditherH) * ditherW + ((x0 + ix) % ditherW);
+        cur.r[i] = pal[0];
+        cur.g[i] = pal[1];
+        cur.b[i] = pal[2];
+      }
+    }
+    multiObs.observe(cur, multiPrev);
+    multiPrev = cur;
+  }
+  const multiArea = (multiObs.observation.flows ?? []).reduce(
+    (s, f) => s + f.area,
+    0,
+  );
+  assert("two interacting hues in a sliding sheet can be flow", multiArea >= 12);
+
+  // Same hue, value flicker: RGB eps would break; hue match must hold.
+  const pulseObs = new FieldObserver(ditherW, ditherH);
+  let pulsePrev = ditherBg;
+  for (let t = 0; t < 40; t++) {
+    const cur = ditherField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    const x0 = (6 + t + ditherW) % ditherW;
+    const v = t % 2 === 0 ? 1 : 0.45;
+    for (let k = 0; k < 10; k++) {
+      const i = (12 + k * 3) * ditherW + x0;
+      cur.r[i] = 0.95 * v;
+      cur.g[i] = 0.82 * v;
+      cur.b[i] = 0.2 * v;
+    }
+    pulseObs.observe(cur, pulsePrev);
+    pulsePrev = cur;
+  }
+  const pulseArea = (pulseObs.observation.flows ?? []).reduce(
+    (s, f) => s + f.area,
+    0,
+  );
+  assert("a value-flickering same-hue stream is still flow", pulseArea >= 8);
+
   assert(
     "a still calm blob is not flow",
     (out.flows ?? []).length === 0,
@@ -858,6 +1327,7 @@ async function runtimeCheck() {
     "a period-2 block is not a flow",
     (blinkObs.observation.flows ?? []).reduce((s, f) => s + f.area, 0) === 0,
   );
+  assertOscFlowExclusive("sitting blinker", blinkObs.observation);
 
   const travelBlink = new FieldObserver(w, h);
   let travelPrev = bg;

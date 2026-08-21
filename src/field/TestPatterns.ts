@@ -471,6 +471,61 @@ export const TEST_PATTERNS: TestPattern[] = [
     },
   },
   {
+    id: "flow-dither",
+    label: "Flow dither (sliding speckle sheet)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const bw = 40;
+      const bh = 24;
+      const x0 = (((16 + step) % w) + w) % w;
+      const y0 = Math.min(40, h - bh - 1);
+      for (let iy = 0; iy < bh; iy++) {
+        for (let ix = 0; ix < bw; ix++) {
+          const u = (ix * 19 + iy * 47) % 100;
+          if (u >= 42) continue;
+          const x = (x0 + ix) % w;
+          const y = (y0 + iy) % h;
+          const i = y * w + x;
+          field.r[i] = 0.92;
+          field.g[i] = 0.78;
+          field.b[i] = 0.22;
+        }
+      }
+    },
+  },
+  /**
+   * Sliding dither that packs denser every 10 steps for 3 frames.
+   * Repro for match→EMA→emit poison: hop/density EMAs dip while the track
+   * still matches, so emit can fail without a hold-coast miss.
+   */
+  {
+    id: "flow-hop-pulse",
+    label: "Flow hop pulse (EMA poison repro)",
+    fill(field, step) {
+      fillUniform(field, 0.1, 0.1, 0.12);
+      const { width: w, height: h } = field;
+      const bw = 40;
+      const bh = 24;
+      const x0 = (((16 + step) % w) + w) % w;
+      const y0 = Math.min(40, h - bh - 1);
+      const packPulse = step % 10 >= 7;
+      for (let iy = 0; iy < bh; iy++) {
+        for (let ix = 0; ix < bw; ix++) {
+          const u = (ix * 19 + iy * 47 + (packPulse ? step * 3 : 0)) % 100;
+          // Sparse travel most frames; denser (lower hop) during the pulse.
+          if (u >= (packPulse ? 78 : 42)) continue;
+          const x = (x0 + ix) % w;
+          const y = (y0 + iy) % h;
+          const i = y * w + x;
+          field.r[i] = 0.92;
+          field.g[i] = 0.78;
+          field.b[i] = 0.22;
+        }
+      }
+    },
+  },
+  {
     id: "chaos-blob-2pct",
     label: "Chaos blob 2%",
     fill(field, step) {

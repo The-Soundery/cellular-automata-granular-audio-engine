@@ -34,6 +34,8 @@ import "./style.css";
 const DEFAULT_SOURCE_URL = "/default-source.wav";
 const METER_UI_HZ = 5;
 const METER_EMA = 0.35;
+/** Softer than audio/δ meters — regime shares jump in whole seats. */
+const BUDGET_METER_EMA = 0.22;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app missing");
@@ -95,6 +97,20 @@ let smoothFieldDelta: {
   chaosT: number;
   calmMeanDelta: number;
   staticMeanDelta: number;
+} | null = null;
+/** Display-only EMA for DATA regime budget meters (not scheduler truth). */
+let smoothBudget: {
+  calmGrains: number;
+  chaosGrains: number;
+  textureGrains: number;
+  oscGrains: number;
+  flowGrains: number;
+  shareCalm: number;
+  shareTexture: number;
+  shareChaos: number;
+  shareOsc: number;
+  shareFlow: number;
+  predictedActive: number;
 } | null = null;
 let overlayVisible = false;
 let defaultSourcePromise: Promise<void> | null = null;
@@ -363,17 +379,15 @@ const controls = mountControls(app, {
   },
   async onToggleAudio() {
     try {
-      if (audio.isEnabled) {
-        const result = await audio.stop();
-        if (result) downloadRecording(result);
-        controls.setRecording(false);
-        audioStatus = audio.hasSource ? "stopped" : "idle";
-        smoothMeter = null;
+      if (audio.isAudible) {
+        audio.setMuted(true);
+        audioStatus = "muted";
         controls.setAudioEnabled(false);
         pushStats(true);
         return false;
       }
 
+      audio.setMuted(false);
       audioStatus = "starting…";
       pushStats(true);
       await audio.ensureRunning();
@@ -381,16 +395,14 @@ const controls = mountControls(app, {
         audioStatus = "loading default source…";
         pushStats(true);
         await ensureDefaultSource();
-      } else if (audio.contextState === "suspended") {
-        await audio.ensureRunning();
       }
 
-      audioStatus = audio.isReady
+      audioStatus = audio.isAudible
         ? "running"
-        : `blocked (${audio.contextState}) — click Enable again`;
-      controls.setAudioEnabled(audio.isEnabled);
+        : `blocked (${audio.contextState}) — click again`;
+      controls.setAudioEnabled(audio.isAudible);
       pushStats(true);
-      return audio.isEnabled;
+      return audio.isAudible;
     } catch (err) {
       console.error(err);
       audioStatus = "audio init failed";
@@ -458,15 +470,18 @@ const controls = mountControls(app, {
   async onArmAudio() {
     try {
       await audio.ensureRunning();
-      controls.setAudioEnabled(audio.isEnabled);
     } catch (err) {
       console.error(err);
     }
+  },
+  onSetOutputGain(gain) {
+    audio.setOutputGain(gain);
   },
   async onLoadAudio(file) {
     audioStatus = "decoding…";
     pushStats(true);
     try {
+      audio.setMuted(false);
       await audio.loadFile(file);
       syncSourceDuration();
       cacheWavePeaks();
@@ -474,10 +489,10 @@ const controls = mountControls(app, {
       if (!audio.isEnabled) {
         await audio.ensureRunning();
       }
-      audioStatus = audio.isReady
+      audioStatus = audio.isAudible
         ? `loaded · ${file.name}`
         : `loaded · ${file.name} · ctx ${audio.contextState}`;
-      controls.setAudioEnabled(audio.isEnabled);
+      controls.setAudioEnabled(audio.isAudible);
     } catch (err) {
       console.error(err);
       audioStatus = "load failed";
@@ -494,22 +509,11 @@ controls.setOverlayVisible(false);
 controls.setAudioEnabled(false);
 controls.setRecording(false);
 controls.setHasSource(audio.hasSource);
+controls.setOutputGain(audio.getOutputGain());
 
 caWrap.addEventListener("click", () => {
   if (exploring) closeExplore();
 });
-
-window.addEventListener(
-  "pointerdown",
-  () => {
-    if (audio.hasSource && audio.contextState === "suspended") {
-      void audio.ensureRunning().then(() => {
-        controls.setAudioEnabled(audio.isEnabled);
-      });
-    }
-  },
-  { capture: true },
-);
 
 const ro = new ResizeObserver(() => {
   host.fitZoom(caWrap);
@@ -524,7 +528,7 @@ window.addEventListener("resize", () => {
 function pushStats(forceMeter = false) {
   const stats = audio.getStats();
   overlay.draw(lastObs, audio.isReady ? stats : null);
-  wave.draw(wavePeaks, audio.isReady ? stats : null);
+  wave.draw(wavePeaks, audio.isAudible ? stats : null);
 
   const now = performance.now();
   const due =
@@ -603,6 +607,82 @@ function pushStats(forceMeter = false) {
       if (!audio.isReady && due) lastMeterUiAt = now;
     }
     const colourDiag = fieldColourDiagnostics(frameObserver.current);
+    const rawBudget = {
+      calmGrains: lastBatch?.calmActive ?? 0,
+      chaosGrains: lastBatch?.chaosActive ?? 0,
+      textureGrains: lastBatch?.textureActive ?? 0,
+      oscGrains: lastBatch?.oscActive ?? 0,
+      flowGrains: lastBatch?.flowActive ?? 0,
+      shareCalm: lastBatch?.shares.calm ?? 0,
+      shareTexture: lastBatch?.shares.texture ?? 0,
+      shareChaos: lastBatch?.shares.chaos ?? 0,
+      shareOsc: lastBatch?.shares.osc ?? 0,
+      shareFlow: lastBatch?.shares.flow ?? 0,
+      predictedActive: lastBatch?.predictedActive ?? 0,
+    };
+    if (due || forceMeter || !smoothBudget) {
+      if (!smoothBudget || forceMeter) {
+        smoothBudget = { ...rawBudget };
+      } else {
+        smoothBudget = {
+          calmGrains: ema(
+            smoothBudget.calmGrains,
+            rawBudget.calmGrains,
+            BUDGET_METER_EMA,
+          ),
+          chaosGrains: ema(
+            smoothBudget.chaosGrains,
+            rawBudget.chaosGrains,
+            BUDGET_METER_EMA,
+          ),
+          textureGrains: ema(
+            smoothBudget.textureGrains,
+            rawBudget.textureGrains,
+            BUDGET_METER_EMA,
+          ),
+          oscGrains: ema(
+            smoothBudget.oscGrains,
+            rawBudget.oscGrains,
+            BUDGET_METER_EMA,
+          ),
+          flowGrains: ema(
+            smoothBudget.flowGrains,
+            rawBudget.flowGrains,
+            BUDGET_METER_EMA,
+          ),
+          shareCalm: ema(
+            smoothBudget.shareCalm,
+            rawBudget.shareCalm,
+            BUDGET_METER_EMA,
+          ),
+          shareTexture: ema(
+            smoothBudget.shareTexture,
+            rawBudget.shareTexture,
+            BUDGET_METER_EMA,
+          ),
+          shareChaos: ema(
+            smoothBudget.shareChaos,
+            rawBudget.shareChaos,
+            BUDGET_METER_EMA,
+          ),
+          shareOsc: ema(
+            smoothBudget.shareOsc,
+            rawBudget.shareOsc,
+            BUDGET_METER_EMA,
+          ),
+          shareFlow: ema(
+            smoothBudget.shareFlow,
+            rawBudget.shareFlow,
+            BUDGET_METER_EMA,
+          ),
+          predictedActive: ema(
+            smoothBudget.predictedActive,
+            rawBudget.predictedActive,
+            BUDGET_METER_EMA,
+          ),
+        };
+      }
+    }
     field = {
       regions: lastObs.coherent.length,
       calmPct: lastObs.calmAreaFraction,
@@ -619,30 +699,41 @@ function pushStats(forceMeter = false) {
       staticMeanDelta: smoothFieldDelta!.staticMeanDelta,
       meanSat: colourDiag.meanSat,
       hueSpread: colourDiag.hueSpread,
-      calmGrains: lastBatch?.calmActive ?? 0,
-      chaosGrains: lastBatch?.chaosActive ?? 0,
-      textureGrains: lastBatch?.textureActive ?? 0,
-      oscGrains: lastBatch?.oscActive ?? 0,
-      flowGrains: lastBatch?.flowActive ?? 0,
-      shareCalm: lastBatch?.shares.calm ?? 0,
-      shareTexture: lastBatch?.shares.texture ?? 0,
-      shareChaos: lastBatch?.shares.chaos ?? 0,
-      shareOsc: lastBatch?.shares.osc ?? 0,
-      shareFlow: lastBatch?.shares.flow ?? 0,
+      calmGrains: smoothBudget!.calmGrains,
+      chaosGrains: smoothBudget!.chaosGrains,
+      textureGrains: smoothBudget!.textureGrains,
+      oscGrains: smoothBudget!.oscGrains,
+      flowGrains: smoothBudget!.flowGrains,
+      shareCalm: smoothBudget!.shareCalm,
+      shareTexture: smoothBudget!.shareTexture,
+      shareChaos: smoothBudget!.shareChaos,
+      shareOsc: smoothBudget!.shareOsc,
+      shareFlow: smoothBudget!.shareFlow,
       budget: lastBatch?.budget ?? scheduler.budget,
-      predictedActive: lastBatch?.predictedActive ?? 0,
+      predictedActive: smoothBudget!.predictedActive,
     };
   } else {
     smoothFieldDelta = null;
+    smoothBudget = null;
   }
 
   if (due || forceMeter || !audio.isReady) {
+    const outMeter =
+      meter && audio.isAudible
+        ? {
+            ...meter,
+            rms: meter.rms * audio.getOutputGain(),
+            peak: Math.min(1, meter.peak * audio.getOutputGain()),
+          }
+        : meter
+          ? { ...meter, rms: 0, peak: 0 }
+          : null;
     controls.setStats({
       step: activePattern ? syntheticStep : host.getStep(),
       fps: host.getFps(),
       energy: lastObs?.meanDelta ?? 0,
       audio: audioStatus,
-      meter,
+      meter: outMeter,
       field,
       gainBarMax: MASTER_GAIN * 2,
     });

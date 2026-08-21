@@ -36,6 +36,10 @@ STOP — do not revive
 - Treating a filled translating silhouette as flow; treating 2D scatter as
   one flow; tint-glue of hues
 - Lowering deltaRateNorm against the closed live-chaos under-spend claim
+- Locking every saturated chaos grain to identical DUR_MIN (frame-metronome
+  choir) — packing rate uses bag-mean duration; per-grain length sprays from
+  raw cell δ (CHAOS_DUR_SPREAD / CHAOS_DUR_EXP). Do not “fix” by banking
+  chaosAcc up to desiredChaos or by naive endMs = offset+duration fill.
 
 ------------------------------------------------------------------------------
 Closed — do not reopen without new evidence
@@ -46,10 +50,22 @@ Closed — do not reopen without new evidence
   verify / live listening, not on the HUD.
 - Frozen-and-detailed vs still-and-uniform are different materials.
 - Percussive chaos + blinker envelope: 0.04/0.2 left alone — do not “harmonise”.
+- Chaos duration spray: packing rate = share / durationChaosMean(δ̄); each
+  spawn’s duration = meanDur × clamp((bagδ̄/rawCellδ)^CHAOS_DUR_EXP,
+  1/SPREAD, SPREAD). Envelope/Q still from smoothed δ. chaosAcc seeds random
+  and leftover clamps to 3 (no catch-up volley). Oscillators stay pulse-locked.
 - Flow is similarity travel (colour correspondence), not pack-COM. Filled
-  translating silhouettes stay calm. Fifth spend pool: trailing-edge
-  piece-spawn, hop-velocity conveyor (`FLOW_ID_BASE`), packing→mid duration.
+  translating silhouettes stay calm (persist); gappy streams / dithered
+  sheets are flow (hop). When pack COM jumps on a torus, velocity may keep
+  block correspondence. Stair-step +x/+y is still a diagonal heading.
+  Thin still same-colour lines are Calm. Wavelength-2 site-revisit with
+  cancelling hops stays Osc. Confirmed Flow may pulse at a member blink
+  period. Fifth spend pool: trailing-edge piece-spawn,
+  hop-velocity conveyor (`FLOW_ID_BASE`), packing→mid duration.
   Grains die at the leading edge and respawn at the trailing edge.
+- Regime membership: Osc → Calm → Flow → Chaos/Static remainder. Static is
+  the still leftover (not “one solid colour” — that is Calm). Chaos is
+  leftover change (frozen noise is Static). Fill gates Flow rejects only.
 
 ------------------------------------------------------------------------------
 Still deferred
@@ -72,9 +88,13 @@ Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
                      envNorm after attack/release rescale; equal-power pan;
                      direct pan/Y/channelMix follow)
 
-Observation: calm / textured / chaotic / oscillators / flow (remainder
-  split; flow is similarity travel, punched out of chaos, not out of calm).
-Scheduler: five pools (calm / texture / chaos / osc / flow); area-share
+Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
+  Chaos (changing) or Static (still; code alias textured). Calm = connected
+  similar colour + κ (fill is not a membership gate). Flow = similarity
+  travel (correspondence / hop), punched out of chaos remainder, not out of
+  calm. Persist (sliding body) → Calm; hop (colour leaves and lands nearby)
+  → Flow. Solid never-changing colour is Calm; frozen mixed detail is Static.
+Scheduler: five pools (calm / texture(=static) / chaos / osc / flow); area-share
   concurrency; flow piece-spawn + FLOW_ID_BASE tracks; split material
   (timeOrder→dur/env, spectralT→Q); stratified+dispersion sites (calm/texture);
   SPAWN_ANCHOR_R_MIN; scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only;
@@ -89,10 +109,11 @@ Presentation (locked):
 - Corner HUD. Overlay off by default: 1px vector outlines at display
   resolution, L-brackets + COM on tracked calm/osc/flow, chaos as fragments.
 - Source waveform + grain ticks sit under the field (chrome), not on the sim.
-- DATA fold: regime %, spend, budget, clip, step; SIM test patterns.
-  Flow % is member-cell area / grid (sparse packs read as tenths of a
-  percent). Overlay outlines are dilated for visibility; scheduler share
-  still uses regionArea.
+- DATA fold: regime budget meters (concurrent/share seats + tick bar =
+  allocated share / budget; display EMA so seat jumps do not strobe), spend,
+  budget, step; output VU + fader; SIM test patterns. Overlay flow outlines
+  are dilated for visibility only (display, not area). Scheduler share uses
+  regionArea; a confirmed flow whose patch is ≥¼ seat gets a floor of 1 voice.
 - Explore: eight Type-U map neighbours (±1 x/y), audio follows centre.
   Click a neighbour to travel; click centre (or Explore) to settle.
 - Pause stops new CA steps and therefore new grains. Load audio arms the
@@ -106,16 +127,19 @@ Key modules:
 
 Negotiable (not doctrine):
 - FIELD_OBS — chaosDeltaMin, osc_*, flow_* (binSize≈4/maxBlocks≈192/
-  scrambleFrac≈0.72/stream≈22/lane≈8/confirm≈8/travel≈1.5/size≈4 keep≈3/
-  solidFill≈0.88/straightness≈0.35/localDensity≈0.72/packT≈0.65/
-  persist≈0.70/hop≈0.15/hopDominate/stitchHeadingCos),
+  scrambleFrac≈0.72/scrambleBlocks≈160/stream≈22/lane≈8/sheetCheb≈2/
+  confirm≈8/travel≈1.5/size≈4 keep≈3/solidFill≈0.88/straightness≈0.35/
+  localDensity≈0.80/packT≈0.72/persist≈0.70/hop≈0.15/hopDominate/
+  stitchHeadingCos/trackHeadingCos/modeWakeFrac/hueEps/chromaEps;
+  confirmed tracks freeze hop/density EMA on emit-poison samples),
   region colour eps (flowColourEps stays 0.12 — no tint join), …
 - SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
   REL_CHAOS 0.98, REL_CALM 0.34, Q_*, WINDOW_HALF_*,
   FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_WINDOW_T 0.45, FLOW_ID_BASE 1e6,
   FLOW_TRAVEL_DUR_BLEND 1,
   maxCalmConcurrent/textureMaxConcurrent 64, calmPackRateMin 1.0,
-  CHAOS_EVENTS_MAX_HZ 4000, deltaRateNorm 0.35 (← chaos live-balance lever),
+  CHAOS_EVENTS_MAX_HZ 4000, CHAOS_DUR_SPREAD 1.7, CHAOS_DUR_EXP 1.0,
+  deltaRateNorm 0.35 (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
   SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
 - Spectral — CENTROID_HOP_SEC, analysis FFT, polar weight / regime bias
@@ -123,10 +147,18 @@ Negotiable (not doctrine):
 
 Harnesses:
 - verify-phase0.mjs — lattice path stays gone from the live tree
-- verify-phase1.mjs — flow borders (dense/stream/diagonal/train +y;
-  cascade / wavefront / denser cascade; solids ≠ flow; flow-dots ≠ flow)
-- verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band
+  - verify-phase1.mjs — flow borders (dense/stream/diagonal/train +y;
+  cascade / wavefront / denser cascade / dither sheet / multi-hue sheet /
+  value-flicker stream; solids ≠ flow; flow-dots ≠ flow;
+  spacing-2 hop train = flow; dashed diagonal train = flow;
+  sitting / wrapping wavelength-2 line = Osc; checkerboard = Osc;
+  still 1-cell strip = Calm; travelling solid 1-cell strip = Calm persist)
+- verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band /
+  hop2 period-2 pulse
 - verify-phase4.mjs — polar / stereo / absolute Y contract
-- investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q)
+- investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q);
+  Stage 5: chaos duration p95/p5 spray + chaos-blob-2pct ~1 hit/step
+- investigate-chaos-stutter.mjs — offline 30 Hz fold / voice-steal / reset
+  ramp probe (report JSON is generated; do not commit)
 - render-scenarios.mjs — total-power RMS, crest, sites, block-RMS, cold-start;
   audio flux reported not asserted

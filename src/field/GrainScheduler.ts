@@ -80,6 +80,16 @@ export const SCHED = {
    * 4000 leaves headroom. Assert this rail never binds; if it does, report.
    */
   CHAOS_EVENTS_MAX_HZ: 4000,
+  /**
+   * Per-cell chaos duration spray around the bag mean (packing rate still
+   * uses durationChaosMean). duration = meanDur × clamp((bagδ̄/cellδ)^EXP,
+   * 1/SPREAD, SPREAD) with raw (unsmoothed) cell δ — smoothed δ is too flat
+   * on saturated scramble to break the 30 Hz choir. Negotiable; ~1.7 →
+   * roughly 18–51 ms around a 30 ms mean.
+   */
+  CHAOS_DUR_SPREAD: 1.7,
+  /** Exponent on (bagδ̄ / cellδ) before the SPREAD clamp. */
+  CHAOS_DUR_EXP: 1.0,
   velDirEps: 0.08,
   stepsPerSec: 30,
   /** Samples of meanDelta kept per calm region for period detection. */
@@ -277,7 +287,7 @@ export class GrainScheduler {
   readonly budget: number;
   private active: ActiveRecord[] = [];
   private calmClocks = new Map<number, RegionClock>();
-  private chaosAcc = 0;
+  private chaosAcc = Math.random();
   private textureAcc = 0;
   private lastStepMs = 0;
   private stepIndex = 0;
@@ -292,6 +302,7 @@ export class GrainScheduler {
     number,
     {
       acc: number;
+      phase: number;
       cellCursor: number;
       followX: number;
       followY: number;
@@ -331,7 +342,7 @@ export class GrainScheduler {
   reset(): void {
     this.active = [];
     this.calmClocks.clear();
-    this.chaosAcc = 0;
+    this.chaosAcc = Math.random();
     this.textureAcc = 0;
     this.lastStepMs = 0;
     this.stepIndex = 0;
@@ -657,6 +668,8 @@ export class GrainScheduler {
         bankDur,
         dtSec,
         this.segments,
+        chaosDur,
+        obs.chaotic.meanDelta,
       );
       events.push(ev);
       this.active.push({
@@ -665,10 +678,9 @@ export class GrainScheduler {
         regionId: -1,
       });
     }
-    // Allow multi-spawn per step at high pack rates; do not stall at 3.
-    if (this.chaosAcc > Math.max(3, desiredChaos)) {
-      this.chaosAcc = Math.max(3, desiredChaos);
-    }
+    // Cap leftover so a quiet stretch does not bank a catch-up volley.
+    // Concurrent-count + share guards are the real ceilings.
+    if (this.chaosAcc > 3) this.chaosAcc = 3;
 
     // Flow: trailing-edge piece-grains; hop-velocity conveyor follow.
     const liveFlowIds = new Set((obs.flows ?? []).map((f) => f.id));
@@ -683,6 +695,7 @@ export class GrainScheduler {
       if (!clock) {
         clock = {
           acc: Math.random(),
+          phase: 0,
           cellCursor: 0,
           followX: 0,
           followY: 0,
@@ -717,20 +730,16 @@ export class GrainScheduler {
       if (share <= 0 || flow.cells.length === 0) continue;
 
       const flowDur = flowConveyorDuration(flow, dtSec, edge.length);
-      const packHz = share / Math.max(0.05, flowDur);
-      // Organised change: spend at packing rate (no δ floor → silence).
-      clock.acc += packHz * dtSec;
-      const flowAlready = this.active.filter((a) => a.regionId === trackId)
-        .length;
-      while (
-        clock.acc >= 1 &&
-        flowAlready + countEventsForRegion(events, trackId) < share &&
-        this.active.length < this.budget
-      ) {
-        clock.acc -= 1;
+      const regionActive = () =>
+        this.active.filter((a) => a.regionId === trackId).length +
+        countEventsForRegion(events, trackId);
+      const room = () =>
+        regionActive() < share && this.active.length < this.budget;
+
+      const pushPiece = (durationSec: number) => {
         const ci =
-          edge.ordered[clock.cellCursor % edge.ordered.length]!;
-        clock.cellCursor += 1;
+          edge.ordered[clock!.cellCursor % edge.ordered.length]!;
+        clock!.cellCursor += 1;
         const ev = spawnFlow(
           flow,
           ci,
@@ -740,9 +749,9 @@ export class GrainScheduler {
           bankDur,
           dtSec,
           this.segments,
-          clock.followX,
-          clock.followY,
-          flowDur,
+          clock!.followX,
+          clock!.followY,
+          durationSec,
         );
         events.push(ev);
         this.active.push({
@@ -750,9 +759,37 @@ export class GrainScheduler {
           regime: "flow",
           regionId: trackId,
         });
-      }
-      if (clock.acc > Math.max(3, share)) {
-        clock.acc = Math.max(3, share);
+      };
+
+      const sitePeriod = flow.period ?? 0;
+      if (sitePeriod >= 2) {
+        const periodSec = sitePeriod / SCHED.stepsPerSec;
+        const pulseDur = Math.max(
+          SCHED.DUR_MIN,
+          SCHED.OSC_DUTY * periodSec,
+          flowDur,
+        );
+        clock.phase += dtSec / periodSec;
+        while (clock.phase >= 1 && room()) {
+          clock.phase -= 1;
+          const nBurst = Math.max(1, Math.min(SCHED.oscBurstMax, share));
+          let burst = 0;
+          while (burst < nBurst && room()) {
+            pushPiece(pulseDur);
+            burst += 1;
+          }
+        }
+        if (clock.phase > 2) clock.phase = clock.phase % 1;
+      } else {
+        const packHz = share / Math.max(0.05, flowDur);
+        clock.acc += packHz * dtSec;
+        while (clock.acc >= 1 && room()) {
+          clock.acc -= 1;
+          pushPiece(flowDur);
+        }
+        if (clock.acc > Math.max(3, share)) {
+          clock.acc = Math.max(3, share);
+        }
       }
     }
 
@@ -909,8 +946,11 @@ function allocateShares(
   }
   let flowFromArea = 0;
   for (const f of obs.flows ?? []) {
-    // Occupied patch (including gaps), same quantity as Flow %.
-    const share = Math.max(0, Math.round((budget * f.regionArea) / nCells));
+    // Occupied patch (including gaps) — larger than member-cell observation
+    // fraction on the field. Floor of 1 once the patch is ≥¼ seat so thin
+    // streams spend; smaller dust stays 0.
+    const exact = (budget * f.regionArea) / nCells;
+    const share = Math.max(exact >= 0.25 ? 1 : 0, Math.round(exact));
     flow.set(f.id, (flow.get(f.id) ?? 0) + share);
     flowFromArea += share;
   }
@@ -1393,6 +1433,8 @@ function spawnChaos(
   bankDur: number,
   dtSec: number,
   segments: MaterialSegment[],
+  meanDur: number,
+  bagMeanDelta: number,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -1403,9 +1445,13 @@ function spawnChaos(
   const g = rgb.g[ci] ?? 0.5;
   const b = rgb.b[ci] ?? 0.5;
   const similarity = obs.similarity[ci] ?? chaotic.meanSimilarity;
-  const delta = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? chaotic.meanDelta;
+  // Envelope/Q from smoothed δ (regime plane); duration spray from raw δ so
+  // saturated scramble still has a lifetime distribution (blur flattens).
+  const deltaSmooth = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? chaotic.meanDelta;
+  const deltaRaw = obs.delta[ci] ?? deltaSmooth;
   const nCells = w * h;
-  const mat = grainMaterial(similarity, delta, 0, 0, nCells);
+  const mat = grainMaterial(similarity, deltaSmooth, 0, 0, nCells);
+  const durationSec = chaosDurationAroundMean(meanDur, bagMeanDelta, deltaRaw);
   const win = sampleWindowFromColour(r, g, b, bankDur, segments, "transient");
   const yNorm = 1 - y / Math.max(1, h - 1);
 
@@ -1415,7 +1461,7 @@ function spawnChaos(
     r,
     g,
     b,
-    durationSec: mat.durationSec,
+    durationSec,
     amplitude,
     direction: 1,
     sampleCenter: win.sampleCenter,
@@ -1433,6 +1479,23 @@ function spawnChaos(
     trackDy: 0,
     readOffset: Math.random() * 2 - 1,
   };
+}
+
+/**
+ * Mean-preserving duration spray: hotter cells shorter, cooler longer.
+ * Packing rate still uses durationChaosMean — this only unsyncs deaths.
+ */
+function chaosDurationAroundMean(
+  meanDur: number,
+  bagMeanDelta: number,
+  cellDelta: number,
+): number {
+  const bag = Math.max(1e-6, bagMeanDelta);
+  const cell = Math.max(1e-6, cellDelta);
+  const spread = SCHED.CHAOS_DUR_SPREAD;
+  const ratio = Math.pow(bag / cell, SCHED.CHAOS_DUR_EXP);
+  const scale = Math.max(1 / spread, Math.min(spread, ratio));
+  return Math.max(SCHED.DUR_MIN / spread, meanDur * scale);
 }
 
 /** Member cells / dilated patch — dense pack → 1, thin stream → lower. */

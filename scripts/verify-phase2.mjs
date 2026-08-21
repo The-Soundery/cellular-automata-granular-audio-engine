@@ -96,7 +96,8 @@ assert(
     /flowTimeOrder|flowPackT/.test(schedSrc) &&
     /flowHeadingEdges|flowConveyorDuration/.test(schedSrc) &&
     /spawnFlow/.test(schedSrc) &&
-    /regime: "flow"/.test(schedSrc),
+    /regime: "flow"/.test(schedSrc) &&
+    /sitePeriod/.test(schedSrc),
 );
 assert("UI flow spend meter", /shareFlow|flowGrains/.test(controls) && /· f /.test(controls));
 const overlaySrc = readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8");
@@ -122,14 +123,16 @@ assert(
 );
 assert("no latticeIndex in worklet", !/latticeIndex/.test(worklet));
 assert("no paintGrain lattice loop", !/paintGrain/.test(worklet));
+const brief = readFileSync(join(root, "Creative Brief.txt"), "utf8");
 assert(
   "UI budget meters",
   /st-budget/.test(controls) && /st-spend/.test(controls),
 );
 assert(
-  "UI sonic laws hint",
-  /polar material|hue→sample|pan\/Y/.test(controls),
+  "sonic laws polar / pan/Y still in brief",
+  /polar/i.test(brief) && /pan\/Y|channel mix/i.test(brief),
 );
+assert("DATA output meter", /tk-out/.test(controls) && /st-out/.test(controls));
 
 async function runtimeScheduler() {
   let fieldMod;
@@ -631,6 +634,67 @@ async function runtimeScheduler() {
   assert(
     "runtime train: spawns prefer trailing edge (start of motion)",
     trainSpawnTotal >= 3 && trainSpawnNearTrail / trainSpawnTotal >= 0.5,
+  );
+
+  // Spacing-2 hop train: Flow keeps period 2 and spends in pulses, not a flat wash.
+  const hop2W = 32;
+  const hop2H = 32;
+  const hop2N = hop2W * hop2H;
+  function makeHop2(fill) {
+    const r = new Float32Array(hop2N);
+    const g = new Float32Array(hop2N);
+    const b = new Float32Array(hop2N);
+    for (let i = 0; i < hop2N; i++) fill(r, g, b, i);
+    return { width: hop2W, height: hop2H, r, g, b };
+  }
+  function paintHop2(field, t) {
+    for (let i = 0; i < hop2N; i++) {
+      field.r[i] = 0.1;
+      field.g[i] = 0.1;
+      field.b[i] = 0.12;
+    }
+    const y0 = (4 + t + hop2H) % hop2H;
+    for (let k = 0; k < 10; k++) {
+      const i = ((y0 + k * 2) % hop2H) * hop2W + 8;
+      field.r[i] = 0.2;
+      field.g[i] = 0.9;
+      field.b[i] = 0.35;
+    }
+  }
+  const hop2Fo = new FieldObserver(hop2W, hop2H);
+  let hop2Prev = makeHop2((r, g, b) => {
+    r.fill(0.1);
+    g.fill(0.1);
+    b.fill(0.12);
+  });
+  for (let t = 0; t < 40; t++) {
+    const cur = makeHop2(() => {});
+    paintHop2(cur, t);
+    hop2Fo.observe(cur, hop2Prev);
+    hop2Prev = cur;
+  }
+  assert(
+    "runtime hop2: observer flow has period 2",
+    (hop2Fo.observation.flows ?? []).some((f) => f.period === 2),
+  );
+  const hop2Sched = new GrainScheduler(GRAIN_BUDGET);
+  let nowHop2 = 80000;
+  let hop2BurstSteps = 0;
+  let hop2Measured = 0;
+  for (let t = 40; t < 80; t++) {
+    nowHop2 += 1000 / 26;
+    const cur = makeHop2(() => {});
+    paintHop2(cur, t);
+    hop2Fo.observe(cur, hop2Prev);
+    hop2Prev = cur;
+    const batch = hop2Sched.step(hop2Fo.observation, cur, nowHop2);
+    hop2Measured += 1;
+    if (batch.events.some((e) => e.regime === "flow")) hop2BurstSteps += 1;
+  }
+  const hop2BurstHz = hop2BurstSteps / (hop2Measured / 26);
+  assert(
+    "runtime hop2: flow grains pulse (not every step)",
+    hop2BurstHz >= 8 && hop2BurstHz <= 20 && hop2BurstSteps < hop2Measured * 0.85,
   );
 }
 
