@@ -45,7 +45,7 @@ export class RegionOverlay {
 
   draw(
     obs: FieldObservation | null,
-    _stats: AudioStats | null = null,
+    stats: AudioStats | null = null,
   ): void {
     this.clear();
     if (!this.visible || !obs) return;
@@ -69,6 +69,11 @@ export class RegionOverlay {
     }
     if (obs.chaotic.cells.length) {
       strokeEdges(ctx, obs.chaotic.cells, gridW, gridH, cw, ch, REGIME_HEX.chaos);
+      // COM mark per compact chaotic area (measurement, not ownership).
+      for (const c of obs.chaotic.clusters ?? []) {
+        if (!c.compact) continue;
+        drawCross(ctx, c.comX * cw, c.comY * ch, REGIME_HEX.chaos);
+      }
     }
     for (const g of obs.oscillators) {
       if (!g.cells.length) continue;
@@ -91,6 +96,30 @@ export class RegionOverlay {
       drawBrackets(ctx, boundsOf(f.cells, gridW), cw, ch, REGIME_HEX.flow);
       drawCross(ctx, f.comX * cw, f.comY * ch, REGIME_HEX.flow);
       drawHeading(ctx, f.comX * cw, f.comY * ch, f.velX * cw, f.velY * ch, REGIME_HEX.flow, true);
+    }
+
+    // Live grains on the field: one dot per active voice, regime-coloured.
+    // This is the see↔hear diagnostic — a structure with no dots is silent.
+    if (stats?.listen?.length) {
+      const r = Math.max(1.6, Math.min(cw, ch) * 0.45);
+      for (const g of stats.listen) {
+        const key =
+          g.regime === "texture"
+            ? "tex"
+            : ((g.regime ?? "chaos") as keyof typeof REGIME_HEX);
+        ctx.fillStyle = REGIME_HEX[key] ?? REGIME_HEX.chaos;
+        ctx.globalAlpha = g.sounding ? 0.9 : 0.35;
+        ctx.beginPath();
+        ctx.arc(
+          (g.x + 0.5) * cw,
+          (g.y + 0.5) * ch,
+          g.sounding ? r : r * 0.6,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
     }
   }
 

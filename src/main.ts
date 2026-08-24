@@ -113,6 +113,7 @@ let smoothBudget: {
   predictedActive: number;
 } | null = null;
 let overlayVisible = false;
+let cachedColourDiag: { meanSat: number; hueSpread: number } | null = null;
 let defaultSourcePromise: Promise<void> | null = null;
 /** null = live Utomata; else active synthetic pattern. */
 let activePattern: TestPattern | null = null;
@@ -527,8 +528,9 @@ window.addEventListener("resize", () => {
 
 function pushStats(forceMeter = false) {
   const stats = audio.getStats();
+  // Diagnostics stay live while muted — gate on engine-ready, not audible.
   overlay.draw(lastObs, audio.isReady ? stats : null);
-  wave.draw(wavePeaks, audio.isAudible ? stats : null);
+  wave.draw(wavePeaks, audio.isReady ? stats : null);
 
   const now = performance.now();
   const due =
@@ -606,7 +608,11 @@ function pushStats(forceMeter = false) {
       }
       if (!audio.isReady && due) lastMeterUiAt = now;
     }
-    const colourDiag = fieldColourDiagnostics(frameObserver.current);
+    // 16k HSV conversions — meter-rate only, not every rAF frame.
+    if (due || forceMeter || !cachedColourDiag) {
+      cachedColourDiag = fieldColourDiagnostics(frameObserver.current);
+    }
+    const colourDiag = cachedColourDiag;
     const rawBudget = {
       calmGrains: lastBatch?.calmActive ?? 0,
       chaosGrains: lastBatch?.chaosActive ?? 0,
@@ -711,6 +717,7 @@ function pushStats(forceMeter = false) {
       shareFlow: smoothBudget!.shareFlow,
       budget: lastBatch?.budget ?? scheduler.budget,
       predictedActive: smoothBudget!.predictedActive,
+      stepHz: lastBatch?.measuredStepHz,
     };
   } else {
     smoothFieldDelta = null;

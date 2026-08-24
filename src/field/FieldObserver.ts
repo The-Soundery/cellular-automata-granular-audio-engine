@@ -21,6 +21,16 @@ export const FIELD_OBS = {
   minRegionArea: 24,
   /** Max COM match distance (cells) for velocity continuity. */
   comMatchDist: 18,
+  /**
+   * Minimum absolute circular-resultant length (cells) for an axis's COM to
+   * be a measurement. A mass covering the whole torus on an axis has an
+   * exactly-symmetric distribution — its resultant is float noise and its
+   * COM jumps randomly, churning a stable region's id every few frames.
+   * A near-wrapping arc keeps a small but genuine resultant (e.g. a 28-cell
+   * strip on a 32 torus ≈ 3.9), so the gate is absolute, not conc-relative.
+   * Degenerate axes are excluded from ID matching and their velocity holds 0.
+   */
+  regionComResultantMin: 2,
   /** Max mean-RGB distance for ID continuity (same scale as regionColourEps). */
   idColourEps: 0.22,
   /** Minimum cell IoU to prefer an ID match when COM/colour are close. */
@@ -29,6 +39,16 @@ export const FIELD_OBS = {
   velocityEma: 0.35,
   /** Smoothed δ below this is stasis, not chaos; quantisation noise is ~0.007. */
   chaosDeltaMin: 0.045,
+  /**
+   * Chebyshev join radius when clustering the chaos bag into areas. Chaotic
+   * cells within this distance belong to one area (brief §7: "chaotic areas
+   * receive share by their area"). Clusters are measurements, not owners.
+   */
+  chaosClusterJoin: 2,
+  /** Chaos clusters below this area fold into one residual scatter bag. */
+  chaosClusterMinArea: 16,
+  /** Max distinct chaos clusters per frame (largest kept; rest → residual). */
+  chaosClusterMax: 24,
   /** Max oscillator period (steps) tested ascending. */
   oscPeriodMax: 8,
   /** RGB match epsilon for period-p frame compare. */
@@ -252,6 +272,43 @@ export interface ChaoticArea {
   /** Max per-cell δ in the bag (for δ-weighted chaos spawn). */
   maxDelta: number;
   cells: Uint32Array;
+  /**
+   * Spatial partition of the bag into chaotic areas (plus one residual
+   * scatter entry). Same cells, no ownership — lets the scheduler spend each
+   * area's share where the change actually is. Optional so harness fixtures
+   * that hand-build observations keep working (scheduler falls back to the
+   * whole bag as one area).
+   */
+  clusters?: ChaosCluster[];
+}
+
+/** One spatially connected chaotic area (measurement, re-derived each frame). */
+export interface ChaosCluster {
+  /** COM-matched id for rate-clock continuity; -1 = residual scatter. */
+  id: number;
+  area: number;
+  /** Toroidal circular COM — meaningless for the residual (compact=false). */
+  comX: number;
+  comY: number;
+  /** False for the residual scatter entry (no usable location). */
+  compact: boolean;
+  meanDelta: number;
+  maxDelta: number;
+  meanSimilarity: number;
+  meanR: number;
+  meanG: number;
+  meanB: number;
+  cells: Uint32Array;
+}
+
+/** Region lifecycle events from ID matching (births / deaths / merges). */
+export interface RegionEvents {
+  /** Region ids minted this frame (structure appeared or split off). */
+  births: number[];
+  /** Previous-frame ids that vanished with no successor. */
+  deaths: number[];
+  /** Previous-frame ids absorbed into a surviving region this frame. */
+  merges: { from: number; into: number }[];
 }
 
 /** Dissimilar but stable remainder — static texture, not temporal chaos. */
@@ -323,12 +380,18 @@ export interface FieldObservation {
   flowAreaFraction: number;
   /** Per-frame candidate reject counts (overlay debug / verify). */
   flowRejects: Record<string, number>;
+  /** Calm-region lifecycle events this frame (optional for fixtures). */
+  regionEvents?: RegionEvents;
 }
 
 type PrevRegion = {
   id: number;
+  area: number;
   comX: number;
   comY: number;
+  /** Circular concentration per axis — low = COM on that axis is noise. */
+  comConcX: number;
+  comConcY: number;
   velX: number;
   velY: number;
   meanR: number;
@@ -453,6 +516,18 @@ export class FieldObserver {
   private primed = false;
   private flowFracDisp = 0;
   private flowRejects: Record<string, number> = {};
+  /** Cells culled from calm this frame for area only — kept for hysteresis. */
+  private culledCalm: number[] = [];
+  /** Region lifecycle events from the last ID-matching pass. */
+  private lastRegionEvents: RegionEvents = {
+    births: [],
+    deaths: [],
+    merges: [],
+  };
+  /** Chaos-cluster scratch + COM continuity (measurement ids, not owners). */
+  private readonly chaosLabel: Int32Array;
+  private prevChaosClusters: { id: number; comX: number; comY: number }[] = [];
+  private nextChaosClusterId = 1;
   private last: FieldObservation;
 
   constructor(width: number, height: number) {
@@ -471,6 +546,7 @@ export class FieldObserver {
     this.labels = new Int32Array(n);
     this.queue = new Uint32Array(n);
     this.flowMark = new Uint8Array(n);
+    this.chaosLabel = new Int32Array(n);
     this.histLen = FIELD_OBS.oscPeriodMax + 1;
     this.histR = Array.from({ length: this.histLen }, () => new Float32Array(n));
     this.histG = Array.from({ length: this.histLen }, () => new Float32Array(n));
@@ -518,6 +594,10 @@ export class FieldObserver {
     this.primed = false;
     this.flowFracDisp = 0;
     this.flowRejects = {};
+    this.culledCalm = [];
+    this.lastRegionEvents = { births: [], deaths: [], merges: [] };
+    this.prevChaosClusters = [];
+    this.nextChaosClusterId = 1;
     this.last = emptyObservation(
       this.width,
       this.height,
@@ -600,6 +680,8 @@ export class FieldObserver {
     }
 
     this.prevCalm.set(this.calmMask);
+    // Culled-but-coherent cells keep their hysteresis state (see extractRegions).
+    for (const i of this.culledCalm) this.prevCalm[i] = 1;
     this.primed = true;
     this.last = {
       width: w,
@@ -620,6 +702,7 @@ export class FieldObserver {
       texturedAreaFraction: textured.area / n,
       flowAreaFraction: this.flowFracDisp,
       flowRejects: this.flowRejects,
+      regionEvents: this.lastRegionEvents,
     };
     return this.last;
   }
@@ -632,6 +715,7 @@ export class FieldObserver {
     const colourEps = FIELD_OBS.regionColourEps;
     const minArea = FIELD_OBS.minRegionArea;
 
+    this.culledCalm.length = 0;
     for (let i = 0; i < n; i++) {
       const k = this.coherence[i]!;
       const wasCalm = this.prevCalm[i] === 1;
@@ -718,9 +802,15 @@ export class FieldObserver {
 
       const area = cellBuf.length;
       if (area < minArea) {
+        // Too small to voice — but the cells were genuinely coherent. Clear
+        // the mask (remainder/flow must not see them as calm) yet remember
+        // them so hysteresis still applies next frame: zeroing prevCalm here
+        // forced marginal regions back to the *enter* threshold every frame,
+        // making them blink in and out (clock resets, budget churn).
         for (const i of cellBuf) {
           this.labels[i] = -1;
           this.calmMask[i] = 0;
+          this.culledCalm.push(i);
         }
         continue;
       }
@@ -816,6 +906,28 @@ export class FieldObserver {
     const minIoU = FIELD_OBS.idMinIoU;
     const va = FIELD_OBS.velocityEma;
     const usedPrev = new Set<number>();
+    const events: RegionEvents = { births: [], deaths: [], merges: [] };
+    this.lastRegionEvents = events;
+    const resMin = FIELD_OBS.regionComResultantMin;
+    const axisUsable = (conc: number, area: number): boolean =>
+      conc * area >= resMin;
+    // An axis where either side's COM is degenerate (torus-wrapping mass)
+    // contributes nothing to the match distance — without this, a stable
+    // full-height region's noisy COM-Y breaks its id every few frames.
+    const comDist = (
+      region: CoherentRegion,
+      prev: PrevRegion,
+    ): number => {
+      const useX =
+        axisUsable(region.comConcX, region.area) &&
+        axisUsable(prev.comConcX, prev.area);
+      const useY =
+        axisUsable(region.comConcY, region.area) &&
+        axisUsable(prev.comConcY, prev.area);
+      const dx = useX ? toroidalDelta(region.comX, prev.comX, w) : 0;
+      const dy = useY ? toroidalDelta(region.comY, prev.comY, h) : 0;
+      return Math.hypot(dx, dy);
+    };
 
     for (const region of regions) {
       let best = -1;
@@ -824,10 +936,7 @@ export class FieldObserver {
       for (let p = 0; p < this.prevRegions.length; p++) {
         if (usedPrev.has(p)) continue;
         const prev = this.prevRegions[p]!;
-        const comD = Math.hypot(
-          toroidalDelta(region.comX, prev.comX, w),
-          toroidalDelta(region.comY, prev.comY, h),
-        );
+        const comD = comDist(region, prev);
         if (comD > maxDist) continue;
 
         const colourD = rgbDelta(
@@ -853,21 +962,64 @@ export class FieldObserver {
         const prev = this.prevRegions[best]!;
         usedPrev.add(best);
         region.id = prev.id;
-        const rawVx = toroidalDelta(region.comX, prev.comX, w);
-        const rawVy = toroidalDelta(region.comY, prev.comY, h);
+        // Degenerate axes have no measurable motion — decay toward 0 there
+        // instead of chasing COM noise (pan/direction stay steady).
+        const useX =
+          axisUsable(region.comConcX, region.area) &&
+          axisUsable(prev.comConcX, prev.area);
+        const useY =
+          axisUsable(region.comConcY, region.area) &&
+          axisUsable(prev.comConcY, prev.area);
+        const rawVx = useX ? toroidalDelta(region.comX, prev.comX, w) : 0;
+        const rawVy = useY ? toroidalDelta(region.comY, prev.comY, h) : 0;
         region.velX = prev.velX + (rawVx - prev.velX) * va;
         region.velY = prev.velY + (rawVy - prev.velY) * va;
       } else {
         region.id = this.nextRegionId++;
         region.velX = 0;
         region.velY = 0;
+        events.births.push(region.id);
       }
+    }
+
+    // Lifecycle: an unmatched previous region either merged into a nearby
+    // surviving region (COM + colour still match one) or died. These are the
+    // actual events of computational flow — exported as measurements so the
+    // scheduler can keep merged grains following the surviving body.
+    for (let p = 0; p < this.prevRegions.length; p++) {
+      if (usedPrev.has(p)) continue;
+      const prev = this.prevRegions[p]!;
+      let into = -1;
+      let bestD = Infinity;
+      for (const region of regions) {
+        if (region.id === prev.id) continue;
+        const comD = comDist(region, prev);
+        if (comD > maxDist) continue;
+        const colourD = rgbDelta(
+          region.meanR,
+          region.meanG,
+          region.meanB,
+          prev.meanR,
+          prev.meanG,
+          prev.meanB,
+        );
+        if (colourD > colourEps) continue;
+        if (comD < bestD) {
+          bestD = comD;
+          into = region.id;
+        }
+      }
+      if (into >= 0) events.merges.push({ from: prev.id, into });
+      else events.deaths.push(prev.id);
     }
 
     this.prevRegions = regions.map((r) => ({
       id: r.id,
+      area: r.area,
       comX: r.comX,
       comY: r.comY,
+      comConcX: r.comConcX,
+      comConcY: r.comConcY,
       velX: r.velX,
       velY: r.velY,
       meanR: r.meanR,
@@ -1980,12 +2132,15 @@ export class FieldObserver {
     current: RgbField,
   ): { chaotic: ChaoticArea; textured: TexturedArea } {
     return {
-      chaotic: this.buildChaotic(coherent),
+      chaotic: this.buildChaotic(coherent, current),
       textured: this.buildTextured(coherent, current),
     };
   }
 
-  private buildChaotic(coherent: CoherentRegion[]): ChaoticArea {
+  private buildChaotic(
+    coherent: CoherentRegion[],
+    current: RgbField,
+  ): ChaoticArea {
     const n = this.width * this.height;
     const { width: w, height: h } = this;
     const inCalm = new Uint8Array(n);
@@ -2037,7 +2192,143 @@ export class FieldObserver {
       meanSimilarity: area ? sumS / area : 0,
       maxDelta,
       cells: Uint32Array.from(cells),
+      clusters: this.clusterChaos(cells, current),
     };
+  }
+
+  /**
+   * Partition the chaos bag into spatially connected areas (Chebyshev join
+   * ≤ chaosClusterJoin) plus one residual scatter entry. Ids follow COM
+   * greedily frame-to-frame so the scheduler's per-area rate clocks keep
+   * phase; ids carry no ownership and vanish with the area.
+   */
+  private clusterChaos(
+    bagCells: number[],
+    current: RgbField,
+  ): ChaosCluster[] {
+    const { width: w, height: h } = this;
+    const join = FIELD_OBS.chaosClusterJoin;
+    const label = this.chaosLabel;
+    for (const i of bagCells) label[i] = -2; // member, unvisited
+    const groups: number[][] = [];
+
+    for (const seed of bagCells) {
+      if (label[seed] !== -2) continue;
+      const group: number[] = [];
+      let qh = 0;
+      let qt = 0;
+      this.queue[qt++] = seed;
+      label[seed] = groups.length;
+      while (qh < qt) {
+        const i = this.queue[qh++]!;
+        group.push(i);
+        const x = i % w;
+        const y = (i / w) | 0;
+        for (let dy = -join; dy <= join; dy++) {
+          const ny = (y + dy + h) % h;
+          for (let dx = -join; dx <= join; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const j = ny * w + ((x + dx + w) % w);
+            if (label[j] !== -2) continue;
+            label[j] = groups.length;
+            this.queue[qt++] = j;
+          }
+        }
+      }
+      groups.push(group);
+    }
+    // Reset labels for next frame (only member cells were touched).
+    for (const i of bagCells) label[i] = -1;
+
+    groups.sort((a, b) => b.length - a.length);
+    const minArea = FIELD_OBS.chaosClusterMinArea;
+    const maxKeep = FIELD_OBS.chaosClusterMax;
+    const kept: number[][] = [];
+    const residual: number[] = [];
+    for (const g of groups) {
+      if (kept.length < maxKeep && g.length >= minArea) kept.push(g);
+      else residual.push(...g);
+    }
+
+    const measure = (cellsArr: number[], compact: boolean): ChaosCluster => {
+      let sumXCos = 0;
+      let sumXSin = 0;
+      let sumYCos = 0;
+      let sumYSin = 0;
+      let sumD = 0;
+      let sumS = 0;
+      let sumR = 0;
+      let sumG = 0;
+      let sumB = 0;
+      let maxD = 0;
+      for (const i of cellsArr) {
+        const x = i % w;
+        const y = (i / w) | 0;
+        const angX = (2 * Math.PI * x) / w;
+        const angY = (2 * Math.PI * y) / h;
+        sumXCos += Math.cos(angX);
+        sumXSin += Math.sin(angX);
+        sumYCos += Math.cos(angY);
+        sumYSin += Math.sin(angY);
+        const d = this.deltaSmooth[i]!;
+        sumD += d;
+        if (d > maxD) maxD = d;
+        sumS += this.similarity[i]!;
+        sumR += current.r[i]!;
+        sumG += current.g[i]!;
+        sumB += current.b[i]!;
+      }
+      const a = Math.max(1, cellsArr.length);
+      return {
+        id: -1,
+        area: cellsArr.length,
+        comX: ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w,
+        comY: ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h,
+        compact,
+        meanDelta: sumD / a,
+        maxDelta: maxD,
+        meanSimilarity: sumS / a,
+        meanR: sumR / a,
+        meanG: sumG / a,
+        meanB: sumB / a,
+        cells: Uint32Array.from(cellsArr),
+      };
+    };
+
+    const clusters = kept.map((g) => measure(g, true));
+
+    // Greedy COM continuity (largest first) — clock phase, not ownership.
+    const usedPrev = new Set<number>();
+    for (const c of clusters) {
+      let best = -1;
+      let bestD = Infinity;
+      for (let p = 0; p < this.prevChaosClusters.length; p++) {
+        if (usedPrev.has(p)) continue;
+        const prev = this.prevChaosClusters[p]!;
+        const d = Math.hypot(
+          toroidalDelta(c.comX, prev.comX, w),
+          toroidalDelta(c.comY, prev.comY, h),
+        );
+        if (d <= FIELD_OBS.comMatchDist && d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+      if (best >= 0) {
+        usedPrev.add(best);
+        c.id = this.prevChaosClusters[best]!.id;
+      } else {
+        c.id = this.nextChaosClusterId++;
+      }
+    }
+    this.prevChaosClusters = clusters.map((c) => ({
+      id: c.id,
+      comX: c.comX,
+      comY: c.comY,
+    }));
+
+    if (residual.length > 0) clusters.push(measure(residual, false));
+    return clusters;
   }
 
   private buildTextured(

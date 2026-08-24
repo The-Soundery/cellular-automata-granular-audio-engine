@@ -19,6 +19,18 @@ export const SUSTAINED_SUBSET_QUANTILE = 0.5;
 export const SUSTAINED_ATTACK_GAP = 0.05;
 /** Fixed polar radius for all segments (outer annulus). Grey queries sit at 0. */
 export const POLAR_SEGMENT_RADIUS = 0.85;
+/**
+ * Attack score at/above this (and locally maximal) starts a new material
+ * unit — segments align to onsets so window centres land on musical units
+ * (a hit, a word, a swell) instead of arbitrary fixed-hop slices.
+ */
+export const ONSET_ATTACK_MIN = 0.45;
+/**
+ * Sustained stretches split at this length so long pads still expose many
+ * selectable centres (identity coverage). Scaled down for short files so
+ * fixtures keep enough segments; see maxUnitSec in buildPolarSegments.
+ */
+export const SEGMENT_MAX_SEC = 1.0;
 /** Attack mix: short-time energy jump dominates; spectral flux is secondary. */
 const W_ATTACK_ENERGY = 0.65;
 const W_ATTACK_FLUX = 0.35;
@@ -349,39 +361,98 @@ export function buildPolarSegments(
     if (energyJumps[i]! > maxJump) maxJump = energyJumps[i]!;
   }
 
-  const byCentroid = pool
-    .map((s, i) => ({ i, c: s.centroid }))
-    .sort((a, b) => a.c - b.c || a.i - b.i);
-  const byEnergy = pool
-    .map((s, i) => ({ i, e: Math.log10(1e-12 + s.energy) }))
-    .sort((a, b) => a.e - b.e || a.i - b.i);
+  // Per-hop attack score (energy jump leads, spectral flux secondary).
+  const hopAttack = new Float32Array(pool.length);
+  for (let i = 0; i < pool.length; i++) {
+    const fluxN = clamp01(pool[i]!.flux / maxFlux);
+    const jumpN = clamp01(energyJumps[i]! / maxJump);
+    hopAttack[i] = clamp01(W_ATTACK_ENERGY * jumpN + W_ATTACK_FLUX * fluxN);
+  }
 
-  const angleOf = new Float32Array(pool.length);
-  const bandOf = new Float32Array(pool.length);
-  const denom = Math.max(1, pool.length - 1);
-  for (let rank = 0; rank < byCentroid.length; rank++) {
-    angleOf[byCentroid[rank]!.i] = rank / denom;
+  // Onset-aligned units: a boundary wherever a hop's attack is strong and
+  // locally maximal; long sustained stretches split so coverage holds.
+  const hopSec = hop / sampleRate;
+  const durationSec = n / sampleRate;
+  const maxUnitSec = Math.min(
+    SEGMENT_MAX_SEC,
+    Math.max(0.2, durationSec / 24),
+  );
+  const maxUnitHops = Math.max(1, Math.round(maxUnitSec / hopSec));
+  const boundaries: number[] = [0];
+  for (let i = 1; i < pool.length; i++) {
+    const a = hopAttack[i]!;
+    if (
+      a >= ONSET_ATTACK_MIN &&
+      a >= hopAttack[i - 1]! &&
+      (i + 1 >= pool.length || a >= hopAttack[i + 1]!)
+    ) {
+      boundaries.push(i);
+    }
   }
-  for (let rank = 0; rank < byEnergy.length; rank++) {
-    bandOf[byEnergy[rank]!.i] = rank / denom;
-  }
+  boundaries.push(pool.length);
 
   const segments: MaterialSegment[] = [];
-  for (let i = 0; i < pool.length; i++) {
-    const s = pool[i]!;
-    const fluxN = clamp01(s.flux / maxFlux);
-    const jumpN = clamp01(energyJumps[i]! / maxJump);
-    const attack = clamp01(W_ATTACK_ENERGY * jumpN + W_ATTACK_FLUX * fluxN);
-    const stationarity = 1 - attack;
-    segments.push({
-      pos: s.pos,
-      centroidHz: Math.max(40, s.centroid),
-      stationarity,
-      energy: s.energy,
-      angle: angleOf[i]!,
-      radius: POLAR_SEGMENT_RADIUS,
-      band: bandOf[i]!,
-    });
+  for (let b = 0; b < boundaries.length - 1; b++) {
+    const unitStart = boundaries[b]!;
+    const unitEnd = boundaries[b + 1]!;
+    for (let s0 = unitStart; s0 < unitEnd; s0 += maxUnitHops) {
+      const s1 = Math.min(unitEnd, s0 + maxUnitHops);
+      let wSum = 0;
+      let posSum = 0;
+      let cenNum = 0;
+      let cenDen = 0;
+      let energySum = 0;
+      let attackSum = 0;
+      for (let i = s0; i < s1; i++) {
+        const hopI = pool[i]!;
+        // Energy-weighted position: a hit's centre sits on the hit, a pad's
+        // in its middle — window centres land where the unit's energy lives.
+        const wgt = hopI.rms * hopI.rms + 1e-12;
+        wSum += wgt;
+        posSum += hopI.pos * wgt;
+        cenNum += hopI.centroid * hopI.energy;
+        cenDen += hopI.energy;
+        energySum += hopI.energy;
+        attackSum += hopAttack[i]!;
+      }
+      const count = Math.max(1, s1 - s0);
+      const firstAttack = hopAttack[s0]!;
+      const meanAttack = attackSum / count;
+      const attack = clamp01(0.7 * firstAttack + 0.3 * meanAttack);
+      // A unit that starts on an onset IS its attack — pin the position to
+      // the onset hop so transient identity (and the sustained-subset punch
+      // around it) lands on the hit, not on an energy-smeared tail. Sustained
+      // splits keep the energy-weighted centre.
+      const pos =
+        firstAttack >= ONSET_ATTACK_MIN
+          ? pool[s0]!.pos
+          : clamp01(posSum / wSum);
+      segments.push({
+        pos,
+        centroidHz: Math.max(40, cenDen > 1e-12 ? cenNum / cenDen : 0),
+        stationarity: 1 - attack,
+        // Mean energy per hop so long pads don't rank top band by length.
+        energy: energySum / count,
+        angle: 0,
+        radius: POLAR_SEGMENT_RADIUS,
+        band: 0,
+      });
+    }
+  }
+
+  // Rank-uniform polar axes over the finished units.
+  const byCentroid = segments
+    .map((s, i) => ({ i, c: s.centroidHz }))
+    .sort((a, b) => a.c - b.c || a.i - b.i);
+  const byEnergy = segments
+    .map((s, i) => ({ i, e: Math.log10(1e-12 + s.energy) }))
+    .sort((a, b) => a.e - b.e || a.i - b.i);
+  const denom = Math.max(1, segments.length - 1);
+  for (let rank = 0; rank < byCentroid.length; rank++) {
+    segments[byCentroid[rank]!.i]!.angle = rank / denom;
+  }
+  for (let rank = 0; rank < byEnergy.length; rank++) {
+    segments[byEnergy[rank]!.i]!.band = rank / denom;
   }
 
   // Guarantee head/tail of file are selectable centres (keep true stationarity).
