@@ -1,5 +1,4 @@
 import type {
-  ChaoticArea,
   CoherentRegion,
   FieldObservation,
   FlowGroup,
@@ -231,6 +230,8 @@ export interface GrainEventBatch {
   events: GrainSpawnEvent[];
   tracks: RegionTrack[];
   budget: number;
+  /** Measured CA step rate (Hz) — diagnostic for the DATA fold. */
+  measuredStepHz: number;
   predictedActive: number;
   calmActive: number;
   chaosActive: number;
@@ -278,6 +279,40 @@ type GrainMaterial = {
   q: number;
 };
 
+/** Minimal bag a chaos spawn needs — whole bag or one cluster. */
+type ChaosSpendBag = {
+  id: number;
+  area: number;
+  cells: Uint32Array;
+  meanDelta: number;
+  maxDelta: number;
+  meanSimilarity: number;
+};
+
+/** Integer split of `total` ∝ weights, exact by largest remainder. */
+function largestRemainderSplit(total: number, weights: number[]): number[] {
+  const n = weights.length;
+  if (n === 0 || total <= 0) return weights.map(() => 0);
+  let weightSum = 0;
+  for (const w of weights) weightSum += Math.max(0, w);
+  if (weightSum <= 0) return weights.map(() => 0);
+  const out = new Array<number>(n);
+  const rema: { i: number; frac: number }[] = [];
+  let used = 0;
+  for (let i = 0; i < n; i++) {
+    const exact = (total * Math.max(0, weights[i]!)) / weightSum;
+    const base = Math.floor(exact);
+    out[i] = base;
+    used += base;
+    rema.push({ i, frac: exact - base });
+  }
+  rema.sort((a, b) => b.frac - a.frac);
+  for (let k = 0; used < total && k < rema.length; k++, used++) {
+    out[rema[k]!.i]! += 1;
+  }
+  return out;
+}
+
 /**
  * Area-weighted ephemeral grain scheduler.
  * Activity shapes rate/length usage; area shapes budget share;
@@ -287,10 +322,23 @@ export class GrainScheduler {
   readonly budget: number;
   private active: ActiveRecord[] = [];
   private calmClocks = new Map<number, RegionClock>();
-  private chaosAcc = Math.random();
+  /** Per-chaos-area packing accumulators, keyed by cluster id (-1 = residual). */
+  private chaosAccs = new Map<number, number>();
   private textureAcc = 0;
   private lastStepMs = 0;
   private stepIndex = 0;
+  /**
+   * Measured CA step interval (EMA of observed dt). The display-refresh
+   * quantised CA rarely runs at exactly SCHED.stepsPerSec, and oscillator /
+   * flow pulse periods are given in *steps* — converting them with the real
+   * interval keeps pulses locked to the visual period on every machine.
+   */
+  private stepSec = 1 / SCHED.stepsPerSec;
+  /**
+   * Merged-away region ids → surviving id, held only while grains spawned
+   * under the old id are still alive so they keep following the merged body.
+   */
+  private mergeAliases = new Map<number, number>();
   /** Per-period phase histograms for oscillator pulse locking. */
   private oscPhase = new Map<number, Float32Array>();
   /** Textured-pool scrub clock (δ̄≈0 → frozen). */
@@ -342,10 +390,12 @@ export class GrainScheduler {
   reset(): void {
     this.active = [];
     this.calmClocks.clear();
-    this.chaosAcc = Math.random();
+    this.chaosAccs.clear();
     this.textureAcc = 0;
     this.lastStepMs = 0;
     this.stepIndex = 0;
+    this.stepSec = 1 / SCHED.stepsPerSec;
+    this.mergeAliases.clear();
     this.oscPhase.clear();
     this.textureScrubSec = 0;
     this.textureSiteSlot = 0;
@@ -390,6 +440,13 @@ export class GrainScheduler {
       this.lastStepMs > 0
         ? Math.min(0.25, (nowMs - this.lastStepMs) / 1000)
         : 1 / SCHED.stepsPerSec;
+    if (this.lastStepMs > 0) {
+      // EMA of the real inter-step interval (clamped to sane CA rates) —
+      // periods given in steps convert to seconds with this, not the 30 Hz
+      // assumption. A steady offline 30-steps/s drive converges to 1/30.
+      const measured = Math.min(0.25, Math.max(1 / 120, dtSec));
+      this.stepSec += (measured - this.stepSec) * 0.08;
+    }
     this.lastStepMs = nowMs;
     this.stepIndex += 1;
     const bankDur =
@@ -404,6 +461,13 @@ export class GrainScheduler {
     const liveCalmIds = new Set(obs.coherent.map((r) => r.id));
     for (const id of [...this.calmClocks.keys()]) {
       if (!liveCalmIds.has(id)) this.calmClocks.delete(id);
+    }
+
+    // Region lifecycle: remember merges so old-id grains follow the survivor;
+    // births fire immediately below (visual appearance = audible onset).
+    const births = new Set(obs.regionEvents?.births ?? []);
+    for (const m of obs.regionEvents?.merges ?? []) {
+      this.mergeAliases.set(m.from, m.into);
     }
 
     for (const region of obs.coherent) {
@@ -427,7 +491,9 @@ export class GrainScheduler {
       if (!clock) {
         clock = {
           id: region.id,
-          acc: Math.random(),
+          // A newborn structure speaks the step it appears; re-seen ids keep
+          // the random phase so steady fields do not synchronise.
+          acc: births.has(region.id) ? 1 : Math.random(),
           phase: Math.random(),
           history: new Float32Array(SCHED.rhythmHistory),
           histLen: 0,
@@ -581,6 +647,7 @@ export class GrainScheduler {
           bankDur,
           dtSec,
           this.segments,
+          this.stepSec,
         );
         events.push(ev);
         this.active.push({
@@ -644,43 +711,74 @@ export class GrainScheduler {
     }
 
     // Chaos pack-to-share: spend area budget as many short concurrent hits.
+    // Spent per chaotic *area* (brief §7): each cluster's sub-share ∝ its
+    // area, its rate ∝ its own δ̄, its duration from its own bag stats — so a
+    // hot storm sprays fast where you see it while a cool patch patters.
+    // Total spend is still bounded by the global chaos share + budget.
     const desiredChaos = shares.chaos;
-    const chaosDur = durationChaosMean(obs.chaotic, nCells);
-    const chaosPackHz = desiredChaos / Math.max(0.02, chaosDur);
-    const chaosRateHz = chaosPackRateHz(chaosPackHz, obs.chaotic.meanDelta);
-    this.chaosAcc += chaosRateHz * dtSec;
+    const chaosClusters: ChaosSpendBag[] =
+      obs.chaotic.clusters && obs.chaotic.clusters.length > 0
+        ? obs.chaotic.clusters
+        : obs.chaotic.cells.length > 0
+          ? [
+              {
+                id: -1,
+                area: obs.chaotic.area,
+                cells: obs.chaotic.cells,
+                meanDelta: obs.chaotic.meanDelta,
+                maxDelta: obs.chaotic.maxDelta,
+                meanSimilarity: obs.chaotic.meanSimilarity,
+              },
+            ]
+          : [];
+    const liveChaosIds = new Set(chaosClusters.map((c) => c.id));
+    for (const id of [...this.chaosAccs.keys()]) {
+      if (!liveChaosIds.has(id)) this.chaosAccs.delete(id);
+    }
+    const clusterShares = largestRemainderSplit(
+      desiredChaos,
+      chaosClusters.map((c) => c.area),
+    );
     // Snapshot like calm: grains pushed to active this step must not be
     // double-counted against events (that capped fill at desired/2).
     const chaosAlready = countActiveRegime(this.active, "chaos");
-
-    while (
-      this.chaosAcc >= 1 &&
+    const chaosRoom = () =>
       chaosAlready + countEventsRegime(events, "chaos") < desiredChaos &&
-      this.active.length < this.budget &&
-      obs.chaotic.cells.length > 0
-    ) {
-      this.chaosAcc -= 1;
-      const ev = spawnChaos(
-        obs.chaotic,
-        obs,
-        rgb,
-        amp,
-        bankDur,
-        dtSec,
-        this.segments,
-        chaosDur,
-        obs.chaotic.meanDelta,
-      );
-      events.push(ev);
-      this.active.push({
-        endMs: nowMs + ev.durationSec * 1000,
-        regime: "chaos",
-        regionId: -1,
-      });
+      this.active.length < this.budget;
+
+    for (let c = 0; c < chaosClusters.length; c++) {
+      const cluster = chaosClusters[c]!;
+      const share = clusterShares[c]!;
+      if (share <= 0 || cluster.cells.length === 0) continue;
+      const clusterDur = durationChaosMean(cluster, nCells);
+      const packHz = share / Math.max(0.02, clusterDur);
+      const rateHz = chaosPackRateHz(packHz, cluster.meanDelta);
+      // Closed decision (Implementation Filter): seed random, leftover ≤ 3.
+      let acc = this.chaosAccs.get(cluster.id) ?? Math.random();
+      acc += rateHz * dtSec;
+      while (acc >= 1 && chaosRoom()) {
+        acc -= 1;
+        const ev = spawnChaos(
+          cluster,
+          obs,
+          rgb,
+          amp,
+          bankDur,
+          dtSec,
+          this.segments,
+          clusterDur,
+          cluster.meanDelta,
+        );
+        events.push(ev);
+        this.active.push({
+          endMs: nowMs + ev.durationSec * 1000,
+          regime: "chaos",
+          regionId: -1,
+        });
+      }
+      if (acc > 3) acc = 3;
+      this.chaosAccs.set(cluster.id, acc);
     }
-    // Cap leftover so a quiet stretch does not bank a catch-up volley.
-    // Concurrent-count + share guards are the real ceilings.
-    if (this.chaosAcc > 3) this.chaosAcc = 3;
 
     // Flow: trailing-edge piece-grains; hop-velocity conveyor follow.
     const liveFlowIds = new Set((obs.flows ?? []).map((f) => f.id));
@@ -763,7 +861,7 @@ export class GrainScheduler {
 
       const sitePeriod = flow.period ?? 0;
       if (sitePeriod >= 2) {
-        const periodSec = sitePeriod / SCHED.stepsPerSec;
+        const periodSec = sitePeriod * this.stepSec;
         const pulseDur = Math.max(
           SCHED.DUR_MIN,
           SCHED.OSC_DUTY * periodSec,
@@ -793,6 +891,32 @@ export class GrainScheduler {
       }
     }
 
+    // Merged-region continuity: grains spawned under an id that has since
+    // merged keep following the surviving body. Emit an alias track at the
+    // survivor's anchor while any such grain is alive; drop stale aliases.
+    if (this.mergeAliases.size > 0) {
+      const trackById = new Map<number, RegionTrack>();
+      for (const t of tracks) trackById.set(t.regionId, t);
+      for (const [deadId, into] of [...this.mergeAliases]) {
+        const hasGrains = this.active.some((a) => a.regionId === deadId);
+        if (!hasGrains) {
+          this.mergeAliases.delete(deadId);
+          continue;
+        }
+        // Resolve alias chains (A→B→C) with a bounded walk.
+        let target = into;
+        for (
+          let hops = 0;
+          this.mergeAliases.has(target) && hops < 8;
+          hops++
+        ) {
+          target = this.mergeAliases.get(target)!;
+        }
+        const survivor = trackById.get(target);
+        if (survivor) tracks.push({ ...survivor, regionId: deadId });
+      }
+    }
+
     let calmShareSum = 0;
     for (const s of shares.calm.values()) calmShareSum += s;
     let oscShareSum = 0;
@@ -807,6 +931,7 @@ export class GrainScheduler {
       events,
       tracks,
       budget: this.budget,
+      measuredStepHz: 1 / Math.max(1e-3, this.stepSec),
       predictedActive: this.active.length,
       calmActive: countActiveRegime(this.active, "calm"),
       chaosActive: countActiveRegime(this.active, "chaos"),
@@ -933,7 +1058,11 @@ function allocateShares(
   const calmRemainders: { id: number; frac: number; area: number }[] = [];
   for (const r of obs.coherent) {
     const exact = (budget * r.area) / nCells;
-    const share = Math.max(0, Math.floor(exact));
+    // Same ¼-seat floor flow already has: a confirmed region whose exact
+    // share is at least a quarter seat gets one voice, so mid-size visible
+    // structures are not silent. Overflow scaling below still yields to
+    // chaos when the total exceeds the budget.
+    const share = Math.max(exact >= 0.25 ? 1 : 0, Math.floor(exact));
     calm.set(r.id, share);
     assigned += share;
     calmRemainders.push({ id: r.id, frac: exact - share, area: r.area });
@@ -1124,7 +1253,7 @@ function materialFromRegion(
 }
 
 /** Representative chaos duration from bag means (for packing rate). */
-function durationChaosMean(chaotic: ChaoticArea, nCells: number): number {
+function durationChaosMean(chaotic: ChaosSpendBag, nCells: number): number {
   // Chaos bag: areaT = 0 (not a coherent extent).
   return grainMaterial(
     chaotic.meanSimilarity,
@@ -1156,6 +1285,7 @@ function spawnOsc(
   bankDur: number,
   _dtSec: number,
   segments: MaterialSegment[],
+  stepSec = 1 / SCHED.stepsPerSec,
 ): GrainSpawnEvent {
   const w = obs.width;
   const h = obs.height;
@@ -1171,7 +1301,9 @@ function spawnOsc(
   const delta = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? group.meanDelta;
   const nCells = obs.width * obs.height;
   const mat = grainMaterial(similarity, delta, 0, 0, nCells);
-  const periodSec = group.period / SCHED.stepsPerSec;
+  // Period in steps × measured step interval — pulses lock to the *visual*
+  // period even when the CA is not running at the nominal 30 steps/s.
+  const periodSec = group.period * stepSec;
   const durationSec = Math.max(SCHED.DUR_MIN, SCHED.OSC_DUTY * periodSec);
   const win = sampleWindowFromColour(r, g, b, bankDur, segments, "transient");
   const yNorm = 1 - y / Math.max(1, h - 1);
@@ -1426,7 +1558,7 @@ function spawnCalmAt(
 }
 
 function spawnChaos(
-  chaotic: ChaoticArea,
+  chaotic: ChaosSpendBag,
   obs: FieldObservation,
   rgb: RgbField,
   amplitude: number,
@@ -1660,7 +1792,7 @@ function durationFromTimeOrder(order: number): number {
 }
 
 /** δ-weighted rejection sampling over the chaos bag (uses smoothed δ). */
-function pickChaosCell(chaotic: ChaoticArea, obs: FieldObservation): number {
+function pickChaosCell(chaotic: ChaosSpendBag, obs: FieldObservation): number {
   const cells = chaotic.cells;
   if (cells.length === 0) return 0;
   const bagMax = Math.max(1e-4, chaotic.maxDelta);

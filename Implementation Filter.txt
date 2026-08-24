@@ -52,8 +52,9 @@ Closed — do not reopen without new evidence
 - Percussive chaos + blinker envelope: 0.04/0.2 left alone — do not “harmonise”.
 - Chaos duration spray: packing rate = share / durationChaosMean(δ̄); each
   spawn’s duration = meanDur × clamp((bagδ̄/rawCellδ)^CHAOS_DUR_EXP,
-  1/SPREAD, SPREAD). Envelope/Q still from smoothed δ. chaosAcc seeds random
-  and leftover clamps to 3 (no catch-up volley). Oscillators stay pulse-locked.
+  1/SPREAD, SPREAD). Envelope/Q still from smoothed δ. Accumulators seed
+  random and leftover clamps to 3 (no catch-up volley) — now one per
+  chaotic area, same closed semantics. Oscillators stay pulse-locked.
 - Flow is similarity travel (colour correspondence), not pack-COM. Filled
   translating silhouettes stay calm (persist); gappy streams / dithered
   sheets are flow (hop). When pack COM jumps on a torus, velocity may keep
@@ -94,11 +95,27 @@ Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
   travel (correspondence / hop), punched out of chaos remainder, not out of
   calm. Persist (sliding body) → Calm; hop (colour leaves and lands nearby)
   → Flow. Solid never-changing colour is Calm; frozen mixed detail is Static.
+  Chaos bag is partitioned into connected chaotic areas (ChaosCluster,
+  Chebyshev join; small fragments → one residual scatter entry) — spatial
+  measurements with COM-matched ids for rate-clock phase, never owners.
+  Region id matching / velocity ignore torus-degenerate COM axes
+  (regionComResultantMin — absolute circular resultant, NOT conc-relative:
+  a full-height mass has float-noise COM; a near-wrapping strip does not).
+  Without this a stable wrapping region churns ids every few steps.
+  Calm lifecycle (births / deaths / merges) exported as regionEvents.
 Scheduler: five pools (calm / texture(=static) / chaos / osc / flow); area-share
-  concurrency; flow piece-spawn + FLOW_ID_BASE tracks; split material
+  concurrency; calm gets flow's ¼-seat floor (exact ≥ 0.25 → 1 voice);
+  chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄, duration
+  from own bag stats; residual bag included; global share + budget still
+  the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; split material
   (timeOrder→dur/env, spectralT→Q); stratified+dispersion sites (calm/texture);
   SPAWN_ANCHOR_R_MIN; scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only;
   HSV→polar material query; calm/texture restricted to sustained subset.
+  Periods in steps convert to seconds with the measured step interval
+  (stepSec EMA; HUD RATE row) — not the nominal 30 (display-quantised CA
+  rarely runs at 30 and osc pitch must lock to the visual period).
+  Region births fire their first grain the step they appear; merged-away
+  ids keep alias tracks at the survivor's anchor while their grains live.
 Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
   mono 0.5*(L+R) reported secondary only.
 
@@ -132,7 +149,9 @@ Negotiable (not doctrine):
   localDensity≈0.80/packT≈0.72/persist≈0.70/hop≈0.15/hopDominate/
   stitchHeadingCos/trackHeadingCos/modeWakeFrac/hueEps/chromaEps;
   confirmed tracks freeze hop/density EMA on emit-poison samples),
-  region colour eps (flowColourEps stays 0.12 — no tint join), …
+  region colour eps (flowColourEps stays 0.12 — no tint join),
+  chaosClusterJoin≈2 / chaosClusterMinArea≈16 / chaosClusterMax≈24,
+  regionComResultantMin≈2, …
 - SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
   REL_CHAOS 0.98, REL_CALM 0.34, Q_*, WINDOW_HALF_*,
   FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_WINDOW_T 0.45, FLOW_ID_BASE 1e6,
@@ -142,7 +161,10 @@ Negotiable (not doctrine):
   deltaRateNorm 0.35 (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
   SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
-- Spectral — CENTROID_HOP_SEC, analysis FFT, polar weight / regime bias
+- Spectral — CENTROID_HOP_SEC, analysis FFT, polar weight / regime bias,
+  ONSET_ATTACK_MIN 0.45, SEGMENT_MAX_SEC 1.0 (onset-aligned units: segments
+  sit between detected attacks; transient units pin pos to their onset,
+  sustained stretches split for coverage — replaces fixed-hop slices)
 - Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS
 
 Harnesses:

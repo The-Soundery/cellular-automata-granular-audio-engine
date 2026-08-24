@@ -164,7 +164,9 @@ One-sentence axiom:
    - Chaos: changing remainder — temporally active cells not claimed as
      Calm, Osc, or Flow. Spatial colour need not be mixed. Unorganised
      change is enough. Scramble is Chaos, not Flow. Bag of cells; grains
-     spawn δ-weighted so change is the event.
+     spawn δ-weighted so change is the event. The bag is partitioned into
+     connected chaotic areas (plus one residual scatter) — spatial
+     measurements so the spend lands where the change is, never owners.
 
    Calm vs Flow: high persist (mass keeps its colour as it slides) → Calm;
    high hop (colour leaves cells and lands nearby) → Flow.
@@ -177,6 +179,14 @@ One-sentence axiom:
    They are measurements, not voice owners. Do not score “interestingness”
    or prefer one regime. Calm and Flow are tracked bodies; Static, Chaos,
    and Osc are bags (no pan/Y follow except Flow/Calm region ids).
+
+   Region lifecycle is part of the observation: births, deaths, and merges
+   are real events of computational flow. A newborn region speaks the step
+   it appears; a merged region’s living grains follow the surviving body;
+   a dead region’s grains decay without replacement. A COM axis where the
+   mass wraps the torus is not a measurement — it is excluded from identity
+   matching and contributes no velocity (ids must not churn on stable
+   wrapping structures).
 
 
 4. Region laws → grain function (how grains behave)
@@ -202,7 +212,11 @@ One-sentence axiom:
                   not a generation locked to the CA step. Packing rate uses
                   the bag-mean duration; each grain’s duration follows its
                   spawn cell’s raw δ around that mean so saturated scramble
-                  is a spray, not a 30 Hz choir.
+                  is a spray, not a 30 Hz choir. The bag is spent per
+                  connected chaotic area (§7: chaotic areas receive share
+                  by their area): each area’s sub-share ∝ its area, its
+                  rate ∝ its own δ̄, its duration from its own stats — a hot
+                  storm sprays fast where it is seen; a cool patch patters.
    Flow packing:  fifth area-share pool; conveyor grains — see Flow section.
                   If members blink at a confirmed site period, share is
                   spent as pulse-locked bursts at that period.
@@ -275,6 +289,10 @@ One-sentence axiom:
    Large stable areas that dominate the simulation receive most of the budget
    and spend it as few long overlapping grains. Chaotic areas receive share
    by their area and spend it as many short hits.
+
+   A confirmed region whose exact share is at least a quarter seat gets a
+   floor of one voice (calm and flow alike) — a structure large enough to
+   see must not be silent because rounding took its seat.
 
    Area share is spent, not merely allocated. Caps that prevent a pool from
    reaching its share are loudness policy in disguise.

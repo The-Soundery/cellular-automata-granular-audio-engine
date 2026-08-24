@@ -58,6 +58,8 @@ export interface FieldMeterStats {
   hueSpread?: number;
   budget: number;
   predictedActive: number;
+  /** Measured CA step rate (Hz) from the scheduler's dt EMA. */
+  stepHz?: number;
 }
 
 export interface ControlsApi {
@@ -148,6 +150,8 @@ export function mountControls(
             <span>SPEND</span><b id="st-spend">—</b>
             <span>BUDGET</span><b id="st-budget">—</b>
             <span>STEP</span><b id="st-step">0</b>
+            <span>RATE</span><b id="st-rate">—</b>
+            <span>AUDIO</span><b id="st-audio">—</b>
           </div>
           <div class="data-out" id="vu" title="Drag to set output">
             <span class="k">OUTPUT</span>
@@ -441,6 +445,12 @@ export function mountControls(
     },
     setStats(s) {
       (root.querySelector("#st-step") as HTMLElement).textContent = String(s.step);
+      (root.querySelector("#st-audio") as HTMLElement).textContent =
+        s.audio || "—";
+      (root.querySelector("#st-rate") as HTMLElement).textContent =
+        s.field?.stepHz && s.field.stepHz > 0
+          ? `${s.field.stepHz.toFixed(1)}/s`
+          : "—";
       const f = s.field;
       if (!f) {
         for (const id of ["#st-calm", "#st-static", "#st-chaos", "#st-osc", "#st-flow", "#st-budget", "#st-spend"]) {
@@ -471,7 +481,7 @@ export function mountControls(
         setBar("#tk-osc", shareOsc / budget);
         setBar("#tk-flow", shareFlow / budget);
         (root.querySelector("#st-budget") as HTMLElement).textContent =
-          `${f.predictedActive}/${f.budget}`;
+          `${Math.round(f.predictedActive)}/${f.budget}`;
         (root.querySelector("#st-spend") as HTMLElement).textContent =
           `c ${formatSpend(f.calmGrains, shareCalm)} · s ${formatSpend(f.textureGrains ?? 0, shareTexture)} · x ${formatSpend(f.chaosGrains, shareChaos)} · o ${formatSpend(f.oscGrains ?? 0, shareOsc)} · f ${formatSpend(f.flowGrains ?? 0, shareFlow)}`;
       }
