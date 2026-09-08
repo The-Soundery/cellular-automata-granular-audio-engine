@@ -286,9 +286,20 @@ return { ci, fallbackU, readOffset: rand() * 2 - 1 };
 ```
 
 Full-width random, for every grain in every state. **Static instead uses a narrow
-read span** — a few milliseconds wide rather than the whole window. Not zero, so
-that overlapping copies are not bit-identical and summing coherently, and with
-onsets staggered rather than positions staggered.
+read span** — a few milliseconds wide rather than the whole window, with onsets
+staggered rather than positions staggered.
+
+Collapsing the span does **not** cause coherent summing, which removes the one
+worry that argued against a very narrow span. `verify-phase2` already measures
+this on a uniform-static field:
+
+```
+Coherence test (uniform-static): readOffset=0 rms=9.975e-2  per-slot rms=1.005e-1  gap=-0.06 dB
+→ gap not ≈0.7 dB: earlier coherence residual disconfirmed
+```
+
+Every grain reading the identical point came out 0.06 dB *quieter* than per-slot
+offsets, not louder. So the span can go as narrow as the sound wants.
 
 Its seats come free: the frozen area already commands most of the budget, so
 dividing 63 seats across five colour groups leaves each group with roughly a dozen
