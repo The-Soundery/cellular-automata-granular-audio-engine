@@ -53,6 +53,10 @@ assert(
   /emaProtectHop/.test(fieldSrc) && /emaProtectDensity/.test(fieldSrc),
 );
 assert(
+  "confirmed flow coast-emits when held emit gates fail",
+  /emitCoast/.test(fieldSrc) && /emitHeld/.test(fieldSrc),
+);
+assert(
   "emit hop/density failures are tallied separately from match rejects",
   /emitHop/.test(fieldSrc) && /emitDensity/.test(fieldSrc),
 );
@@ -1227,6 +1231,51 @@ async function runtimeCheck() {
     "confirmed dither sheet does not emitHop/emitDensity fail",
     ditherEmitPoison === 0,
   );
+
+  // Pack-density pulse after confirm: matched sample may fail emit gates, but
+  // held tracks must coast-emit so overlay / flow ids do not blank.
+  const pulsePackObs = new FieldObserver(ditherW, ditherH);
+  let pulsePackPrev = ditherBg;
+  let pulsePackGaps = 0;
+  let pulsePackCoast = 0;
+  let pulsePackConfirmed = false;
+  for (let t = 0; t < 100; t++) {
+    const cur = ditherField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    const bw = 40;
+    const bh = 24;
+    const x0 = (16 + t + ditherW) % ditherW;
+    const y0 = 18;
+    const packPulse = t >= 40 && t % 10 >= 7;
+    for (let iy = 0; iy < bh; iy++) {
+      for (let ix = 0; ix < bw; ix++) {
+        const u = (ix * 19 + iy * 47 + (packPulse ? t * 3 : 0)) % 100;
+        if (u >= (packPulse ? 78 : 42)) continue;
+        const i = ((y0 + iy) % ditherH) * ditherW + ((x0 + ix) % ditherW);
+        cur.r[i] = 0.92;
+        cur.g[i] = 0.78;
+        cur.b[i] = 0.22;
+      }
+    }
+    pulsePackObs.observe(cur, pulsePackPrev);
+    pulsePackPrev = cur;
+    const flows = pulsePackObs.observation.flows ?? [];
+    if (flows.length > 0) pulsePackConfirmed = true;
+    if (pulsePackConfirmed && flows.length === 0) pulsePackGaps += 1;
+    pulsePackCoast += pulsePackObs.observation.flowRejects?.emitCoast ?? 0;
+  }
+  assert(
+    "hop-density pulse confirms a flow",
+    pulsePackConfirmed,
+  );
+  assert(
+    "confirmed hop-density pulse never blanks emit while held",
+    pulsePackGaps === 0,
+  );
+  // Coast may or may not fire depending on EMA protect; blanking is the bug.
 
   // Two discrete hues in one sliding band: interacting streams, not tint-glue.
   const multiObs = new FieldObserver(ditherW, ditherH);

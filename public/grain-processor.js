@@ -3,12 +3,15 @@
  *
  * Sample window / ping-pong bounds freeze at spawn (no scrub chase).
  * Any grain with a regionId directly follows that region's COM for pan, Y,
- * and source L/R channelMix (spawn offset preserved). No smoothing.
+ * and source L/R channelMix (spawn offset preserved). Logical follow is
+ * unsmoothed; audio params ramp to the new target within one render block
+ * so a CA-frame step is not a sample discontinuity.
  * Calm and flow use regionId (flow ids are offset by FLOW_ID_BASE in the
  * scheduler so they never collide with calm). Envelope frozen at spawn.
  * Y→spectrum is an absolute log sweep (80 Hz bottom … 12 kHz top).
  * Stereo source read via channelMix.
- * Energy normalisation keeps loudness roughly neutral (asymmetric).
+ * Slow voice-count leveler: target RMS scales with sqrt(sounding/BUDGET).
+ * Fast attack is a safety duck only — not a block-RMS flattener.
  */
 
 const MAX_GRAINS = 128;
@@ -18,11 +21,21 @@ const GAIN_SMOOTH = 0.05;
 const TARGET_RMS = 0.12;
 const NORM_MIN = 0.25;
 const NORM_MAX = 3.0;
-/** Per-block coeffs: ~12 ms duck at 48 kHz/128 — fast enough to protect, slow enough not to pump. */
+/** Per-block coeffs at 48 kHz/128. Attack is a safety duck; release is a slow leveler (~10×). */
 const NORM_ATTACK = 0.06;
-const NORM_RELEASE = 0.004;
-const PRESCALE_SMOOTH = NORM_RELEASE;
+const NORM_RELEASE = 0.0004;
+/** Voice prescale smoothing — stays at the old release; must not ride the leveler. */
+const PRESCALE_SMOOTH = 0.004;
 const BUDGET_VOICES = 64;
+/** Forced release when the scheduler reclaims a share seat. */
+const SHARE_RELEASE_SEC = 0.02;
+/**
+ * Samples to reach a new pan/Y/mix target after applyTracks.
+ * One render block at 48 kHz — zipper prevention, not follow lag.
+ * The logical follow position still jumps this block; audio params arrive
+ * at the new target by the last sample of the ramp.
+ */
+const PARAM_RAMP_SAMPLES = 128;
 /** Chaos defaults when spawn omits attack/release (regime packing material). */
 const ENV_ATTACK_CHAOS = 0.06;
 const ENV_RELEASE_CHAOS = 0.15;
@@ -66,10 +79,16 @@ class GrainVoice {
     this.x = 0;
     this.y = 0;
     this.pan = 0;
+    this.panTarget = 0;
+    this.yNormTarget = 0.5;
+    this.mixTarget = 0.5;
+    this.rampN = 0;
     this.trackDx = 0;
     this.trackDy = 0;
     /** Once set to ±1, pan holds at that extreme for the rest of the grain. */
     this.panSaturated = 0;
+    /** Once set to ±1, Y/spectrum holds at that extreme for the rest of the grain. */
+    this.ySaturated = 0;
     /** Last follow-anchor; used so COM wraps move the grain by +1, not ±width. */
     this.lastAnchorX = 0;
     this.lastAnchorY = 0;
@@ -95,6 +114,7 @@ class GrainVoice {
     this.bpGain = 1 / Q_REF;
     this.envNorm = 1;
     this.sounding = false;
+    this.grainId = -1;
   }
 }
 
@@ -148,10 +168,13 @@ class GrainProcessor extends AudioWorkletProcessor {
         this.masterGainTarget =
           typeof msg.masterGain === "number" ? msg.masterGain : 1;
         this.savedMasterGainTarget = this.masterGainTarget;
+        if (msg.releaseGrainIds && msg.releaseGrainIds.length) {
+          this.releaseGrains(msg.releaseGrainIds);
+        }
         this.spawnEvents(msg.events || []);
-        if (msg.tracks && msg.tracks.length) this.applyTracks(msg.tracks);
+        this.applyTracks(msg.tracks || []);
       } else if (msg.type === "track") {
-        if (msg.tracks && msg.tracks.length) this.applyTracks(msg.tracks);
+        this.applyTracks(msg.tracks || []);
       } else if (msg.type === "resetGrains" || msg.type === "resetVoices") {
         // Fade master gain then clear voices — avoid instant silence click.
         this.savedMasterGainTarget = this.masterGainTarget;
@@ -205,6 +228,7 @@ class GrainProcessor extends AudioWorkletProcessor {
             ? "flow"
             : e.regime || "calm";
       voice.regionId = typeof e.regionId === "number" ? e.regionId : -1;
+      voice.grainId = typeof e.grainId === "number" ? e.grainId : -1;
       // Envelope shape frozen at spawn — not RGB-driven.
       const defA =
         voice.regime === "chaos" ? ENV_ATTACK_CHAOS : ENV_ATTACK_CALM;
@@ -243,9 +267,14 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.trackDx = typeof e.trackDx === "number" ? e.trackDx : 0;
       voice.trackDy = typeof e.trackDy === "number" ? e.trackDy : 0;
       voice.panSaturated = 0;
+      voice.ySaturated = 0;
       const pan =
         typeof e.pan === "number" ? Math.max(-1, Math.min(1, e.pan)) : 0;
       voice.pan = pan;
+      voice.panTarget = pan;
+      voice.yNormTarget = voice.yNorm;
+      voice.mixTarget = voice.channelMix;
+      voice.rampN = 0;
       applyEqualPowerPan(voice, pan);
 
       let center;
@@ -288,18 +317,61 @@ class GrainProcessor extends AudioWorkletProcessor {
   }
 
   /**
+   * Short-release a live voice without a level jump. Baking the current
+   * envelope into amp is required: the old path forced attackN≤age so a
+   * grain still in attack (env≪1) snapped to sustain (env=1) then faded —
+   * a hard click whenever share-reclaim hit a long calm attack.
+   */
+  forceShortRelease(voice, releaseSamples) {
+    if (voice.delaySamples > 0 && voice.age === 0) {
+      voice.reset();
+      return;
+    }
+    const e = this.envelopeAt(voice);
+    voice.amp *= e;
+    const age = voice.age;
+    const remaining = Math.max(1, voice.duration - age);
+    const rN = Math.min(remaining, releaseSamples);
+    voice.duration = age + rN;
+    voice.releaseN = rN;
+    voice.attackN = Math.min(voice.attackN, age);
+  }
+
+  /**
+   * Scheduler reclaimed these seats: fade the matching voices so a new
+   * area share can occupy the budget. Delayed unstarted grains drop now.
+   */
+  releaseGrains(ids) {
+    const want = new Set(ids);
+    const releaseSamples = Math.max(
+      1,
+      Math.ceil(SHARE_RELEASE_SEC * this.sampleRate_),
+    );
+    for (const voice of this.voices) {
+      if (!voice.active || !want.has(voice.grainId)) continue;
+      this.forceShortRelease(voice, releaseSamples);
+    }
+  }
+
+  /**
    * Direct pan/Y/channelMix follow: any voice with regionId tracks the
    * region's anchor by the shortest toroidal step (spawn offset preserved).
-   * Sample window stays frozen. No smoothing.
+   * Sample window stays frozen. Logical x/y jump this message; pan/Y/mix
+   * audio params ramp to that target within PARAM_RAMP_SAMPLES.
    *
-   * Calm anchors are region COM (or grid centre). Flow anchors are
-   * hop-integrated conveyors from the scheduler so grains ride perceptual
-   * motion, not a stuck structure COM.
+   * Calm and flow anchors are hop-integrated conveyors from the scheduler
+   * (calm also soft-corrects toward COM). Grains ride perceptual motion,
+   * not a raw COM teleport.
    *
-   * Pan saturates at the torus seam instead of wrapping (avoids a one-frame
-   * +1→−1 flip). Follow uses anchor *deltas*, not absolute `anchor+trackDx`,
-   * so when the COM itself wraps 127→0 the grain steps by +1 instead of
-   * jumping by −width and falsely latching panSaturated.
+   * Pan and Y saturate at the torus seam instead of wrapping (avoids a
+   * one-frame +1→−1 pan flip and an 80 Hz↔12 kHz cutoff jump). Follow uses
+   * anchor *deltas*, not absolute `anchor+trackDx`, so when the COM itself
+   * wraps 127→0 the grain steps by +1 instead of jumping by −width and
+   * falsely latching panSaturated / ySaturated.
+   *
+   * If this region's track is missing, drop hasFollowAnchor so a later
+   * re-acquire (new flow clock snapped to trailing edge) does not apply
+   * the gap as one hop.
    */
   applyTracks(tracks) {
     /** @type {Map<number, {comX:number,comY:number,w:number,h:number}>} */
@@ -316,7 +388,12 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (const voice of this.voices) {
       if (!voice.active || voice.regionId < 0) continue;
       const t = byId.get(voice.regionId);
-      if (!t) continue;
+      if (!t) {
+        // Dropout: freeze pan/Y. Next re-acquire must not apply the gap as
+        // one toroidal hop (flow clock snap / COM teleport → 50–80 cell click).
+        voice.hasFollowAnchor = false;
+        continue;
+      }
 
       const dx = voice.hasFollowAnchor
         ? toroidalDelta(t.comX, voice.lastAnchorX, t.w)
@@ -343,15 +420,34 @@ class GrainProcessor extends AudioWorkletProcessor {
           x = t.w - 1;
         }
       }
-      const y = wrapCoord(voice.y + dy, t.h);
+      let y;
+      if (voice.ySaturated < 0) {
+        y = 0;
+      } else if (voice.ySaturated > 0) {
+        y = t.h - 1;
+      } else {
+        y = voice.y + dy;
+        if (y < 0) {
+          voice.ySaturated = -1;
+          y = 0;
+        } else if (y >= t.h) {
+          voice.ySaturated = 1;
+          y = t.h - 1;
+        }
+      }
       voice.x = x;
       voice.y = y;
-      voice.pan = panFromX(x, t.w);
-      voice.yNorm = 1 - y / Math.max(1, t.h - 1);
-      voice.channelMix = clamp01(x / Math.max(1, t.w - 1));
-      applyEqualPowerPan(voice, voice.pan);
-      // Absolute Y follows region — refresh filter coeffs next process block.
-      voice.fcNorm = -1;
+      const pan = panFromX(x, t.w);
+      const yNorm = 1 - y / Math.max(1, t.h - 1);
+      const mix = clamp01(x / Math.max(1, t.w - 1));
+      voice.panTarget = pan;
+      voice.yNormTarget = yNorm;
+      voice.mixTarget = mix;
+      const jumped =
+        Math.abs(pan - voice.pan) > 1e-6 ||
+        Math.abs(yNorm - voice.yNorm) > 1e-6 ||
+        Math.abs(mix - voice.channelMix) > 1e-6;
+      if (jumped) voice.rampN = PARAM_RAMP_SAMPLES;
     }
   }
 
@@ -363,7 +459,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         return this.voices[idx];
       }
     }
-    // Overload: force ~3 ms release on oldest chaos voice; drop the incoming event.
+    // Overload: force share-release on oldest chaos voice; drop the incoming event.
     let oldest = null;
     let oldestAge = -1;
     for (const v of this.voices) {
@@ -375,12 +471,9 @@ class GrainProcessor extends AudioWorkletProcessor {
     if (oldest && oldest.active) {
       const releaseSamples = Math.max(
         1,
-        Math.ceil(0.003 * this.sampleRate_),
+        Math.ceil(SHARE_RELEASE_SEC * this.sampleRate_),
       );
-      const age = oldest.age;
-      oldest.duration = age + releaseSamples;
-      oldest.releaseN = releaseSamples;
-      if (oldest.attackN > age) oldest.attackN = Math.max(1, age);
+      this.forceShortRelease(oldest, releaseSamples);
     }
     return null;
   }
@@ -491,11 +584,19 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (!voice.active) continue;
 
       this.updateFilterCoeffs(voice);
-      const gL = voice.gainL;
-      const gR = voice.gainR;
       let voiceSounded = false;
 
       for (let i = 0; i < n; i++) {
+        if (voice.rampN > 0) {
+          const a = 1 / voice.rampN;
+          voice.pan += (voice.panTarget - voice.pan) * a;
+          voice.yNorm += (voice.yNormTarget - voice.yNorm) * a;
+          voice.channelMix += (voice.mixTarget - voice.channelMix) * a;
+          applyEqualPowerPan(voice, voice.pan);
+          voice.fcNorm = -1;
+          this.updateFilterCoeffs(voice);
+          voice.rampN--;
+        }
         if (voice.delaySamples > 0) {
           voice.delaySamples--;
           continue;
@@ -517,8 +618,8 @@ class GrainProcessor extends AudioWorkletProcessor {
           this.masterGain *
           this.preScale;
 
-        outL[i] += s * gL;
-        if (outR !== outL) outR[i] += s * gR;
+        outL[i] += s * voice.gainL;
+        if (outR !== outL) outR[i] += s * voice.gainR;
 
         // Ping-pong in unwrapped window coords; wrap only for PCM read.
         voice.readPos += voice.dir;
@@ -544,10 +645,12 @@ class GrainProcessor extends AudioWorkletProcessor {
       blockEnergy += m * m;
     }
     const blockRms = Math.sqrt(blockEnergy / Math.max(1, n));
+    const voiceT = Math.min(1, Math.max(1, soundingCount) / BUDGET_VOICES);
+    const targetRms = TARGET_RMS * Math.sqrt(voiceT);
     if (blockRms > 1e-5) {
       const desired = Math.max(
         NORM_MIN,
-        Math.min(NORM_MAX, TARGET_RMS / blockRms),
+        Math.min(NORM_MAX, targetRms / blockRms),
       );
       const coeff = desired < this.normGain ? NORM_ATTACK : NORM_RELEASE;
       this.normGain += (desired - this.normGain) * coeff;
@@ -650,10 +753,6 @@ function softClip(x) {
   if (x > 1) return 1 + Math.tanh(x - 1) * 0.1;
   if (x < -1) return -1 + Math.tanh(x + 1) * 0.1;
   return x;
-}
-
-function wrapCoord(v, period) {
-  return ((v % period) + period) % period;
 }
 
 /** Shortest signed step from `from` to `to` on a torus of length `period`. */

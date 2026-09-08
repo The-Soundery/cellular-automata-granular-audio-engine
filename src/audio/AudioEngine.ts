@@ -328,7 +328,8 @@ export class AudioEngine {
   sendEvents(batch: GrainEventBatch): void {
     if (!this.node || !this.bank) return;
     const tracks = batch.tracks ?? [];
-    if (!batch.events.length && !tracks.length) return;
+    const releases = batch.releaseGrainIds ?? [];
+    if (!batch.events.length && !tracks.length && !releases.length) return;
     this.node.port.postMessage({
       type: "events",
       masterGain: batch.masterGain,
@@ -340,6 +341,7 @@ export class AudioEngine {
         gridHeight: batch.gridHeight,
       })),
       tracks,
+      releaseGrainIds: releases,
     });
   }
 

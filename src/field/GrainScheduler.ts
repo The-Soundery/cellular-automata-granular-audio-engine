@@ -5,7 +5,7 @@ import type {
   OscillatorGroup,
   TexturedArea,
 } from "./FieldObserver.ts";
-import { FIELD_OBS } from "./FieldObserver.ts";
+import { FIELD_OBS, toroidalDelta } from "./FieldObserver.ts";
 import type { RgbField } from "./FrameObserver.ts";
 import {
   identitySpectralBank,
@@ -50,7 +50,9 @@ export const SCHED = {
   /** Spatial similarity → filter Q (spectral purity). */
   Q_MIN: 0.8,
   Q_MAX: 8.0,
-  /** Saturation → window half-width (seconds). */
+  /** Short-grain Q ceiling; qMax lerps to Q_MAX as duration → 0.25 s. */
+  Q_MAX_SHORT: 3,
+  /** Log-area → window half-width (seconds). Colour still sets sample centre. */
   WINDOW_HALF_MIN_S: 0.06,
   WINDOW_HALF_MAX_S: 0.8,
   /** Absolute floor on window half-width (seconds) — avoids degenerate ping-pong. */
@@ -141,6 +143,14 @@ export const SCHED = {
    */
   SPAWN_ANCHOR_R_MIN: 0.5,
   /**
+   * Calm follow rides velX/velY (same conveyor idea as flow). Raw COM can
+   * teleport ≤comMatchDist on a stable id when a moving mass changes shape;
+   * that must not become one pan/Y hop. Soft-correct toward the spawn
+   * anchor, capped per step.
+   */
+  CALM_FOLLOW_CORRECT: 0.35,
+  CALM_FOLLOW_CORR_CAP: 2,
+  /**
    * Flow timeOrder mid-band (chaos-adjacent → toward calm, never wash).
    * Packing density packT = area/regionArea lerps MIN→MAX. RegionArea still
    * only buys concurrency; packing shapes duration/envelope. Listen-tune.
@@ -148,15 +158,20 @@ export const SCHED = {
   FLOW_ORDER_MIN: 0.28,
   FLOW_ORDER_MAX: 0.52,
   /**
-   * Mix toward the long end of sat→window half-width so vivid travelling
-   * colour is less choppy than chaos. 0 = sat law only; 1 = always max half.
-   */
-  FLOW_WINDOW_T: 0.45,
-  /**
    * Cap flow grain lifetime by stream travel time (length / hop speed in
    * steps × dt). Keeps conveyor grains dying near the leading edge.
    */
   FLOW_TRAVEL_DUR_BLEND: 1,
+  /**
+   * Per-grain flow duration spray around the packing mean (packing rate
+   * still uses unsprayed flowConveyorDuration). duration = meanDur ×
+   * clamp((flowδ̄/cellδ)^EXP, 1/SPREAD, SPREAD) with raw cell δ, then
+   * clamped to the travel-time cap when that bound applies. Gentler than
+   * chaos so conveyors stay coherent.
+   */
+  FLOW_DUR_SPREAD: 1.5,
+  /** Exponent on (flowδ̄ / cellδ) before the SPREAD clamp. */
+  FLOW_DUR_EXP: 1.0,
 } as const;
 
 export type GrainRegime = "calm" | "chaos" | "texture" | "osc" | "flow";
@@ -202,16 +217,19 @@ export interface GrainSpawnEvent {
   readOffset?: number;
   /** Stratified slot index for calm/texture. Diagnostic — audio must not branch on it. */
   siteSlot?: number;
+  /** Scheduler↔worklet id so share-reclaim can fade the same voice. */
+  grainId?: number;
 }
 
-/** Per-step region COM for direct pan/Y follow (no smoothing). */
+/** Per-step region COM for direct pan/Y follow (anchors are not EMA'd). */
 export interface RegionTrack {
   regionId: number;
   /** True toroidal COM (kept for harness asserts; follow uses anchor). */
   comX: number;
   comY: number;
   /**
-   * Spawn/follow anchor. Calm: COM (or grid centre). Flow: hop-integrated
+   * Spawn/follow anchor. Calm: hop-velocity conveyor + capped COM
+   * correction (raw COM teleports on a stable id). Flow: hop-integrated
    * conveyor so grains ride perceptual motion, not structure COM drift.
    */
   anchorX: number;
@@ -246,12 +264,25 @@ export interface GrainEventBatch {
     osc: number;
     flow: number;
   };
+  /** Per-region seats (calm ids + FLOW_ID_BASE+flow.id) for DATA-fold join. */
+  regionSeats: { id: number; share: number; active: number }[];
+  /** Voices the worklet must short-release so a new area share can spend. */
+  releaseGrainIds: number[];
 }
 
 type ActiveRecord = {
   endMs: number;
   regime: GrainRegime;
   regionId: number;
+  grainId: number;
+};
+
+type ShareAlloc = {
+  calm: Map<number, number>;
+  chaos: number;
+  texture: number;
+  osc: Map<number, number>;
+  flow: Map<number, number>;
 };
 
 type RegionClock = {
@@ -269,6 +300,14 @@ type RegionClock = {
   scrubSec: number;
   /** Next stratified spawn slot for this region (cursor, not ownership). */
   siteSlot: number;
+  /**
+   * Hop-integrated follow anchor (cells). Raw COM can jump ≤comMatchDist
+   * (~18) on a stable id when a moving mass changes shape — that teleported
+   * every living grain. Ride EMA velocity instead; soft-correct toward COM.
+   */
+  followX: number;
+  followY: number;
+  hasFollow: boolean;
 };
 
 type GrainMaterial = {
@@ -316,7 +355,8 @@ function largestRemainderSplit(total: number, weights: number[]): number[] {
 /**
  * Area-weighted ephemeral grain scheduler.
  * Activity shapes rate/length usage; area shapes budget share;
- * loudness stays neutral via equal amplitude + worklet energy norm.
+ * loudness stays regime-neutral via equal amplitude + voice prescale;
+ * the worklet is a slow sounding-count leveler, not a flat RMS servo.
  */
 export class GrainScheduler {
   readonly budget: number;
@@ -358,6 +398,11 @@ export class GrainScheduler {
     }
   >();
   /**
+   * Hysteresis for calm follow anchors (COM vs grid centre). Crossing
+   * SPAWN_ANCHOR_R_MIN every frame teleports pan/Y by ~half the grid.
+   */
+  private anchorLocks = new Map<number, { xCenter: boolean; yCenter: boolean }>();
+  /**
    * O(1) pool-membership test for spawn-site snapping. Stamp buffer so a
    * pool's mask never has to be cleared: a cell is a member iff its entry
    * equals the stamp handed out when that pool's mask was written.
@@ -368,6 +413,8 @@ export class GrainScheduler {
   private sourceDurationSec = 1;
   /** Polar material segments; identity mid-file until a source loads. */
   private segments: MaterialSegment[] = identitySpectralBank().segments;
+  /** Monotonic voice id — pairs scheduler occupancy with worklet voices. */
+  private nextGrainId = 1;
 
   constructor(budget = GRAIN_BUDGET) {
     this.budget = budget;
@@ -400,6 +447,72 @@ export class GrainScheduler {
     this.textureScrubSec = 0;
     this.textureSiteSlot = 0;
     this.flowClocks.clear();
+    this.anchorLocks.clear();
+    this.nextGrainId = 1;
+  }
+
+  private rememberActive(ev: GrainSpawnEvent, nowMs: number): void {
+    const grainId = this.nextGrainId++;
+    ev.grainId = grainId;
+    this.active.push({
+      endMs: nowMs + ev.durationSec * 1000,
+      regime: ev.regime,
+      regionId: ev.regionId,
+      grainId,
+    });
+  }
+
+  /**
+   * Area share is the occupancy ceiling. Long DUR_MAX grains from a dead id
+   * or a shrunk region must yield so a newly allocated pool can spend —
+   * otherwise calm fills the budget and flow/chaos stay at 0/share.
+   */
+  private reclaimToShares(obs: FieldObservation, shares: ShareAlloc): number[] {
+    const liveCalm = shares.calm;
+    const liveFlow = new Map<number, number>();
+    for (const f of obs.flows ?? []) {
+      liveFlow.set(FLOW_ID_BASE + f.id, shares.flow.get(f.id) ?? 0);
+    }
+    let oscShare = 0;
+    for (const n of shares.osc.values()) oscShare += n;
+
+    const capOf = (a: ActiveRecord): number => {
+      if (a.regime === "calm") {
+        return liveCalm.get(resolveAlias(a.regionId, this.mergeAliases)) ?? 0;
+      }
+      if (a.regime === "flow") return liveFlow.get(a.regionId) ?? 0;
+      if (a.regime === "chaos") return shares.chaos;
+      if (a.regime === "texture") return shares.texture;
+      if (a.regime === "osc") return oscShare;
+      return 0;
+    };
+    const keyOf = (a: ActiveRecord): string => {
+      if (a.regime === "calm") {
+        return `calm:${resolveAlias(a.regionId, this.mergeAliases)}`;
+      }
+      if (a.regime === "flow") return `flow:${a.regionId}`;
+      return a.regime;
+    };
+
+    const groups = new Map<string, ActiveRecord[]>();
+    for (const a of this.active) {
+      const k = keyOf(a);
+      const g = groups.get(k);
+      if (g) g.push(a);
+      else groups.set(k, [a]);
+    }
+
+    const steal = new Set<number>();
+    for (const grains of groups.values()) {
+      const cap = capOf(grains[0]!);
+      if (grains.length <= cap) continue;
+      grains.sort((a, b) => a.endMs - b.endMs);
+      const nSteal = grains.length - cap;
+      for (let i = 0; i < nSteal; i++) steal.add(grains[i]!.grainId);
+    }
+    if (steal.size === 0) return [];
+    this.active = this.active.filter((a) => !steal.has(a.grainId));
+    return [...steal];
   }
 
   /** Write a pool's membership into the stamp buffer; returns its stamp. */
@@ -462,6 +575,9 @@ export class GrainScheduler {
     for (const id of [...this.calmClocks.keys()]) {
       if (!liveCalmIds.has(id)) this.calmClocks.delete(id);
     }
+    for (const id of [...this.anchorLocks.keys()]) {
+      if (!liveCalmIds.has(id)) this.anchorLocks.delete(id);
+    }
 
     // Region lifecycle: remember merges so old-id grains follow the survivor;
     // births fire immediately below (visual appearance = audible onset).
@@ -470,23 +586,27 @@ export class GrainScheduler {
       this.mergeAliases.set(m.from, m.into);
     }
 
+    const releaseGrainIds = this.reclaimToShares(obs, shares);
+
     for (const region of obs.coherent) {
-      const anchor = regionAnchor(region, obs);
-      tracks.push({
-        regionId: region.id,
-        comX: region.comX,
-        comY: region.comY,
-        anchorX: anchor.x,
-        anchorY: anchor.y,
-        gridWidth: obs.width,
-        gridHeight: obs.height,
-      });
+      let lock = this.anchorLocks.get(region.id);
+      if (!lock) {
+        lock = {
+          xCenter:
+            region.width >= obs.width ||
+            region.comConcX < SCHED.SPAWN_ANCHOR_R_MIN,
+          yCenter:
+            region.height >= obs.height ||
+            region.comConcY < SCHED.SPAWN_ANCHOR_R_MIN,
+        };
+        this.anchorLocks.set(region.id, lock);
+      }
+      const prevXCenter = lock.xCenter;
+      const prevYCenter = lock.yCenter;
+      const anchor = regionAnchor(region, obs, lock);
+      const w = obs.width;
+      const h = obs.height;
 
-      const share = shares.calm.get(region.id) ?? 0;
-      if (share <= 0) continue;
-
-      const desired = desiredCalmConcurrent(region, share);
-      const activeHere = this.active.filter((a) => a.regionId === region.id).length;
       let clock = this.calmClocks.get(region.id);
       if (!clock) {
         clock = {
@@ -502,9 +622,50 @@ export class GrainScheduler {
           confidence: 0,
           scrubSec: 0,
           siteSlot: 0,
+          followX: anchor.x,
+          followY: anchor.y,
+          hasFollow: true,
         };
         this.calmClocks.set(region.id, clock);
+      } else if (!clock.hasFollow) {
+        clock.followX = anchor.x;
+        clock.followY = anchor.y;
+        clock.hasFollow = true;
+      } else {
+        // Velocity conveyor + capped COM correction (not a raw COM snap).
+        clock.followX =
+          (((clock.followX + region.velX) % w) + w) % w;
+        clock.followY =
+          (((clock.followY + region.velY) % h) + h) % h;
+        const errX = toroidalDelta(anchor.x, clock.followX, w);
+        const errY = toroidalDelta(anchor.y, clock.followY, h);
+        const corr = SCHED.CALM_FOLLOW_CORRECT;
+        const cap = SCHED.CALM_FOLLOW_CORR_CAP;
+        clock.followX =
+          (((clock.followX + clamp(errX * corr, -cap, cap)) % w) + w) % w;
+        clock.followY =
+          (((clock.followY + clamp(errY * corr, -cap, cap)) % h) + h) % h;
+        // COM ↔ centre is a seam event — resync that axis once.
+        if (lock.xCenter !== prevXCenter) clock.followX = anchor.x;
+        if (lock.yCenter !== prevYCenter) clock.followY = anchor.y;
       }
+
+      tracks.push({
+        regionId: region.id,
+        comX: region.comX,
+        comY: region.comY,
+        anchorX: clock.followX,
+        anchorY: clock.followY,
+        gridWidth: w,
+        gridHeight: h,
+        velX: region.velX,
+        velY: region.velY,
+      });
+
+      const share = shares.calm.get(region.id) ?? 0;
+      if (share <= 0) continue;
+
+      const desired = desiredCalmConcurrent(region, share);
 
       clock.scrubSec +=
         dtSec *
@@ -520,7 +681,7 @@ export class GrainScheduler {
       const packHz = desired / Math.max(0.05, mat.durationSec);
       const baseHz = calmPackRateHz(packHz, region.meanDelta);
       const regionActive = () =>
-        activeHere + countEventsForRegion(events, region.id);
+        countActiveSeat(this.active, "calm", region.id, this.mergeAliases);
       const room = () =>
         regionActive() < desired && this.active.length < this.budget;
 
@@ -550,11 +711,7 @@ export class GrainScheduler {
           anchor.y,
         );
         events.push(ev);
-        this.active.push({
-          endMs: nowMs + ev.durationSec * 1000,
-          regime: "calm",
-          regionId: region.id,
-        });
+        this.rememberActive(ev, nowMs);
       };
 
       if (
@@ -650,11 +807,7 @@ export class GrainScheduler {
           this.stepSec,
         );
         events.push(ev);
-        this.active.push({
-          endMs: nowMs + ev.durationSec * 1000,
-          regime: "osc",
-          regionId: -1,
-        });
+        this.rememberActive(ev, nowMs);
         burst += 1;
       }
     }
@@ -697,11 +850,7 @@ export class GrainScheduler {
           texMaskStamp,
         );
         events.push(ev);
-        this.active.push({
-          endMs: nowMs + ev.durationSec * 1000,
-          regime: "texture",
-          regionId: -1,
-        });
+        this.rememberActive(ev, nowMs);
       }
       if (this.textureAcc > Math.max(3, desiredTexture)) {
         this.textureAcc = Math.max(3, desiredTexture);
@@ -770,11 +919,7 @@ export class GrainScheduler {
           cluster.meanDelta,
         );
         events.push(ev);
-        this.active.push({
-          endMs: nowMs + ev.durationSec * 1000,
-          regime: "chaos",
-          regionId: -1,
-        });
+        this.rememberActive(ev, nowMs);
       }
       if (acc > 3) acc = 3;
       this.chaosAccs.set(cluster.id, acc);
@@ -828,16 +973,24 @@ export class GrainScheduler {
       if (share <= 0 || flow.cells.length === 0) continue;
 
       const flowDur = flowConveyorDuration(flow, dtSec, edge.length);
+      const flowMeanDelta = meanRawDelta(flow.cells, obs.delta);
+      const travelCap = flowTravelCapSec(flow, dtSec, edge.length);
       const regionActive = () =>
-        this.active.filter((a) => a.regionId === trackId).length +
-        countEventsForRegion(events, trackId);
+        countActiveSeat(this.active, "flow", trackId);
       const room = () =>
         regionActive() < share && this.active.length < this.budget;
 
-      const pushPiece = (durationSec: number) => {
+      const pushPiece = (meanDur: number) => {
         const ci =
           edge.ordered[clock!.cellCursor % edge.ordered.length]!;
         clock!.cellCursor += 1;
+        const cellDelta = obs.delta[ci] ?? flowMeanDelta;
+        const durationSec = flowDurationAroundMean(
+          meanDur,
+          flowMeanDelta,
+          cellDelta,
+          travelCap,
+        );
         const ev = spawnFlow(
           flow,
           ci,
@@ -852,11 +1005,7 @@ export class GrainScheduler {
           durationSec,
         );
         events.push(ev);
-        this.active.push({
-          endMs: nowMs + ev.durationSec * 1000,
-          regime: "flow",
-          regionId: trackId,
-        });
+        this.rememberActive(ev, nowMs);
       };
 
       const sitePeriod = flow.period ?? 0;
@@ -903,15 +1052,7 @@ export class GrainScheduler {
           this.mergeAliases.delete(deadId);
           continue;
         }
-        // Resolve alias chains (A→B→C) with a bounded walk.
-        let target = into;
-        for (
-          let hops = 0;
-          this.mergeAliases.has(target) && hops < 8;
-          hops++
-        ) {
-          target = this.mergeAliases.get(target)!;
-        }
+        const target = resolveAlias(into, this.mergeAliases);
         const survivor = trackById.get(target);
         if (survivor) tracks.push({ ...survivor, regionId: deadId });
       }
@@ -923,6 +1064,31 @@ export class GrainScheduler {
     for (const s of shares.osc.values()) oscShareSum += s;
     let flowShareSum = 0;
     for (const s of shares.flow.values()) flowShareSum += s;
+
+    const activeByRegion = new Map<number, number>();
+    for (const a of this.active) {
+      const id =
+        a.regime === "calm"
+          ? resolveAlias(a.regionId, this.mergeAliases)
+          : a.regionId;
+      activeByRegion.set(id, (activeByRegion.get(id) ?? 0) + 1);
+    }
+    const regionSeats: { id: number; share: number; active: number }[] = [];
+    for (const [id, share] of shares.calm) {
+      regionSeats.push({
+        id,
+        share,
+        active: activeByRegion.get(id) ?? 0,
+      });
+    }
+    for (const flow of obs.flows ?? []) {
+      const id = FLOW_ID_BASE + flow.id;
+      regionSeats.push({
+        id,
+        share: shares.flow.get(flow.id) ?? 0,
+        active: activeByRegion.get(id) ?? 0,
+      });
+    }
 
     return {
       masterGain: MASTER_GAIN,
@@ -945,6 +1111,8 @@ export class GrainScheduler {
         osc: oscShareSum,
         flow: flowShareSum,
       },
+      regionSeats,
+      releaseGrainIds,
     };
   }
 
@@ -1034,6 +1202,100 @@ function equalAmp(budget: number): number {
   return 1 / Math.sqrt(Math.max(1, budget));
 }
 
+type StableClaim = {
+  pool: "calm" | "osc" | "flow" | "texture";
+  id: number;
+  exact: number;
+  area: number;
+};
+
+/**
+ * Hare–Niemeyer: integer seats for `room` in proportion to exact area share.
+ * Used when the ¼-seat floor would overflow — floor(1 * scale) would zero
+ * every strip in a many-column field.
+ */
+function hamiltonSeats(
+  claims: StableClaim[],
+  room: number,
+): (StableClaim & { seats: number })[] {
+  if (claims.length === 0 || room <= 0) {
+    return claims.map((c) => ({ ...c, seats: 0 }));
+  }
+  const exactSum = claims.reduce((s, c) => s + c.exact, 0);
+  if (exactSum <= 0) {
+    return claims.map((c) => ({ ...c, seats: 0 }));
+  }
+  const parts = claims.map((c) => {
+    const scaled = (c.exact / exactSum) * room;
+    const base = Math.floor(scaled);
+    return { ...c, seats: base, frac: scaled - base };
+  });
+  let used = 0;
+  for (const p of parts) used += p.seats;
+  const order = parts
+    .map((_, i) => i)
+    .sort((a, b) => {
+      const pa = parts[a]!;
+      const pb = parts[b]!;
+      return pb.frac - pa.frac || pb.area - pa.area || pa.id - pb.id;
+    });
+  for (let n = 0; used < room && n < order.length; n++) {
+    parts[order[n]!]!.seats += 1;
+    used += 1;
+  }
+  return parts;
+}
+
+/** Visible mid-size calm/flow (exact ≥ ¼) must not stay 0 while a pool holds ≥2. */
+function stealQuarterSeats(
+  calm: Map<number, number>,
+  flow: Map<number, number>,
+  osc: Map<number, number>,
+  textureRef: { n: number },
+  claims: StableClaim[],
+): void {
+  const silent = claims.filter((c) => {
+    if (c.exact < 0.25) return false;
+    if (c.pool === "calm") return (calm.get(c.id) ?? 0) === 0;
+    if (c.pool === "flow") return (flow.get(c.id) ?? 0) === 0;
+    return false;
+  });
+  silent.sort((a, b) => b.area - a.area || a.id - b.id);
+
+  const takeOne = (): boolean => {
+    let bestKind: "calm" | "flow" | "osc" | "texture" | null = null;
+    let bestId = -1;
+    let bestN = 1;
+    const consider = (
+      kind: "calm" | "flow" | "osc" | "texture",
+      id: number,
+      n: number,
+    ) => {
+      if (n >= 2 && n > bestN) {
+        bestKind = kind;
+        bestId = id;
+        bestN = n;
+      }
+    };
+    for (const [id, n] of calm) consider("calm", id, n);
+    for (const [id, n] of flow) consider("flow", id, n);
+    for (const [id, n] of osc) consider("osc", id, n);
+    consider("texture", -1, textureRef.n);
+    if (!bestKind) return false;
+    if (bestKind === "calm") calm.set(bestId, bestN - 1);
+    else if (bestKind === "flow") flow.set(bestId, bestN - 1);
+    else if (bestKind === "osc") osc.set(bestId, bestN - 1);
+    else textureRef.n -= 1;
+    return true;
+  };
+
+  for (const s of silent) {
+    if (!takeOne()) break;
+    if (s.pool === "calm") calm.set(s.id, 1);
+    else flow.set(s.id, 1);
+  }
+}
+
 /**
  * Area-proportional concurrent shares. Rounding leftovers among calm regions
  * are redistributed by largest remainder so a full-calm field reaches the
@@ -1097,30 +1359,68 @@ function allocateShares(
     assigned + textureFromArea + oscFromArea + flowFromArea;
   if (stableAssigned + chaosFromArea > budget && stableAssigned > 0) {
     const roomForStable = budget - Math.min(chaosFromArea, budget);
-    const scale = roomForStable / stableAssigned;
-    let sum = 0;
-    for (const [id, s] of calm) {
-      const ns = Math.max(0, Math.floor(s * scale));
-      calm.set(id, ns);
-      sum += ns;
+    const claims: StableClaim[] = [];
+    for (const r of obs.coherent) {
+      claims.push({
+        pool: "calm",
+        id: r.id,
+        exact: (budget * r.area) / nCells,
+        area: r.area,
+      });
     }
-    for (const [p, s] of osc) {
-      const ns = Math.max(0, Math.floor(s * scale));
-      osc.set(p, ns);
-      sum += ns;
+    const oscAreaByPeriod = new Map<number, number>();
+    for (const g of obs.oscillators ?? []) {
+      oscAreaByPeriod.set(
+        g.period,
+        (oscAreaByPeriod.get(g.period) ?? 0) + g.area,
+      );
     }
-    for (const [id, s] of flow) {
-      const ns = Math.max(0, Math.floor(s * scale));
-      flow.set(id, ns);
-      sum += ns;
+    for (const [period, area] of oscAreaByPeriod) {
+      claims.push({
+        pool: "osc",
+        id: period,
+        exact: (budget * area) / nCells,
+        area,
+      });
     }
-    const texture = Math.max(0, Math.floor(textureFromArea * scale));
-    sum += texture;
+    for (const f of obs.flows ?? []) {
+      claims.push({
+        pool: "flow",
+        id: f.id,
+        exact: (budget * f.regionArea) / nCells,
+        area: f.regionArea,
+      });
+    }
+    if (texturedArea > 0) {
+      claims.push({
+        pool: "texture",
+        id: -2,
+        exact: (budget * texturedArea) / nCells,
+        area: texturedArea,
+      });
+    }
+    const filled = hamiltonSeats(claims, roomForStable);
+    for (const id of calm.keys()) calm.set(id, 0);
+    for (const id of osc.keys()) osc.set(id, 0);
+    for (const id of flow.keys()) flow.set(id, 0);
+    const textureRef = { n: 0 };
+    for (const p of filled) {
+      if (p.seats <= 0) continue;
+      if (p.pool === "calm") calm.set(p.id, p.seats);
+      else if (p.pool === "osc") osc.set(p.id, p.seats);
+      else if (p.pool === "flow") flow.set(p.id, p.seats);
+      else textureRef.n = p.seats;
+    }
+    stealQuarterSeats(calm, flow, osc, textureRef, claims);
+    let sum = textureRef.n;
+    for (const n of calm.values()) sum += n;
+    for (const n of osc.values()) sum += n;
+    for (const n of flow.values()) sum += n;
     return {
       calm,
       osc,
       flow,
-      texture,
+      texture: textureRef.n,
       chaos: Math.min(chaosFromArea, Math.max(0, budget - sum)),
     };
   }
@@ -1202,6 +1502,19 @@ function chaosPackRateHz(packHz: number, meanDelta: number): number {
 }
 
 /**
+ * Log-area size ∈ [0,1]. Speck → 0, full field → 1. area ≤ 0 → 0 (tight).
+ * Shared by duration (with fill) and window half-width (raw).
+ */
+function areaT(area: number, nCells: number): number {
+  if (area <= 0) return 0;
+  const minArea = FIELD_OBS.minRegionArea;
+  return clamp01(
+    Math.log2(Math.max(2, area / minArea)) /
+      Math.log2(Math.max(2, nCells / minArea)),
+  );
+}
+
+/**
  * Split material law: timeOrder → duration/envelope; spectralT → Q only.
  * similarity is the spatial axis (not κ — κ would double-count stability into Q).
  */
@@ -1212,30 +1525,27 @@ function grainMaterial(
   fillT: number,
   nCells: number,
 ): GrainMaterial {
-  const minArea = FIELD_OBS.minRegionArea;
   const stabilityT = 1 - clamp01(delta / SCHED.deltaRateNorm);
   const fillRatio = clamp01(fillT);
   // area=0 for bag/per-cell spawns: a bag is not a coherent extent, so its
-  // area must not lengthen its grains.
-  const areaT =
-    area > 0
-      ? clamp01(
-          Math.log2(Math.max(2, area / minArea)) /
-            Math.log2(Math.max(2, nCells / minArea)),
-        ) *
-        (0.7 + 0.3 * fillRatio)
-      : 0;
-  const order = clamp01(0.65 * stabilityT + 0.35 * areaT);
-  const spectralT = clamp01(similarity);
+  // area must not lengthen its grains. Fill weights duration only.
+  const sizeForDur = areaT(area, nCells) * (0.7 + 0.3 * fillRatio);
+  const order = clamp01(0.65 * stabilityT + 0.35 * sizeForDur);
   const durationSec =
     SCHED.DUR_MIN * Math.pow(SCHED.DUR_MAX / SCHED.DUR_MIN, order);
   const s = smoothstep01(order);
+  const spectralT = clamp01(similarity);
+  const qMax = lerp(
+    SCHED.Q_MAX_SHORT,
+    SCHED.Q_MAX,
+    clamp01(durationSec / 0.25),
+  );
   return {
     order,
     durationSec,
     attackFrac: lerp(SCHED.ATT_MIN, SCHED.ATT_MAX, s),
     releaseFrac: lerp(SCHED.REL_CHAOS, SCHED.REL_CALM, s),
-    q: SCHED.Q_MIN * Math.pow(SCHED.Q_MAX / SCHED.Q_MIN, spectralT),
+    q: SCHED.Q_MIN * Math.pow(qMax / SCHED.Q_MIN, spectralT),
   };
 }
 
@@ -1305,7 +1615,16 @@ function spawnOsc(
   // period even when the CA is not running at the nominal 30 steps/s.
   const periodSec = group.period * stepSec;
   const durationSec = Math.max(SCHED.DUR_MIN, SCHED.OSC_DUTY * periodSec);
-  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "transient");
+  const sizeT = areaT(group.area, nCells);
+  const win = sampleWindowFromColour(
+    r,
+    g,
+    b,
+    bankDur,
+    segments,
+    "transient",
+    sizeT,
+  );
   const yNorm = 1 - y / Math.max(1, h - 1);
   return {
     x,
@@ -1380,7 +1699,16 @@ function spawnTexture(
   const r = rgb.r[ci] ?? textured.meanR;
   const g = rgb.g[ci] ?? textured.meanG;
   const b = rgb.b[ci] ?? textured.meanB;
-  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "sustained");
+  const sizeT = areaT(textured.area, w * h);
+  const win = sampleWindowFromColour(
+    r,
+    g,
+    b,
+    bankDur,
+    segments,
+    "sustained",
+    sizeT,
+  );
   const sampleCenter = wrap01(win.sampleCenter + scrubSec / bankDur);
   const yNorm = 1 - y / Math.max(1, h - 1);
   return {
@@ -1418,16 +1746,33 @@ function wrap01(x: number): number {
 function regionAnchor(
   region: CoherentRegion,
   obs: FieldObservation,
+  lock?: { xCenter: boolean; yCenter: boolean },
 ): { x: number; y: number } {
-  const x =
-    region.width >= obs.width || region.comConcX < SCHED.SPAWN_ANCHOR_R_MIN
-      ? (obs.width - 1) / 2
-      : region.comX;
-  const y =
-    region.height >= obs.height || region.comConcY < SCHED.SPAWN_ANCHOR_R_MIN
-      ? (obs.height - 1) / 2
-      : region.comY;
-  return { x, y };
+  const w = obs.width;
+  const h = obs.height;
+  const enter = SCHED.SPAWN_ANCHOR_R_MIN - 0.08;
+  const leave = SCHED.SPAWN_ANCHOR_R_MIN + 0.08;
+  let xCenter: boolean;
+  let yCenter: boolean;
+  if (lock) {
+    xCenter = lock.xCenter;
+    yCenter = lock.yCenter;
+    if (region.width >= w) xCenter = true;
+    else if (region.width <= w - 3 && region.comConcX > leave) xCenter = false;
+    else if (region.comConcX < enter) xCenter = true;
+    if (region.height >= h) yCenter = true;
+    else if (region.height <= h - 3 && region.comConcY > leave) yCenter = false;
+    else if (region.comConcY < enter) yCenter = true;
+    lock.xCenter = xCenter;
+    lock.yCenter = yCenter;
+  } else {
+    xCenter = region.width >= w || region.comConcX < SCHED.SPAWN_ANCHOR_R_MIN;
+    yCenter = region.height >= h || region.comConcY < SCHED.SPAWN_ANCHOR_R_MIN;
+  }
+  return {
+    x: xCenter ? (w - 1) / 2 : region.comX,
+    y: yCenter ? (h - 1) / 2 : region.comY,
+  };
 }
 
 function spawnCalm(
@@ -1522,7 +1867,16 @@ function spawnCalmAt(
   const r = rgb.r[ci] ?? region.meanR;
   const g = rgb.g[ci] ?? region.meanG;
   const b = rgb.b[ci] ?? region.meanB;
-  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "sustained");
+  const sizeT = areaT(region.area, w * h);
+  const win = sampleWindowFromColour(
+    r,
+    g,
+    b,
+    bankDur,
+    segments,
+    "sustained",
+    sizeT,
+  );
   const sampleCenter = wrap01(win.sampleCenter + scrubSec / bankDur);
   const yNorm = 1 - cy / Math.max(1, h - 1);
 
@@ -1584,7 +1938,16 @@ function spawnChaos(
   const nCells = w * h;
   const mat = grainMaterial(similarity, deltaSmooth, 0, 0, nCells);
   const durationSec = chaosDurationAroundMean(meanDur, bagMeanDelta, deltaRaw);
-  const win = sampleWindowFromColour(r, g, b, bankDur, segments, "transient");
+  const sizeT = areaT(chaotic.area, nCells);
+  const win = sampleWindowFromColour(
+    r,
+    g,
+    b,
+    bankDur,
+    segments,
+    "transient",
+    sizeT,
+  );
   const yNorm = 1 - y / Math.max(1, h - 1);
 
   return {
@@ -1630,6 +1993,35 @@ function chaosDurationAroundMean(
   return Math.max(SCHED.DUR_MIN / spread, meanDur * scale);
 }
 
+/**
+ * Mean-preserving flow duration spray: hotter cells shorter, cooler longer.
+ * Packing rate still uses unsprayed flowConveyorDuration. Travel-time cap
+ * (when it applies) is an upper bound so conveyor grains die near the lead.
+ */
+function flowDurationAroundMean(
+  meanDur: number,
+  flowMeanDelta: number,
+  cellDelta: number,
+  travelCapSec?: number,
+): number {
+  const bag = Math.max(1e-6, flowMeanDelta);
+  const cell = Math.max(1e-6, cellDelta);
+  const spread = SCHED.FLOW_DUR_SPREAD;
+  const ratio = Math.pow(bag / cell, SCHED.FLOW_DUR_EXP);
+  const scale = Math.max(1 / spread, Math.min(spread, ratio));
+  let dur = Math.max(SCHED.DUR_MIN / spread, meanDur * scale);
+  if (travelCapSec != null) dur = Math.min(dur, travelCapSec);
+  return dur;
+}
+
+function meanRawDelta(cells: Uint32Array, delta: Float32Array): number {
+  const n = cells.length;
+  if (n === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += delta[cells[i]!] ?? 0;
+  return sum / n;
+}
+
 /** Member cells / dilated patch — dense pack → 1, thin stream → lower. */
 function flowPackT(flow: FlowGroup): number {
   return clamp01(flow.area / Math.max(1, flow.regionArea));
@@ -1643,11 +2035,13 @@ function flowTimeOrder(flow: FlowGroup): number {
 /**
  * Trailing / leading edges along hop heading. Trailing = start of motion
  * (spawn); leading = end (grain dies). Ordered cells: trailing → leading.
+ * Projection is toroidal about COM so a pack that straddles the seam keeps
+ * a 3-cell length instead of inverting trail/lead across the whole grid.
  */
 function flowHeadingEdges(
   flow: FlowGroup,
   w: number,
-  _h: number,
+  h: number,
 ): {
   trailX: number;
   trailY: number;
@@ -1683,7 +2077,9 @@ function flowHeadingEdges(
   const scored = cells.map((ci) => {
     const x = ci % w;
     const y = (ci / w) | 0;
-    return { ci, x, y, proj: x * hx + y * hy };
+    const dx = toroidalOffset(x, flow.comX, w);
+    const dy = toroidalOffset(y, flow.comY, h);
+    return { ci, x, y, proj: dx * hx + dy * hy };
   });
   scored.sort((a, b) => a.proj - b.proj);
   const trail = scored[0]!;
@@ -1700,6 +2096,17 @@ function flowHeadingEdges(
   };
 }
 
+function flowTravelCapSec(
+  flow: FlowGroup,
+  dtSec: number,
+  streamLength: number,
+): number | undefined {
+  const speed = Math.hypot(flow.velX, flow.velY);
+  if (speed < 0.15 || SCHED.FLOW_TRAVEL_DUR_BLEND <= 0) return undefined;
+  const travelSteps = Math.max(1, streamLength / speed);
+  return travelSteps * Math.max(1e-3, dtSec);
+}
+
 /** Packing mid-band duration, capped by stream travel time (conveyor). */
 function flowConveyorDuration(
   flow: FlowGroup,
@@ -1707,10 +2114,8 @@ function flowConveyorDuration(
   streamLength: number,
 ): number {
   const packDur = durationFromTimeOrder(flowTimeOrder(flow));
-  const speed = Math.hypot(flow.velX, flow.velY);
-  if (speed < 0.15 || SCHED.FLOW_TRAVEL_DUR_BLEND <= 0) return packDur;
-  const travelSteps = Math.max(1, streamLength / speed);
-  const travelSec = travelSteps * Math.max(1e-3, dtSec);
+  const travelSec = flowTravelCapSec(flow, dtSec, streamLength);
+  if (travelSec == null) return packDur;
   const lo = SCHED.DUR_MIN;
   const hi = packDur;
   const capped = Math.min(hi, Math.max(lo, travelSec));
@@ -1746,7 +2151,14 @@ function spawnFlow(
   const s = smoothstep01(order);
   const attackFrac = lerp(SCHED.ATT_MIN, SCHED.ATT_MAX, s);
   const releaseFrac = lerp(SCHED.REL_CHAOS, SCHED.REL_CALM, s);
-  const q = SCHED.Q_MIN * Math.pow(SCHED.Q_MAX / SCHED.Q_MIN, clamp01(similarity));
+  const spectralT = clamp01(similarity);
+  const qMax = lerp(
+    SCHED.Q_MAX_SHORT,
+    SCHED.Q_MAX,
+    clamp01(durationSec / 0.25),
+  );
+  const q = SCHED.Q_MIN * Math.pow(qMax / SCHED.Q_MIN, spectralT);
+  const sizeT = areaT(flow.regionArea, w * h);
   const win = sampleWindowFromColour(
     r,
     g,
@@ -1754,7 +2166,7 @@ function spawnFlow(
     bankDur,
     segments,
     "neutral",
-    SCHED.FLOW_WINDOW_T,
+    sizeT,
   );
   const yNorm = 1 - y / Math.max(1, h - 1);
   const trackDx = toroidalOffset(x, followX, w);
@@ -1813,10 +2225,10 @@ export function rgbToHueNorm(r: number, g: number, b: number): number {
 }
 
 /**
- * HSV → polar material centre + sat→window half-width.
+ * HSV → polar material centre + log-area → window half-width.
  * regimeBias "sustained" (calm/texture) searches only the high-stationarity
  * subset; "transient"/"neutral" use the full map.
- * windowLongT mixes toward the long end of the half-width law (flow).
+ * sizeT is log-area ∈ [0,1] of the spawning mass (0 = tight, 1 = wide).
  */
 function sampleWindowFromColour(
   r: number,
@@ -1825,15 +2237,13 @@ function sampleWindowFromColour(
   bankDur: number,
   segments: MaterialSegment[],
   regimeBias: RegimeMaterialBias,
-  windowLongT = 0,
+  sizeT = 0,
 ): { sampleCenter: number; sampleHalf: number } {
   const { h, s, v } = rgbToHsv(r, g, b);
-  const satT = 1 - s;
-  const halfT = lerp(satT, 1, clamp01(windowLongT));
   const halfSec = lerp(
     SCHED.WINDOW_HALF_MIN_S,
     SCHED.WINDOW_HALF_MAX_S,
-    halfT,
+    clamp01(sizeT),
   );
   const mat = queryMaterialFromHsv(segments, h, s, v, regimeBias);
   const absFloor = SCHED.WINDOW_HALF_ABS_MIN_S / Math.max(1e-3, bankDur);
@@ -1976,9 +2386,26 @@ function toroidalOffset(cell: number, com: number, period: number): number {
   return d;
 }
 
-function countEventsForRegion(events: GrainSpawnEvent[], id: number): number {
+function resolveAlias(id: number, aliases: Map<number, number>): number {
+  let target = id;
+  for (let hops = 0; aliases.has(target) && hops < 8; hops++) {
+    target = aliases.get(target)!;
+  }
+  return target;
+}
+
+function countActiveSeat(
+  active: ActiveRecord[],
+  regime: GrainRegime,
+  seatId: number,
+  aliases?: Map<number, number>,
+): number {
   let n = 0;
-  for (const e of events) if (e.regionId === id) n++;
+  for (const a of active) {
+    if (a.regime !== regime) continue;
+    const id = aliases ? resolveAlias(a.regionId, aliases) : a.regionId;
+    if (id === seatId) n++;
+  }
   return n;
 }
 
@@ -2007,6 +2434,10 @@ function lerp(a: number, b: number, t: number): number {
 function smoothstep01(t: number): number {
   const x = clamp01(t);
   return x * x * (3 - 2 * x);
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function clamp01(v: number): number {

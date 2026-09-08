@@ -40,7 +40,7 @@ assert(
 assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/.test(main) && /scheduler\.step/.test(main) && /sendEvents/.test(main));
 assert(
   "worklet documents sample freeze + direct pan/Y follow",
-  /applyTracks/.test(worklet) && /No smoothing/.test(worklet),
+  /applyTracks/.test(worklet) && /PARAM_RAMP_SAMPLES/.test(worklet),
 );
 assert("ping-pong uses locked bounds only", /voice\.boundLo/.test(worklet) && /voice\.boundHi/.test(worklet));
 const processBody = worklet.slice(worklet.indexOf("process(_inputs"));
@@ -49,8 +49,12 @@ assert(
   !/voice\.boundLo\s*=/.test(processBody) && !/voice\.boundHi\s*=/.test(processBody),
 );
 assert(
-  "worklet has no pan/Y lerp smoothing",
-  !/TRACK_SMOOTH/.test(worklet) && !/panTarget/.test(worklet),
+  "worklet has no TRACK_SMOOTH follow EMA",
+  !/TRACK_SMOOTH/.test(worklet),
+);
+assert(
+  "param ramp is one render block (zipper, not lag)",
+  /PARAM_RAMP_SAMPLES = 128/.test(worklet),
 );
 assert("no luminance→volume mapping in scheduler", !/luminance/.test(sched) && !/brightness/.test(sched));
 assert("equal amplitude / sqrt budget", /equalAmp|1 \/ Math\.sqrt/.test(sched));
@@ -80,6 +84,16 @@ assert(
   "polar radius is fixed (not stationarity-encoded)",
   /POLAR_SEGMENT_RADIUS/.test(spectral) &&
     !/0\.7 \+ 0\.3 \* stationarity/.test(spectral),
+);
+assert(
+  "polar axes are mel-PCA rank-uniform (not centroid/energy rank)",
+  /MEL_BANDS/.test(spectral) &&
+    /assignPolarFromMelPca/.test(spectral) &&
+    !/byCentroid/.test(spectral),
+);
+assert(
+  "silent hops are gated relative to peak (not a digital-zero floor)",
+  /SILENCE_GATE_DB/.test(spectral) && !/energy > 1e-8/.test(spectral),
 );
 assert(
   "scheduler uses polar material query",
@@ -224,6 +238,94 @@ assert(
     segments.some((s) => nearClick(s.pos) && s.stationarity < 0.55) ||
       transientNear,
   );
+}
+
+// Same timbre at both ends of the file should share a hue neighbourhood;
+// a different timbre in the middle should sit farther around the circle.
+{
+  const { pathToFileURL } = await import("node:url");
+  const { buildPolarSegments } = await import(
+    pathToFileURL(join(root, "src/audio/spectral.ts")).href
+  );
+
+  const sr = 44100;
+  const n = Math.floor(sr * 2.0);
+  const pcm = new Float32Array(n);
+  const third = Math.floor(n / 3);
+  let rng = 123456789;
+  const noise = () => {
+    rng = (rng * 1664525 + 1013904223) >>> 0;
+    return rng / 4294967296 * 2 - 1;
+  };
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    if (i < third || i >= 2 * third) {
+      pcm[i] = 0.2 * Math.sin(2 * Math.PI * 220 * t);
+    } else {
+      pcm[i] = 0.2 * noise();
+    }
+  }
+  const segs = buildPolarSegments(pcm, sr);
+  const circ = (a, b) => {
+    let d = Math.abs(a - b);
+    if (d > 0.5) d = 1 - d;
+    return d;
+  };
+  const meanCirc = (xs, origin) => {
+    if (xs.length === 0) return 1;
+    let s = 0;
+    for (const x of xs) s += circ(x, origin);
+    return s / xs.length;
+  };
+  const startT = segs.filter((s) => s.pos < 0.28).map((s) => s.angle);
+  const midN = segs
+    .filter((s) => s.pos > 0.38 && s.pos < 0.62)
+    .map((s) => s.angle);
+  const endT = segs.filter((s) => s.pos > 0.72).map((s) => s.angle);
+  assert(
+    "two-timbre fixture has units in all thirds",
+    startT.length > 0 && midN.length > 0 && endT.length > 0,
+  );
+  if (startT.length && midN.length && endT.length) {
+    const origin = startT[Math.floor(startT.length / 2)];
+    const dEnd = meanCirc(endT, origin);
+    const dNoise = meanCirc(midN, origin);
+    assert(
+      "same timbre at file ends sit closer in hue than mid noise",
+      dEnd < dNoise - 0.02,
+    );
+  }
+}
+
+// Colour must never land in leading/trailing file silence.
+{
+  const { pathToFileURL } = await import("node:url");
+  const { buildPolarSegments, queryMaterialFromHsv } = await import(
+    pathToFileURL(join(root, "src/audio/spectral.ts")).href
+  );
+
+  const sr = 44100;
+  const n = Math.floor(sr * 2.0);
+  const pcm = new Float32Array(n);
+  const t0 = Math.floor(0.5 * sr);
+  const t1 = Math.floor(1.5 * sr);
+  for (let i = t0; i < t1; i++) {
+    pcm[i] = 0.25 * Math.sin((2 * Math.PI * 440 * i) / sr);
+  }
+  const segs = buildPolarSegments(pcm, sr);
+  const inSilence = (pos) => pos < 0.18 || pos > 0.82;
+  assert(
+    "no segment centres in leading/trailing silence",
+    segs.length > 0 && !segs.some((s) => inSilence(s.pos)),
+  );
+  let hueHitSilence = false;
+  for (let i = 0; i < 24; i++) {
+    const r = queryMaterialFromHsv(segs, i / 24, 1, 0.5, "neutral");
+    if (inSilence(r.sampleCenter)) hueHitSilence = true;
+    const g = queryMaterialFromHsv(segs, i / 24, 0, i / 23, "sustained");
+    if (inSilence(g.sampleCenter)) hueHitSilence = true;
+  }
+  assert("no HSV query lands in file silence", !hueHitSilence);
 }
 
 if (failed) {

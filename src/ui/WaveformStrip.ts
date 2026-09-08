@@ -1,5 +1,15 @@
 import type { AudioStats } from "../audio/AudioEngine.ts";
+import {
+  type MaterialSegment,
+  sustainedSubset,
+} from "../audio/spectral.ts";
 import { REGIME_HEX } from "./RegionOverlay.ts";
+
+const ONSET_PERSIST_MS = 300;
+const MIN_SUSTAINED_SPAN_PX = 3;
+const SEGMENT_LINE = "#5a5a5a";
+const SUSTAINED_FILL = "rgba(207, 207, 207, 0.10)";
+const ONSET_TICK = "#cfcfcf";
 
 /** Source waveform + live grain ticks. Chrome, not part of the CA field. */
 export class WaveformStrip {
@@ -15,11 +25,27 @@ export class WaveformStrip {
     this.ctx = ctx;
   }
 
-  draw(peaks: Float32Array | null, stats: AudioStats | null): void {
+  draw(
+    peaks: Float32Array | null,
+    stats: AudioStats | null,
+    diagnostics?: {
+      segments?: MaterialSegment[] | null;
+      onsets?: { t: number; bornMs: number }[];
+      nowMs?: number;
+    },
+  ): void {
     const css = this.syncSize();
     const { ctx } = this;
     ctx.clearRect(0, 0, css.w, css.h);
     const mid = css.h / 2;
+
+    const segments = diagnostics?.segments;
+    if (segments && segments.length > 0) {
+      this.drawSustainedBands(segments, css.w, css.h);
+      this.drawSegmentBoundaries(segments, css.w, css.h);
+    }
+
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = "#7a7a7a";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -41,22 +67,80 @@ export class WaveformStrip {
       ctx.stroke();
     }
 
-    if (!stats?.listen?.length) return;
-    for (const g of stats.listen) {
-      if (typeof g.t !== "number") continue;
-      const x = Math.max(0.5, Math.min(css.w - 0.5, g.t * css.w));
-      if (g.regime === "calm") ctx.strokeStyle = REGIME_HEX.calm;
-      else if (g.regime === "flow") ctx.strokeStyle = REGIME_HEX.flow;
-      else if (g.regime === "osc") ctx.strokeStyle = REGIME_HEX.osc;
-      else if (g.regime === "texture" || g.regime === "static")
-        ctx.strokeStyle = REGIME_HEX.tex;
-      else ctx.strokeStyle = REGIME_HEX.chaos;
-      const h = g.sounding ? css.h * 0.42 : css.h * 0.22;
+    if (stats?.listen?.length) {
+      for (const g of stats.listen) {
+        if (typeof g.t !== "number") continue;
+        const x = Math.max(0.5, Math.min(css.w - 0.5, g.t * css.w));
+        if (g.regime === "calm") ctx.strokeStyle = REGIME_HEX.calm;
+        else if (g.regime === "flow") ctx.strokeStyle = REGIME_HEX.flow;
+        else if (g.regime === "osc") ctx.strokeStyle = REGIME_HEX.osc;
+        else if (g.regime === "texture" || g.regime === "static")
+          ctx.strokeStyle = REGIME_HEX.tex;
+        else ctx.strokeStyle = REGIME_HEX.chaos;
+        const h = g.sounding ? css.h * 0.42 : css.h * 0.22;
+        ctx.beginPath();
+        ctx.moveTo(x, mid - h);
+        ctx.lineTo(x, mid + h);
+        ctx.stroke();
+      }
+    }
+
+    const onsets = diagnostics?.onsets;
+    if (onsets && onsets.length > 0) {
+      const nowMs = diagnostics?.nowMs ?? performance.now();
+      this.drawOnsetTicks(onsets, nowMs, css.w, css.h);
+    }
+  }
+
+  private drawSustainedBands(
+    segments: MaterialSegment[],
+    w: number,
+    h: number,
+  ): void {
+    const { ctx } = this;
+    ctx.fillStyle = SUSTAINED_FILL;
+    for (const span of sustainedCoverageSpans(segments, w)) {
+      ctx.fillRect(span.x0, 0, span.x1 - span.x0, h);
+    }
+  }
+
+  private drawSegmentBoundaries(
+    segments: MaterialSegment[],
+    w: number,
+    h: number,
+  ): void {
+    const { ctx } = this;
+    ctx.strokeStyle = SEGMENT_LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const seg of segments) {
+      const x = Math.max(0.5, Math.min(w - 0.5, seg.pos * w));
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+    }
+    ctx.stroke();
+  }
+
+  private drawOnsetTicks(
+    onsets: { t: number; bornMs: number }[],
+    nowMs: number,
+    w: number,
+    h: number,
+  ): void {
+    const { ctx } = this;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = ONSET_TICK;
+    for (const onset of onsets) {
+      const alpha = clamp(1 - (nowMs - onset.bornMs) / ONSET_PERSIST_MS, 0, 1);
+      if (alpha <= 0) continue;
+      const x = Math.max(0.5, Math.min(w - 0.5, onset.t * w));
+      ctx.globalAlpha = alpha;
       ctx.beginPath();
-      ctx.moveTo(x, mid - h);
-      ctx.lineTo(x, mid + h);
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
   }
 
   private syncSize(): { w: number; h: number } {
@@ -73,4 +157,38 @@ export class WaveformStrip {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { w, h };
   }
+}
+
+/** Voronoi-style coverage among sustained centres, with a ~3px floor. */
+function sustainedCoverageSpans(
+  segments: MaterialSegment[],
+  width: number,
+): { x0: number; x1: number }[] {
+  const kept = sustainedSubset(segments);
+  if (kept.length === 0) return [];
+  const sorted = kept.slice().sort((a, b) => a.pos - b.pos);
+  const n = sorted.length;
+  const spans: { x0: number; x1: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const pos = sorted[i]!.pos;
+    const prev = i > 0 ? sorted[i - 1]!.pos : 0;
+    const next = i < n - 1 ? sorted[i + 1]!.pos : 1;
+    const left = (prev + pos) * 0.5;
+    const right = (pos + next) * 0.5;
+    let x0 = left * width;
+    let x1 = right * width;
+    if (x1 - x0 < MIN_SUSTAINED_SPAN_PX) {
+      const mid = pos * width;
+      x0 = mid - MIN_SUSTAINED_SPAN_PX * 0.5;
+      x1 = mid + MIN_SUSTAINED_SPAN_PX * 0.5;
+    }
+    x0 = Math.max(0, x0);
+    x1 = Math.min(width, x1);
+    if (x1 > x0) spans.push({ x0, x1 });
+  }
+  return spans;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }

@@ -18,6 +18,11 @@ STOP — do not revive
 - V3 identity (X→sample / RGB→envelope)
 - 48-bin offline spectral bank (replaced by per-grain resonant bandpass)
 - 1D hue→centroid LUT as the sole material axis (superseded by polar map)
+- Ranking polar angle/band by spectral centroid and energy (superseded by
+  mel-spectrum PCA, rank-uniformised; similar timbres sit together)
+- Digital-zero `energy > 1e-8` as the silence floor, or forcing head/tail
+  selectable centres onto silent file edges (use SILENCE_GATE_DB relative
+  to the loudest hop; edge clones only when that edge is audible)
 - Mono fold-down of the source as the only playback buffer (analysis may use mono)
 - Doppler / velocity→grain rate (pitch offsets beyond ±1)
 - Stratified spawn sites for calm/texture are sampling, not listening posts;
@@ -35,11 +40,45 @@ STOP — do not revive
   (collides with calm — use FLOW_ID_BASE)
 - Treating a filled translating silhouette as flow; treating 2D scatter as
   one flow; tint-glue of hues
+- Overflow-scaling ¼-seat floors with floor(s × scale). A field of many
+  1-cell strips (exact ≈ 0.5 → 1 seat each) overflows the budget; floor(0.5)
+  zeros every region and the overlay looks full while audio is 3–4 grains.
+- Letting dead-region DUR_MAX grains occupy the budget after id death or
+  share shrink (DATA 63/42 calm vs 0/19 flow). Reclaim over-share + orphans;
+  merged occupancy counts against the survivor. Tick bars stay share/budget.
+- Saturation → window half-width, or a flow-only window mix (FLOW_WINDOW_T).
+  Window half-width is log-area of the spawning mass; colour sets sample
+  centre only. Type-U sat is always max so sat→width was a dead law.
+- Block-RMS servo as a flattener (1 grain ≈ 64 grains). Listening decision:
+  slow leveler (NORM_RELEASE ~0.0004) with target
+  TARGET_RMS * sqrt(sounding/BUDGET_VOICES); NORM_ATTACK stays a safety duck.
+  Equal amp + voice prescale stay; PRESCALE_SMOOTH stays 0.004 (not tied to
+  the leveler). Regime neutrality at filled budget is unchanged.
 - Lowering deltaRateNorm against the closed live-chaos under-spend claim
 - Locking every saturated chaos grain to identical DUR_MIN (frame-metronome
   choir) — packing rate uses bag-mean duration; per-grain length sprays from
   raw cell δ (CHAOS_DUR_SPREAD / CHAOS_DUR_EXP). Do not “fix” by banking
   chaosAcc up to desiredChaos or by naive endMs = offset+duration fill.
+- Wrapping follow Y (or flow heading in raw grid coords) at the torus seam.
+  Pan already saturates; Y wrap jumped the bandpass 80 Hz↔12 kHz. Heading
+  projection is toroidal about COM so a straddling pack keeps its length
+  and trailing edge.
+- Applying a follow dropout as one hop. If a region/flow track is missing
+  for a frame, hasFollowAnchor must clear; a later re-acquire (new flow
+  clock snapped to trailing edge) must not jump pan/Y by tens of cells.
+- regionAnchor chatter around SPAWN_ANCHOR_R_MIN / full-width. Crossing
+  COM↔grid-centre every frame is a ~half-grid pan/Y teleport. Hysteresis
+  on GrainScheduler.anchorLocks; do not restore a hard 0.5 threshold.
+- TRACK_SMOOTH / EMA follow lag. PARAM_RAMP_SAMPLES (one render block) is
+  zipper prevention: logical x/y still follow this message, audio pan/Y/mix
+  arrive at that target by the end of the block. Do not stretch this into
+  a CA-frame smoother.
+- Applying a raw calm COM delta as the follow hop. Shape-change on a
+  stable id can move COM by ~comMatchDist (~18 cells) in one step.
+  Calm tracks ride velX/velY with CALM_FOLLOW_CORR_CAP correction.
+- Short-releasing by setting attackN≤age without baking envelopeAt into
+  amp. A grain still in attack (env≪1) snaps to sustain then fades —
+  a click on share-reclaim of long calm attacks. Use forceShortRelease.
 
 ------------------------------------------------------------------------------
 Closed — do not reopen without new evidence
@@ -87,7 +126,7 @@ Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
   → grain-processor (polar HSV window; stereo L/R by channelMix;
                      absolute Y bandpass 80 Hz–12 kHz; bandwidth-compensated;
                      envNorm after attack/release rescale; equal-power pan;
-                     direct pan/Y/channelMix follow)
+                     direct pan/Y/channelMix follow with one-block param ramp)
 
 Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
   Chaos (changing) or Static (still; code alias textured). Calm = connected
@@ -105,17 +144,25 @@ Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
   Calm lifecycle (births / deaths / merges) exported as regionEvents.
 Scheduler: five pools (calm / texture(=static) / chaos / osc / flow); area-share
   concurrency; calm gets flow's ¼-seat floor (exact ≥ 0.25 → 1 voice);
+  if those floors overflow the budget, re-apportion by largest remainder
+  on exact area (do not floor(1×scale) → 0);
   chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄, duration
   from own bag stats; residual bag included; global share + budget still
   the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; split material
   (timeOrder→dur/env, spectralT→Q); stratified+dispersion sites (calm/texture);
   SPAWN_ANCHOR_R_MIN; scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only;
-  HSV→polar material query; calm/texture restricted to sustained subset.
+  HSV→polar material query (mel-PCA angle/band from offline prep);
+  calm/texture restricted to sustained subset; silence never selectable.
   Periods in steps convert to seconds with the measured step interval
   (stepSec EMA; HUD RATE row) — not the nominal 30 (display-quantised CA
   rarely runs at 30 and osc pitch must lock to the visual period).
   Region births fire their first grain the step they appear; merged-away
-  ids keep alias tracks at the survivor's anchor while their grains live.
+  ids keep alias tracks at the survivor's anchor while their grains live
+  and count against that survivor's share. Dead-id and over-share grains
+  yield seats (worklet forceShortRelease by grainId — bake envelope first)
+  so a newly allocated pool can spend; flow occupancy is live `active`
+  only (do not add events — that halved fill). Calm follow is velX/velY
+  conveyor + CALM_FOLLOW_CORR_CAP, not raw COM.
 Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
   mono 0.5*(L+R) reported secondary only.
 
@@ -153,19 +200,24 @@ Negotiable (not doctrine):
   chaosClusterJoin≈2 / chaosClusterMinArea≈16 / chaosClusterMax≈24,
   regionComResultantMin≈2, …
 - SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
-  REL_CHAOS 0.98, REL_CALM 0.34, Q_*, WINDOW_HALF_*,
-  FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_WINDOW_T 0.45, FLOW_ID_BASE 1e6,
-  FLOW_TRAVEL_DUR_BLEND 1,
+  REL_CHAOS 0.98, REL_CALM 0.34, Q_*, Q_MAX_SHORT 3,
+  WINDOW_HALF_* (log-area → half-width; colour = sample centre only),
+  FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_ID_BASE 1e6,
+  FLOW_TRAVEL_DUR_BLEND 1, FLOW_DUR_SPREAD 1.5, FLOW_DUR_EXP 1.0,
   maxCalmConcurrent/textureMaxConcurrent 64, calmPackRateMin 1.0,
   CHAOS_EVENTS_MAX_HZ 4000, CHAOS_DUR_SPREAD 1.7, CHAOS_DUR_EXP 1.0,
   deltaRateNorm 0.35 (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
   SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
-- Spectral — CENTROID_HOP_SEC, analysis FFT, polar weight / regime bias,
+- Spectral — CENTROID_HOP_SEC, analysis FFT, MEL_BANDS≈24, SILENCE_GATE_DB
+  −40 (relative to loudest hop), polar weight / regime bias,
   ONSET_ATTACK_MIN 0.45, SEGMENT_MAX_SEC 1.0 (onset-aligned units: segments
   sit between detected attacks; transient units pin pos to their onset,
-  sustained stretches split for coverage — replaces fixed-hop slices)
-- Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS
+  sustained stretches split for coverage — replaces fixed-hop slices;
+  polar axes = rank-uniform mel-PCA 1/2, not centroid/energy)
+- Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS,
+  NORM_ATTACK 0.06, NORM_RELEASE 0.0004, PRESCALE_SMOOTH 0.004 (independent),
+  PARAM_RAMP_SAMPLES 128 (one block; do not turn into a follow EMA)
 
 Harnesses:
 - verify-phase0.mjs — lattice path stays gone from the live tree
@@ -176,8 +228,10 @@ Harnesses:
   sitting / wrapping wavelength-2 line = Osc; checkerboard = Osc;
   still 1-cell strip = Calm; travelling solid 1-cell strip = Calm persist)
 - verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band /
-  hop2 period-2 pulse
-- verify-phase4.mjs — polar / stereo / absolute Y contract
+  hop2 period-2 pulse; wrapping glider trailing edge; worklet Y-seam saturate
+- verify-phase4.mjs — polar / stereo / absolute Y contract; mel-PCA axes;
+  silence gate (no segment/query in leading–trailing silence); timbre
+  neighbourhood (same sound at file ends closer in hue than mid noise)
 - investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q);
   Stage 5: chaos duration p95/p5 spray + chaos-blob-2pct ~1 hit/step
 - investigate-chaos-stutter.mjs — offline 30 Hz fold / voice-steal / reset

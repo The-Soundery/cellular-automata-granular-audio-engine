@@ -36,6 +36,10 @@ const METER_UI_HZ = 5;
 const METER_EMA = 0.35;
 /** Softer than audio/δ meters — regime shares jump in whole seats. */
 const BUDGET_METER_EMA = 0.22;
+const ONSET_PERSIST_MS = 300;
+const ONSET_RING_MAX = 96;
+const REGION_TICKER_KEEP = 12;
+const REGION_ROW_MAX = 6;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app missing");
@@ -135,6 +139,140 @@ let exploring = false;
 let dataOpen = false;
 let explorePreviews: UtomataHost[] = [];
 let wavePeaks: Float32Array | null = null;
+const onsetRing: { t: number; bornMs: number }[] = [];
+/** First-seen CA step per calm region id — DATA age in steps. */
+const regionBirthStep = new Map<number, number>();
+const regionTickerLog: { kind: "birth" | "death" | "merge"; text: string }[] =
+  [];
+
+/** Temporary flow-blink audio-impact diagnostic (strip after listen pass). */
+const FLOW_BLINK_RING = 120;
+type FlowBlinkSample = {
+  step: number;
+  n: number;
+  ids: number[];
+  gained: number;
+  lost: number;
+  triggers: number;
+  active: number;
+  rejects: Record<string, number>;
+};
+let prevFlowIds = new Set<number>();
+let lastFlowBlink: FlowBlinkSample | null = null;
+const flowBlinkRing: FlowBlinkSample[] = [];
+
+(
+  window as unknown as {
+    __flowBlink: {
+      last: () => FlowBlinkSample | null;
+      ring: () => FlowBlinkSample[];
+      summary: () => {
+        steps: number;
+        meanN: number;
+        meanTriggers: number;
+        meanActive: number;
+        churnSteps: number;
+        maxLost: number;
+        maxGained: number;
+        triggerDipSteps: number;
+        topRejects: [string, number][];
+      };
+    };
+  }
+).__flowBlink = {
+  last: () => lastFlowBlink,
+  ring: () => flowBlinkRing.slice(),
+  summary: () => {
+    const n = flowBlinkRing.length;
+    if (n === 0) {
+      return {
+        steps: 0,
+        meanN: 0,
+        meanTriggers: 0,
+        meanActive: 0,
+        churnSteps: 0,
+        maxLost: 0,
+        maxGained: 0,
+        triggerDipSteps: 0,
+        topRejects: [],
+      };
+    }
+    let sumN = 0;
+    let sumTrg = 0;
+    let sumAct = 0;
+    let churn = 0;
+    let maxLost = 0;
+    let maxGained = 0;
+    let dip = 0;
+    const rej = new Map<string, number>();
+    for (const s of flowBlinkRing) {
+      sumN += s.n;
+      sumTrg += s.triggers;
+      sumAct += s.active;
+      if (s.gained > 0 || s.lost > 0) churn += 1;
+      if (s.lost > maxLost) maxLost = s.lost;
+      if (s.gained > maxGained) maxGained = s.gained;
+      if (s.lost > 0 && s.triggers === 0 && s.n === 0) dip += 1;
+      else if (s.lost >= 2 && s.triggers <= 1) dip += 1;
+      for (const [k, v] of Object.entries(s.rejects)) {
+        rej.set(k, (rej.get(k) ?? 0) + v);
+      }
+    }
+    return {
+      steps: n,
+      meanN: sumN / n,
+      meanTriggers: sumTrg / n,
+      meanActive: sumAct / n,
+      churnSteps: churn,
+      maxLost,
+      maxGained,
+      triggerDipSteps: dip,
+      topRejects: [...rej.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
+    };
+  },
+};
+
+function noteFlowBlink(
+  obs: FieldObservation,
+  batch: GrainEventBatch,
+  step: number,
+): void {
+  const ids = (obs.flows ?? []).map((f) => f.id).sort((a, b) => a - b);
+  const cur = new Set(ids);
+  let gained = 0;
+  let lost = 0;
+  for (const id of cur) if (!prevFlowIds.has(id)) gained += 1;
+  for (const id of prevFlowIds) if (!cur.has(id)) lost += 1;
+  const triggers = batch.events.reduce(
+    (n, e) => n + (e.regime === "flow" ? 1 : 0),
+    0,
+  );
+  const sample: FlowBlinkSample = {
+    step,
+    n: ids.length,
+    ids,
+    gained,
+    lost,
+    triggers,
+    active: batch.flowActive,
+    rejects: { ...(obs.flowRejects ?? {}) },
+  };
+  lastFlowBlink = sample;
+  flowBlinkRing.push(sample);
+  if (flowBlinkRing.length > FLOW_BLINK_RING) {
+    flowBlinkRing.splice(0, flowBlinkRing.length - FLOW_BLINK_RING);
+  }
+  prevFlowIds = cur;
+}
+
+function formatFlowRejects(rejects: Record<string, number>): string {
+  const top = Object.entries(rejects)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+  if (!top.length) return "";
+  return top.map(([k, v]) => `${k}:${v}`).join(" ");
+}
 
 function commitProgram(next: TypeUProgram, resetColours: boolean): void {
   currentProgram = next;
@@ -256,6 +394,12 @@ function clearPipeline(): void {
   lastObs = null;
   lastBatch = null;
   overlay.clear();
+  onsetRing.length = 0;
+  regionBirthStep.clear();
+  regionTickerLog.length = 0;
+  prevFlowIds = new Set();
+  lastFlowBlink = null;
+  flowBlinkRing.length = 0;
 }
 
 function pushFieldThroughPipeline(step: number): void {
@@ -270,9 +414,102 @@ function pushFieldThroughPipeline(step: number): void {
     performance.now(),
     audio.getBank()?.durationSec,
   );
+  noteOnsets(lastBatch, performance.now());
+  noteRegionLifecycle(lastObs, step);
+  noteFlowBlink(lastObs, lastBatch, step);
   if (audio.isReady) {
     audio.sendEvents(lastBatch);
   }
+}
+
+function noteOnsets(batch: GrainEventBatch, nowMs: number): void {
+  for (const ev of batch.events) {
+    onsetRing.push({ t: ev.sampleCenter, bornMs: nowMs });
+  }
+  pruneOnsets(nowMs);
+  if (onsetRing.length > ONSET_RING_MAX) {
+    onsetRing.splice(0, onsetRing.length - ONSET_RING_MAX);
+  }
+}
+
+function pruneOnsets(nowMs: number): void {
+  const cutoff = nowMs - ONSET_PERSIST_MS;
+  let drop = 0;
+  while (drop < onsetRing.length && onsetRing[drop]!.bornMs < cutoff) {
+    drop += 1;
+  }
+  if (drop > 0) onsetRing.splice(0, drop);
+}
+
+function noteRegionLifecycle(obs: FieldObservation, step: number): void {
+  const ev = obs.regionEvents;
+  if (ev) {
+    for (const id of ev.births) {
+      regionBirthStep.set(id, step);
+      regionTickerLog.push({ kind: "birth", text: `+${id}` });
+    }
+    for (const m of ev.merges) {
+      regionBirthStep.delete(m.from);
+      regionTickerLog.push({
+        kind: "merge",
+        text: `${m.from}→${m.into}`,
+      });
+    }
+    for (const id of ev.deaths) {
+      regionBirthStep.delete(id);
+      regionTickerLog.push({ kind: "death", text: `-${id}` });
+    }
+    if (regionTickerLog.length > REGION_TICKER_KEEP) {
+      regionTickerLog.splice(0, regionTickerLog.length - REGION_TICKER_KEEP);
+    }
+  }
+  const live = new Set(obs.coherent.map((r) => r.id));
+  for (const id of [...regionBirthStep.keys()]) {
+    if (!live.has(id)) regionBirthStep.delete(id);
+  }
+  for (const r of obs.coherent) {
+    if (!regionBirthStep.has(r.id)) regionBirthStep.set(r.id, step);
+  }
+}
+
+function buildRegionRows(
+  obs: FieldObservation,
+  batch: GrainEventBatch | null,
+  step: number,
+): {
+  id: number;
+  area: number;
+  kappa: number;
+  seats: number;
+  active: number;
+  age?: number;
+}[] {
+  const seatsById = new Map<number, { share: number; active: number }>();
+  for (const s of batch?.regionSeats ?? []) {
+    seatsById.set(s.id, s);
+  }
+  const rows: {
+    id: number;
+    area: number;
+    kappa: number;
+    seats: number;
+    active: number;
+    age?: number;
+  }[] = [];
+  for (const r of obs.coherent) {
+    const seat = seatsById.get(r.id);
+    const born = regionBirthStep.get(r.id);
+    rows.push({
+      id: r.id,
+      area: r.area,
+      kappa: r.meanCoherence,
+      seats: seat?.share ?? 0,
+      active: seat?.active ?? 0,
+      age: born !== undefined ? Math.max(0, step - born) : undefined,
+    });
+  }
+  rows.sort((a, b) => b.area - a.area || a.id - b.id);
+  return rows.slice(0, REGION_ROW_MAX);
 }
 
 function ema(prev: number, next: number, a = METER_EMA): number {
@@ -455,6 +692,7 @@ const controls = mountControls(app, {
     overlay.setVisible(overlayVisible);
     controls.setOverlayVisible(overlayVisible);
     if (!overlayVisible) overlay.clear();
+    pushStats(true);
     return overlayVisible;
   },
   onToggleData() {
@@ -528,13 +766,19 @@ window.addEventListener("resize", () => {
 
 function pushStats(forceMeter = false) {
   const stats = audio.getStats();
+  const now = performance.now();
   // Diagnostics stay live while muted — gate on engine-ready, not audible.
   overlay.draw(lastObs, audio.isReady ? stats : null);
-  wave.draw(wavePeaks, audio.isReady ? stats : null);
+  pruneOnsets(now);
+  wave.draw(wavePeaks, audio.isReady ? stats : null, {
+    segments: audio.getBank()?.segments ?? null,
+    onsets: onsetRing,
+    nowMs: now,
+  });
 
-  const now = performance.now();
   const due =
-    forceMeter || now - lastMeterUiAt >= 1000 / METER_UI_HZ;
+    forceMeter ||
+    now - lastMeterUiAt >= 1000 / (overlayVisible ? 15 : METER_UI_HZ);
 
   let meter: AudioMeterStats | null = smoothMeter;
   if (audio.isReady && stats && due) {
@@ -718,6 +962,23 @@ function pushStats(forceMeter = false) {
       budget: lastBatch?.budget ?? scheduler.budget,
       predictedActive: smoothBudget!.predictedActive,
       stepHz: lastBatch?.measuredStepHz,
+      regionRows: buildRegionRows(
+        lastObs,
+        lastBatch,
+        lastObservedStep,
+      ),
+      regionTicker: regionTickerLog.slice(),
+      flowBlink:
+        overlayVisible && lastFlowBlink
+          ? {
+              n: lastFlowBlink.n,
+              gained: lastFlowBlink.gained,
+              lost: lastFlowBlink.lost,
+              triggers: lastFlowBlink.triggers,
+              active: lastFlowBlink.active,
+              rejects: formatFlowRejects(lastFlowBlink.rejects),
+            }
+          : undefined,
     };
   } else {
     smoothFieldDelta = null;

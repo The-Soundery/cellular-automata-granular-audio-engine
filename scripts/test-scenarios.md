@@ -3,7 +3,9 @@
 Shared synthetic patterns live in `src/field/TestPatterns.ts`.
 Headless runs inject a synthetic polar segment map so HSV axes move
 `sampleCenter` without loading a WAV (see `makeTestMaterialSegments` in the
-investigate/render scripts). Live app uses `buildSpectralBank` on the upload.
+investigate/render scripts). Live app uses `buildSpectralBank` on the upload:
+onset-aligned units, mel-spectrum PCA → polar angle/band (rank-uniform),
+hops below `SILENCE_GATE_DB` dropped so colour never chooses silence.
 
 These patterns often *saturate* δ. Passing rates/balance here does **not**
 prove chaos is balanced on real Utomata (see Implementation Filter → live
@@ -138,12 +140,16 @@ labels — trust Ground truth / Observer lines for the regime.
 
 ## gradient-static
 
-- **Simulates:** Horizontal hue gradient, never changes.
+- **Simulates:** Horizontal hue gradient, never changes
+  (`hsv(x/w, 0.7, 0.8)` — hue only; sat/value fixed; not the full HSV volume).
 - **Ground truth:** Zero temporal change → not Chaos. Adjacent similar hues join
   as multiple **Calm** regions across the width (not one Static bag of mixed
   leftover — connected similar colour still qualifies as Calm).
 - **Audio:** many calm regions across the width; pan spread ≥0.7; RMS near
-  uniform (±1 dB target, see log if marginal).
+  uniform (±1 dB target, see log if marginal). Calm uses the sustained polar
+  subset + nearest-neighbour, so unique `sampleCenter` counts are far below
+  the hue count when the file has few distinct sustained textures — expected,
+  not a missing-colour bug.
 - **Assertions:** investigate stage 4; render stage 3/4.
 
 ## two-blobs-merge
@@ -204,7 +210,7 @@ labels — trust Ground truth / Observer lines for the regime.
 - **Simulates:** Four still quadrants at matched luminance — left grey
   (sat 0), right saturated; upper/lower halves.
 - **Ground truth:** Four **Calm** masses (connected similar colour). Isolates
-  identity axes — sat→window half-width, X→pan, Y→cutoff — without loudness
+  identity axes — log-area→window half-width, X→pan, Y→cutoff — without loudness
   confounding.
 - **Purpose:** Isolates identity axes for a single listen.
 

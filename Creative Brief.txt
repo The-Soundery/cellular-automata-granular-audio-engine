@@ -3,11 +3,11 @@ Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviou
 
 Identity:
 
-  HSV → polar material plane (hue angle · sat radius · value band)
-  saturation → window half-width · regime soft-bias (calm→sustained, chaos→transient)
+  HSV → polar material plane (hue = mel-PCA 1 · sat = radius · value = mel-PCA 2)
+  log-area → window half-width · regime soft-bias (calm→sustained, chaos→transient)
   X → stereo pan + source L/R channel mix (both follow region-bound grains)
   Y → absolute log bandpass (80 Hz bottom … 12 kHz top); independent of material centroid
-  sample window frozen at spawn
+  sample window frozen at spawn; file silence is never a colour
 
 ------------------------------------------------------------------------------
 Project Overview
@@ -90,12 +90,15 @@ One-sentence axiom:
    From the spawn cell (or calm spawn site):
 
    - HSV → sample position / locked scrub window via a polar descriptor plane
-           (hue = angle on a centroid-ranked circle; saturation = radius from
-           centre so grey still reaches material via value; value = energy
-           band). Soft regime bias prefers sustained material for calm/texture
+           (hue = angle on a mel-spectrum PCA circle, rank-uniformised so
+           similar timbres sit together regardless of file position;
+           saturation = radius from centre so grey still reaches material
+           via value; value = second PCA axis, rank-uniformised). Soft
+           regime bias prefers sustained material for calm/texture
            and transient material for chaos/osc — FROZEN at spawn
-   - Saturation → window half-width in seconds (grey = diffuse / wide;
-                  saturated = focused / tight) — FROZEN at spawn
+   - Region/bag log-area → window half-width in seconds (large = diffuse /
+                  wide; small = focused / tight); colour still sets sample
+                  centre — FROZEN at spawn
    - X        → stereo pan (−1 left … +1 right) AND source L/R channel mix
                 (left of grid hears left of recording). Initial at spawn;
                 while a grain belongs to a region it directly follows that
@@ -107,9 +110,10 @@ One-sentence axiom:
    - Envelope / duration / filter Q → continuous functions of κ/δ (and calm
                 area/fill) at spawn — not binary calm|chaos presets, not RGB
 
-   Colour chooses where in the source the grain listens. Spatial X places the
-   grain in the stereo field and selects which source channel feeds the
-   grain. Colour must never set loudness, allocation, or topology. Luminance
+   Colour chooses where in the source the grain listens. Selectable centres
+   are audible material only — file silence is never a colour. Spatial X
+   places the grain in the stereo field and selects which source channel feeds
+   the grain. Colour must never set loudness, allocation, or topology. Luminance
    is not volume. Playback rate stays ±1 (no Doppler).
 
    Two axes, two consequences: timeOrder (stability + extent) → duration and
@@ -245,9 +249,17 @@ One-sentence axiom:
 
    Allowed to track directly after birth (any grain with a region id):
 
-   - Stereo pan ← region COM X + spawn offset (equal-power, no smoothing)
-   - Spectral Y ← region COM Y + spawn offset (no smoothing)
-   - Channel mix ← region COM X (same follow)
+   - Stereo pan ← region follow-anchor X + spawn offset (equal-power; no follow EMA)
+   - Spectral Y ← region follow-anchor Y + spawn offset (no follow EMA)
+   - Channel mix ← region follow-anchor X (same follow)
+
+   Calm follow-anchor is hop-velocity conveyor + capped COM correction
+   (same idea as flow). Raw COM can teleport on a stable id when a moving
+   mass changes shape — that must not be one follow hop.
+
+   Logical pan/Y/mix follow the region this CA step. The worklet may ramp
+   those audio parameters to the new target inside one render block so a
+   step is not a sample discontinuity — that is zipper prevention, not lag.
 
    Forbidden: modulating the sample scrub window during playback to chase a
    moving region or cell (causes undesirable glitches / pitch tears).
@@ -387,8 +399,9 @@ four-plus mixed hues sharing one rounded vel still look like a field shift.
 Track identity may follow colour+size when COM jumps (wrapping fields).
 Value flicker of one hue still matches; hue tint walks do not.
 Confirmed tracks keep last-good hop/density EMAs when a matched sample
-would fail emit — so overlay and budget meters do not blank while the
-track is still held.
+would fail emit — and if emit still rejects, coast-publish last-good
+members at the held pose so overlay and flow grains do not blank while
+the track is still held.
 
 Flow grain laws:
 
@@ -404,11 +417,15 @@ Flow grain laws:
     buys concurrency; packing shapes duration/envelope. Chaos stays
     area-blind (short).
   - Envelope from that timeOrder; polar material bias neutral;
-    FLOW_WINDOW_T mixes sat→window toward the long end (less choppy
-    than chaos). Sample scrub width is not driven by packing.
+    window half-width from log-area of the occupied patch (same size law
+    as every pool — no flow-only widen). Sample scrub width is not
+    driven by packing.
   - Pan / Y / channelMix follow via applyTracks with
     regionId = FLOW_ID_BASE + flow.id (disjoint from calm ids).
     Follow hop-velocity conveyor (velX/velY), not group COM deltas.
+    Pan and Y saturate at the torus seam (no wrap to the opposite edge).
+    Trailing / leading edges use toroidal heading about COM so a wrap
+    does not invert the stream.
     When a grain reaches the leading edge, end it; spawn the next at
     the trailing edge.
   - Sample window frozen at spawn. Playback direction may freeze from
@@ -463,9 +480,13 @@ Source Audio
 
 The user may load WAV, MP3, or AIFF.
 
-Source audio is raw material from which grains are formed. The CA’s evolution
-redistributes exploration of that material through the Sonic Laws. No
-traditional effects rack is required for the listening philosophy.
+Source audio is raw material from which grains are formed. On load, offline
+prep builds a polar material map: onset-aligned units, each embedded by a
+~24-band log-mel spectrum; the file’s top-two PCA axes are rank-uniformised
+into hue angle and value band (saturation radius stays fixed). Hops far
+below the loudest analysis hop are dropped so colour cannot choose silence.
+The CA’s evolution redistributes exploration of that map through the Sonic
+Laws. No traditional effects rack is required for the listening philosophy.
 
 
 ------------------------------------------------------------------------------
@@ -535,7 +556,8 @@ FORBIDDEN
 - Using luminance→volume as the primary way to “hear the CA”
 - Mid-grain sample-window scrub chase of moving regions
   (direct pan / Y-spectrum / channel-mix follow for region-bound grains
-  is allowed; no smoothing)
+  is allowed; no follow EMA. Pan and Y saturate at the torus seam.
+  A one-block audio ramp to the new target is zipper prevention.)
 - Colour → loudness, allocation, or macro schedule
 - Treating the CA as a modulation source for an unrelated granular synth
 - Optimising for ambient beauty, glitch excitement, or “musicality”
@@ -550,6 +572,9 @@ FORBIDDEN
   (collides with calm — use FLOW_ID_BASE)
 - Reviving X→sample / RGB→envelope, the 48-bin spectral bank, or a 1D
   hue→centroid LUT as the sole material axis
+- Ranking polar angle/band by spectral centroid and energy (correlated for
+  most material; superseded by mel-spectrum PCA)
+- Letting colour land on file silence / noise floor as selectable material
 
 
 ------------------------------------------------------------------------------

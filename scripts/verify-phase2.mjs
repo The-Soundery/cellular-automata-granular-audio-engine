@@ -66,8 +66,11 @@ assert(
 );
 assert("fillRatio used in duration", /fillRatio/.test(schedSrc));
 assert(
-  "saturation drives window width",
-  /WINDOW_HALF/.test(schedSrc) && /sat/.test(schedSrc),
+  "log-area drives window width",
+  /WINDOW_HALF/.test(schedSrc) &&
+    /function areaT/.test(schedSrc) &&
+    /sizeT/.test(schedSrc) &&
+    !/FLOW_WINDOW_T/.test(schedSrc),
 );
 assert(
   "unified continuous law",
@@ -100,6 +103,18 @@ assert(
     /sitePeriod/.test(schedSrc),
 );
 assert("UI flow spend meter", /shareFlow|flowGrains/.test(controls) && /· f /.test(controls));
+assert(
+  "share reclaim yields dead-id / over-share grains",
+  /reclaimToShares/.test(schedSrc) &&
+    /releaseGrainIds/.test(schedSrc) &&
+    /releaseGrainIds/.test(audioSrc) &&
+    /releaseGrains/.test(worklet) &&
+    /SHARE_RELEASE_SEC/.test(worklet),
+);
+assert(
+  "flow occupancy counts live active only",
+  /countActiveSeat\(this\.active, "flow"/.test(schedSrc),
+);
 const overlaySrc = readFileSync(join(root, "src/ui/RegionOverlay.ts"), "utf8");
 const waveSrc = readFileSync(join(root, "src/ui/WaveformStrip.ts"), "utf8");
 assert("overlay flow listen colour", /regime === "flow"/.test(waveSrc) && /REGIME_HEX\.flow/.test(overlaySrc));
@@ -112,11 +127,38 @@ assert("overlay toggle present", /overlay-toggle/.test(controls));
 assert("Type-U spatial neighbors", /neighborPrograms/.test(main) && /programAt/.test(readFileSync(join(root, "src/ca/typeU.ts"), "utf8")));
 assert("explore telescope", /explore-sky/.test(main) && /mountExploreNeighbors/.test(main));
 assert("worklet direct pan/Y follow", /applyTracks/.test(worklet) && /trackDx/.test(worklet));
+assert("worklet saturates pan and Y at torus seam", /panSaturated/.test(worklet) && /ySaturated/.test(worklet));
+assert("worklet follow Y does not wrapCoord", !/wrapCoord\(voice\.y/.test(worklet));
+assert("flow heading projection is toroidal", /function flowHeadingEdges[\s\S]*?toroidalOffset\(x, flow\.comX/.test(schedSrc));
 assert("worklet has no TRACK_SMOOTH", !/TRACK_SMOOTH/.test(worklet));
+assert(
+  "worklet ramps pan/Y/mix inside one block (anti-click, not follow lag)",
+  /PARAM_RAMP_SAMPLES/.test(worklet) &&
+    /PARAM_RAMP_SAMPLES = 128/.test(worklet),
+);
+assert(
+  "dropout clears hasFollowAnchor (no gap-as-one-hop click)",
+  /hasFollowAnchor = false/.test(worklet),
+);
+assert("calm follow-anchor hysteresis", /anchorLocks/.test(schedSrc));
+assert(
+  "calm follow is velocity conveyor + capped COM correction",
+  /CALM_FOLLOW_CORRECT/.test(schedSrc) && /CALM_FOLLOW_CORR_CAP/.test(schedSrc),
+);
+assert(
+  "short-release bakes envelope (no attack→sustain snap)",
+  /forceShortRelease/.test(worklet) && /voice\.amp \*= e/.test(worklet),
+);
 assert("worklet does not chase sample bounds from track", !/boundLo\s*=\s*[^;]*track/i.test(worklet));
 assert("worklet handles events", /type === "events"/.test(worklet));
 assert("worklet ping-pong", /boundLo/.test(worklet) && /dir = -1/.test(worklet));
 assert("worklet energy normalisation", /TARGET_RMS/.test(worklet) && /normGain/.test(worklet));
+assert(
+  "slow voice-count leveler",
+  /NORM_RELEASE = 0\.0004/.test(worklet) &&
+    /PRESCALE_SMOOTH = 0\.004/.test(worklet) &&
+    /targetRms/.test(worklet),
+);
 assert(
   "worklet uses frozen attackFrac (analytic envelope)",
   /attackFrac/.test(worklet) && /envelopeAt/.test(worklet) && !/windowCache/.test(worklet),
@@ -150,7 +192,7 @@ async function runtimeScheduler() {
   }
 
   const { FieldObserver } = fieldMod;
-  const { GrainScheduler, GRAIN_BUDGET, SCHED } = schedMod;
+  const { GrainScheduler, GRAIN_BUDGET, SCHED, FLOW_ID_BASE } = schedMod;
   const w = 32;
   const h = 32;
   const n = w * h;
@@ -447,7 +489,6 @@ async function runtimeScheduler() {
   assert("calm grains include trackDx/Dy offset", spawnHasOffset);
 
   // Flow-dense: packed travelling colour → fifth pool spends after confirm.
-  const { FLOW_ID_BASE } = schedMod;
   const flowW = 128;
   const flowH = 128;
   const flowN = flowW * flowH;
@@ -610,7 +651,13 @@ async function runtimeScheduler() {
     for (const ci of flow.cells) {
       const x = ci % trainW;
       const y = (ci / trainW) | 0;
-      const p = x * hx + y * hy;
+      let dx = x - flow.comX;
+      if (dx > trainW * 0.5) dx -= trainW;
+      if (dx < -trainW * 0.5) dx += trainW;
+      let dy = y - flow.comY;
+      if (dy > trainH * 0.5) dy -= trainH;
+      if (dy < -trainH * 0.5) dy += trainH;
+      const p = dx * hx + dy * hy;
       if (p < minProj) minProj = p;
       if (p > maxProj) maxProj = p;
     }
@@ -618,7 +665,13 @@ async function runtimeScheduler() {
     for (const e of batch.events) {
       if (e.regime !== "flow") continue;
       trainSpawnTotal += 1;
-      const p = e.x * hx + e.y * hy;
+      let dx = e.x - flow.comX;
+      if (dx > trainW * 0.5) dx -= trainW;
+      if (dx < -trainW * 0.5) dx += trainW;
+      let dy = e.y - flow.comY;
+      if (dy > trainH * 0.5) dy -= trainH;
+      if (dy < -trainH * 0.5) dy += trainH;
+      const p = dx * hx + dy * hy;
       // Trailing half of the stream (start of motion).
       if ((p - minProj) / span <= 0.55) trainSpawnNearTrail += 1;
     }
@@ -634,6 +687,105 @@ async function runtimeScheduler() {
   assert(
     "runtime train: spawns prefer trailing edge (start of motion)",
     trainSpawnTotal >= 3 && trainSpawnNearTrail / trainSpawnTotal >= 0.5,
+  );
+
+  // Wrapping 3×3 +y glider: heading must stay local so spawns do not jump
+  // to the far seam (raw x*hx+y*hy inverts trail/lead when the pack straddles).
+  function paintWrapGlider(field, t) {
+    for (let i = 0; i < flowN; i++) {
+      field.r[i] = 0.1;
+      field.g[i] = 0.1;
+      field.b[i] = 0.12;
+    }
+    const x0 = 48;
+    const y0 = (((100 + t) % flowH) + flowH) % flowH;
+    for (let oy = 0; oy < 3; oy++) {
+      for (let ox = 0; ox < 3; ox++) {
+        const x = (x0 + ox) % flowW;
+        const y = (y0 + oy) % flowH;
+        const i = y * flowW + x;
+        field.r[i] = 0.95;
+        field.g[i] = 0.85;
+        field.b[i] = 0.2;
+      }
+    }
+  }
+  const wrapFo = new FieldObserver(flowW, flowH);
+  let wrapPrev = makeFlowField((r, g, b) => {
+    r.fill(0.1);
+    g.fill(0.1);
+    b.fill(0.12);
+  });
+  for (let t = 0; t < 40; t++) {
+    const cur = makeFlowField(() => {});
+    paintWrapGlider(cur, t);
+    wrapFo.observe(cur, wrapPrev);
+    wrapPrev = cur;
+  }
+  const wrapSched = new GrainScheduler(GRAIN_BUDGET);
+  let nowWrap = 70000;
+  let wrapSpawnTrail = 0;
+  let wrapSpawnLead = 0;
+  let wrapStraddleSteps = 0;
+  for (let t = 40; t < 300; t++) {
+    nowWrap += 1000 / 26;
+    const cur = makeFlowField(() => {});
+    paintWrapGlider(cur, t);
+    wrapFo.observe(cur, wrapPrev);
+    wrapPrev = cur;
+    const wobs = wrapFo.observation;
+    const batch = wrapSched.step(wobs, cur, nowWrap);
+    const flow = (wobs.flows ?? [])[0];
+    if (!flow) continue;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const ci of flow.cells) {
+      const y = (ci / flowW) | 0;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (maxY - minY <= flowH * 0.5) continue;
+    wrapStraddleSteps += 1;
+    const speed = Math.hypot(flow.velX, flow.velY);
+    if (speed < 0.2) continue;
+    const hx = flow.velX / speed;
+    const hy = flow.velY / speed;
+    let minProj = Infinity;
+    let maxProj = -Infinity;
+    for (const ci of flow.cells) {
+      const x = ci % flowW;
+      const y = (ci / flowW) | 0;
+      let dx = x - flow.comX;
+      if (dx > flowW * 0.5) dx -= flowW;
+      if (dx < -flowW * 0.5) dx += flowW;
+      let dy = y - flow.comY;
+      if (dy > flowH * 0.5) dy -= flowH;
+      if (dy < -flowH * 0.5) dy += flowH;
+      const p = dx * hx + dy * hy;
+      if (p < minProj) minProj = p;
+      if (p > maxProj) maxProj = p;
+    }
+    const span = Math.max(1e-3, maxProj - minProj);
+    for (const e of batch.events) {
+      if (e.regime !== "flow") continue;
+      let dx = e.x - flow.comX;
+      if (dx > flowW * 0.5) dx -= flowW;
+      if (dx < -flowW * 0.5) dx += flowW;
+      let dy = e.y - flow.comY;
+      if (dy > flowH * 0.5) dy -= flowH;
+      if (dy < -flowH * 0.5) dy += flowH;
+      const p = dx * hx + dy * hy;
+      if ((p - minProj) / span <= 0.55) wrapSpawnTrail += 1;
+      else wrapSpawnLead += 1;
+    }
+  }
+  assert(
+    "runtime wrap-glider: pack straddles the Y seam",
+    wrapStraddleSteps >= 2,
+  );
+  assert(
+    "runtime wrap-glider: seam spawns stay on the trailing edge",
+    wrapSpawnLead === 0 && wrapSpawnTrail >= 1,
   );
 
   // Spacing-2 hop train: Flow keeps period 2 and spends in pulses, not a flat wash.
@@ -696,9 +848,557 @@ async function runtimeScheduler() {
     "runtime hop2: flow grains pulse (not every step)",
     hop2BurstHz >= 8 && hop2BurstHz <= 20 && hop2BurstSteps < hop2Measured * 0.85,
   );
+
+  // Many 1-cell-wide hue columns: ¼-seat floors overflow the budget.
+  // floor(1 * scale) used to zero every strip (overlay full, audio empty).
+  {
+    const SW = 128;
+    const SH = 128;
+    const SN = SW * SH;
+    const col = makeField(() => {});
+    col.width = SW;
+    col.height = SH;
+    col.r = new Float32Array(SN);
+    col.g = new Float32Array(SN);
+    col.b = new Float32Array(SN);
+    for (let i = 0; i < SN; i++) {
+      const x = i % SW;
+      const seed = (x * 1103515245 + 12345) >>> 0;
+      const h = (seed % 1000) / 1000;
+      const s = 0.95;
+      const v = 0.7;
+      const hi = Math.floor(h * 6);
+      const f = h * 6 - hi;
+      const p = v * (1 - s);
+      const q = v * (1 - f * s);
+      const t = v * (1 - (1 - f) * s);
+      let rr = 0;
+      let gg = 0;
+      let bb = 0;
+      switch (hi % 6) {
+        case 0: rr = v; gg = t; bb = p; break;
+        case 1: rr = q; gg = v; bb = p; break;
+        case 2: rr = p; gg = v; bb = t; break;
+        case 3: rr = p; gg = q; bb = v; break;
+        case 4: rr = t; gg = p; bb = v; break;
+        default: rr = v; gg = p; bb = q; break;
+      }
+      col.r[i] = rr;
+      col.g[i] = gg;
+      col.b[i] = bb;
+    }
+    const stripeFo = new FieldObserver(SW, SH);
+    stripeFo.observe(col, col);
+    for (let t = 0; t < 12; t++) stripeFo.observe(col, col);
+    const stripeObs = stripeFo.observation;
+    const stripeSched = new GrainScheduler(GRAIN_BUDGET);
+    const stripeBatch = stripeSched.step(stripeObs, col, 90000);
+    assert(
+      "many calm strips are observed",
+      stripeObs.coherent.length >= 80,
+    );
+    assert(
+      "many-strip overflow still spends the calm budget",
+      stripeBatch.shares.calm >= 48,
+    );
+    const stripeSeats = (stripeBatch.regionSeats ?? []).filter(
+      (s) => s.id < 1e6 && s.share > 0,
+    );
+    assert(
+      "many-strip overflow seats the largest columns",
+      stripeSeats.length >= 48,
+    );
+  }
+
+  // Dead-id / over-share calm must yield seats so a new flow share can spend.
+  // Reproduces DATA 63/42 calm vs 0/19 flow: leftover DUR_MAX grains from a
+  // previous occupancy sat on the budget after the field reclassified.
+  {
+    const solidFill = makeField((r, g, b) => {
+      r.fill(0.9);
+      g.fill(0.45);
+      b.fill(0.1);
+    });
+    const stuckFo = new FieldObserver(w, h);
+    stuckFo.observe(solidFill, prev);
+    for (let t = 0; t < 12; t++) stuckFo.observe(solidFill, solidFill);
+    const stuckSched = new GrainScheduler(GRAIN_BUDGET);
+    let nowStuck = 120000;
+    let filledCalm = 0;
+    for (let t = 0; t < 250; t++) {
+      nowStuck += 1000 / 30;
+      const batch = stuckSched.step(stuckFo.observation, solidFill, nowStuck);
+      filledCalm = batch.calmActive;
+    }
+    assert(
+      "pre-switch calm occupancy is high (budget pressure)",
+      filledCalm >= 20,
+    );
+
+    function paintTinyTrain(field, t) {
+      for (let i = 0; i < n; i++) {
+        field.r[i] = 0.1;
+        field.g[i] = 0.1;
+        field.b[i] = 0.12;
+      }
+      const xDrift = (2 + Math.floor(t / 5) + w) % w;
+      const y0 = (4 + t + h) % h;
+      for (let k = 0; k < 8; k++) {
+        const i = ((y0 + k * 3) % h) * w + xDrift;
+        field.r[i] = 0.2;
+        field.g[i] = 0.9;
+        field.b[i] = 0.35;
+      }
+    }
+    const trainFo = new FieldObserver(w, h);
+    let trainPrev2 = makeField((r, g, b) => {
+      r.fill(0.1);
+      g.fill(0.1);
+      b.fill(0.12);
+    });
+    for (let t = 0; t < 40; t++) {
+      const cur = makeField(() => {});
+      paintTinyTrain(cur, t);
+      trainFo.observe(cur, trainPrev2);
+      trainPrev2 = cur;
+    }
+    let released = 0;
+    let flowPeak = 0;
+    let calmOverShare = false;
+    let flowStarved = true;
+    let overBudget = false;
+    for (let t = 40; t < 80; t++) {
+      nowStuck += 1000 / 30;
+      const cur = makeField(() => {});
+      paintTinyTrain(cur, t);
+      trainFo.observe(cur, trainPrev2);
+      trainPrev2 = cur;
+      const batch = stuckSched.step(trainFo.observation, cur, nowStuck);
+      released += batch.releaseGrainIds?.length ?? 0;
+      if (batch.flowActive > flowPeak) flowPeak = batch.flowActive;
+      if (batch.calmActive > batch.shares.calm + 2) calmOverShare = true;
+      if (batch.shares.flow > 0 && batch.flowActive > 0) flowStarved = false;
+      if (batch.predictedActive > GRAIN_BUDGET) overBudget = true;
+    }
+    assert("reclaim releases leftover calm grains", released > 0);
+    assert(
+      "flow receives seats after calm reclaim",
+      !flowStarved && flowPeak > 0,
+    );
+    assert(
+      "calm occupancy stays within share after reclaim",
+      !calmOverShare,
+    );
+    assert("reclaim + spawn never exceeds budget prediction", !overBudget);
+  }
+
+  // Translating calm: follow hops must stay near velocity, not raw COM jumps.
+  {
+    const mw = 64;
+    const mh = 64;
+    const mn = mw * mh;
+    function makeM(fill) {
+      const r = new Float32Array(mn);
+      const g = new Float32Array(mn);
+      const b = new Float32Array(mn);
+      for (let i = 0; i < mn; i++) fill(r, g, b, i);
+      return { width: mw, height: mh, r, g, b };
+    }
+    function paintBlob(field, ox, oy, bw, bh) {
+      for (let i = 0; i < mn; i++) {
+        const x = i % mw;
+        const y = (i / mw) | 0;
+        const inB = x >= ox && x < ox + bw && y >= oy && y < oy + bh;
+        if (inB) {
+          field.r[i] = 0.2;
+          field.g[i] = 0.55;
+          field.b[i] = 0.9;
+        } else {
+          field.r[i] = 0.05;
+          field.g[i] = 0.05;
+          field.b[i] = 0.05;
+        }
+      }
+    }
+    function wrapD(to, from, period) {
+      let d = to - from;
+      if (d > period * 0.5) d -= period;
+      if (d < -period * 0.5) d += period;
+      return d;
+    }
+    const moveFo = new FieldObserver(mw, mh);
+    const moveSched = new GrainScheduler(GRAIN_BUDGET);
+    const movePrev = makeM(() => {});
+    const moveCur = makeM(() => {});
+    paintBlob(movePrev, 8, 20, 8, 8);
+    paintBlob(moveCur, 8, 20, 8, 8);
+    moveFo.observe(moveCur, movePrev);
+    let nowMove = 300000;
+    const walkHops = [];
+    let lastAx = null;
+    let lastAy = null;
+    let lastId = -1;
+    for (let t = 0; t < 20; t++) {
+      movePrev.r.set(moveCur.r);
+      movePrev.g.set(moveCur.g);
+      movePrev.b.set(moveCur.b);
+      paintBlob(moveCur, 8 + t, 20, 8, 8);
+      const o = moveFo.observe(moveCur, movePrev);
+      nowMove += 1000 / 30;
+      const batch = moveSched.step(o, moveCur, nowMove);
+      const calmT = batch.tracks.filter((tr) => tr.regionId < FLOW_ID_BASE);
+      if (calmT.length && lastAx != null && lastId === calmT[0].regionId) {
+        walkHops.push(
+          Math.hypot(
+            wrapD(calmT[0].anchorX, lastAx, mw),
+            wrapD(calmT[0].anchorY, lastAy, mh),
+          ),
+        );
+      }
+      if (calmT.length) {
+        lastAx = calmT[0].anchorX;
+        lastAy = calmT[0].anchorY;
+        lastId = calmT[0].regionId;
+      }
+    }
+    const settled = walkHops.slice(4);
+    const maxWalk = settled.length ? Math.max(...settled) : 99;
+    assert(
+      `translating calm follow hop stays near 1 cell (max ${maxWalk.toFixed(2)})`,
+      settled.length >= 8 && maxWalk <= 2.5,
+    );
+
+    const preJumpAx = lastAx;
+    const preJumpId = lastId;
+    movePrev.r.set(moveCur.r);
+    movePrev.g.set(moveCur.g);
+    movePrev.b.set(moveCur.b);
+    paintBlob(moveCur, 8 + 19 + 12, 20, 8, 8);
+    const jumpObs = moveFo.observe(moveCur, movePrev);
+    nowMove += 1000 / 30;
+    const jumpBatch = moveSched.step(jumpObs, moveCur, nowMove);
+    const jumpT = jumpBatch.tracks.find(
+      (tr) => tr.regionId === preJumpId,
+    );
+    const jumpHop =
+      jumpT && preJumpAx != null
+        ? Math.hypot(
+            wrapD(jumpT.anchorX, preJumpAx, mw),
+            wrapD(jumpT.anchorY, lastAy, mh),
+          )
+        : 99;
+    assert(
+      `calm COM teleport is not one follow hop (${jumpHop.toFixed(2)} ≤ 8)`,
+      jumpHop <= 8,
+    );
+  }
+}
+
+async function runtimeWorkletSeam() {
+  let loadWorkletClass;
+  let makeWhite;
+  try {
+    ({ loadWorkletClass, makeWhite } = await import(
+      pathToFileURL(join(root, "scripts/lib/offline-worklet.mjs")).href
+    ));
+  } catch (err) {
+    console.log(
+      `  skip worklet seam (${err instanceof Error ? err.message : err})`,
+    );
+    return;
+  }
+  const FS = 48000;
+  const BLOCK = 128;
+  const W = 128;
+  const H = 128;
+  const Processor = await loadWorkletClass(FS);
+
+  function send(proc, msg) {
+    const handler = proc.port.onmessage;
+    if (typeof handler === "function") handler({ data: msg });
+  }
+  function renderBlock(proc) {
+    const L = new Float32Array(BLOCK);
+    const R = new Float32Array(BLOCK);
+    proc.process([], [[L, R]]);
+    let maxD = 0;
+    for (let i = 1; i < BLOCK; i++) {
+      const d = Math.hypot(L[i] - L[i - 1], R[i] - R[i - 1]);
+      if (d > maxD) maxD = d;
+    }
+    return { L, R, maxD };
+  }
+  function processBlock(proc) {
+    return renderBlock(proc).maxD;
+  }
+
+  const proc = new Processor();
+  const pcm = makeWhite(FS * 4, 99);
+  send(proc, {
+    type: "source",
+    sampleRate: FS,
+    length: pcm.length,
+    pcmL: pcm,
+    pcmR: pcm.slice(),
+  });
+  proc.masterGain = 1;
+  proc.masterGainTarget = 1;
+  proc.normGain = 1;
+  proc.preScale = 1;
+  send(proc, {
+    type: "events",
+    masterGain: 1,
+    events: [
+      {
+        durationSec: 2,
+        amplitude: 0.4,
+        r: 0.9,
+        g: 0.5,
+        b: 0.2,
+        x: 64,
+        y: 125,
+        yNorm: 1 - 125 / (H - 1),
+        pan: 0,
+        channelMix: 0.5,
+        sampleCenter: 0.5,
+        sampleHalf: 0.2,
+        attackFrac: 0.02,
+        releaseFrac: 0.1,
+        q: 4,
+        regime: "flow",
+        regionId: 1,
+        direction: 1,
+      },
+    ],
+  });
+  send(proc, {
+    type: "track",
+    tracks: [
+      {
+        regionId: 1,
+        anchorX: 64,
+        anchorY: 125,
+        comX: 64,
+        comY: 125,
+        gridWidth: W,
+        gridHeight: H,
+      },
+    ],
+  });
+  for (let i = 0; i < 40; i++) processBlock(proc);
+
+  let ay = 125;
+  const deltas = [];
+  let yAtWrap = null;
+  let yNormAtWrap = null;
+  let ySatAtWrap = 0;
+  for (let s = 0; s < 6; s++) {
+    ay = (ay + 1) % H;
+    send(proc, {
+      type: "track",
+      tracks: [
+        {
+          regionId: 1,
+          anchorX: 64,
+          anchorY: ay,
+          comX: 64,
+          comY: ay,
+          gridWidth: W,
+          gridHeight: H,
+        },
+      ],
+    });
+    const v = proc.voices.find((g) => g.active);
+    if (ay === 0) {
+      yAtWrap = v?.y;
+      yNormAtWrap = v?.yNorm;
+      ySatAtWrap = v?.ySaturated ?? 0;
+    }
+    deltas.push(processBlock(proc));
+    for (let i = 1; i < 12; i++) processBlock(proc);
+  }
+  const wrapDelta = deltas[2];
+  const preDelta = (deltas[0] + deltas[1]) / 2;
+  assert(
+    "worklet Y follow saturates at torus (grain stays at bottom)",
+    ySatAtWrap > 0 && yAtWrap >= H - 2 && yNormAtWrap < 0.05,
+  );
+  assert(
+    `worklet Y-seam sample Δ stays near interior (${wrapDelta.toFixed(4)} vs ${preDelta.toFixed(4)})`,
+    wrapDelta <= Math.max(0.015, preDelta * 4),
+  );
+
+  // Dropout then re-acquire far away must not apply the gap as one hop.
+  const gapProc = new Processor();
+  send(gapProc, {
+    type: "source",
+    sampleRate: FS,
+    length: pcm.length,
+    pcmL: pcm,
+    pcmR: pcm.slice(),
+  });
+  gapProc.masterGain = 1;
+  gapProc.masterGainTarget = 1;
+  gapProc.normGain = 1;
+  gapProc.preScale = 1;
+  send(gapProc, {
+    type: "events",
+    masterGain: 1,
+    events: [
+      {
+        durationSec: 2,
+        amplitude: 0.4,
+        r: 0.9,
+        g: 0.5,
+        b: 0.2,
+        x: 10,
+        y: 64,
+        yNorm: 0.5,
+        pan: (10 / (W - 1)) * 2 - 1,
+        channelMix: 10 / (W - 1),
+        sampleCenter: 0.5,
+        sampleHalf: 0.2,
+        attackFrac: 0.05,
+        releaseFrac: 0.15,
+        q: 4,
+        regime: "flow",
+        regionId: 1,
+        direction: 1,
+      },
+    ],
+    tracks: [
+      {
+        regionId: 1,
+        anchorX: 10,
+        anchorY: 64,
+        comX: 10,
+        comY: 64,
+        gridWidth: W,
+        gridHeight: H,
+      },
+    ],
+  });
+  for (let i = 0; i < 40; i++) processBlock(gapProc);
+  send(gapProc, { type: "track", tracks: [] });
+  for (let i = 0; i < 6; i++) processBlock(gapProc);
+  const preGap = renderBlock(gapProc);
+  send(gapProc, {
+    type: "track",
+    tracks: [
+      {
+        regionId: 1,
+        anchorX: 90,
+        anchorY: 64,
+        comX: 90,
+        comY: 64,
+        gridWidth: W,
+        gridHeight: H,
+      },
+    ],
+  });
+  const vGap = gapProc.voices.find((g) => g.active);
+  const postGap = renderBlock(gapProc);
+  const gapJump = Math.hypot(
+    postGap.L[0] - preGap.L[BLOCK - 1],
+    postGap.R[0] - preGap.R[BLOCK - 1],
+  );
+  let gapPre = 0;
+  for (let k = BLOCK - 32; k < BLOCK; k++) {
+    gapPre += Math.hypot(
+      preGap.L[k] - preGap.L[k - 1],
+      preGap.R[k] - preGap.R[k - 1],
+    );
+  }
+  gapPre /= 31;
+  assert(
+    "dropout re-acquire does not teleport grain x",
+    vGap && Math.abs(vGap.x - 10) < 1,
+  );
+  assert(
+    `dropout re-acquire sample Δ stays small (${gapJump.toFixed(4)} vs ${gapPre.toFixed(4)})`,
+    gapJump <= Math.max(0.02, gapPre * 6),
+  );
+
+  // Share-reclaim during a long calm attack must not snap env≪1 → 1.
+  const relProc = new Processor();
+  send(relProc, {
+    type: "source",
+    sampleRate: FS,
+    length: pcm.length,
+    pcmL: pcm,
+    pcmR: pcm.slice(),
+  });
+  relProc.masterGain = 1;
+  relProc.masterGainTarget = 1;
+  relProc.normGain = 1;
+  relProc.preScale = 1;
+  send(relProc, {
+    type: "events",
+    masterGain: 1,
+    events: [
+      {
+        grainId: 42,
+        durationSec: 2,
+        amplitude: 0.5,
+        r: 0.8,
+        g: 0.4,
+        b: 0.2,
+        x: 32,
+        y: 64,
+        yNorm: 0.5,
+        pan: 0,
+        channelMix: 0.5,
+        sampleCenter: 0.5,
+        sampleHalf: 0.2,
+        attackFrac: 0.3,
+        releaseFrac: 0.34,
+        q: 3,
+        regime: "calm",
+        regionId: 7,
+        direction: 1,
+      },
+    ],
+  });
+  for (let i = 0; i < 80; i++) processBlock(relProc);
+  const preRel = renderBlock(relProc);
+  const vRel = relProc.voices.find((g) => g.active && g.grainId === 42);
+  const envBefore = vRel ? relProc.envelopeAt(vRel) : 0;
+  const ampBefore = vRel?.amp ?? 0;
+  const levelBefore = envBefore * ampBefore;
+  send(relProc, { type: "events", masterGain: 1, events: [], releaseGrainIds: [42] });
+  const vAfter = relProc.voices.find((g) => g.active && g.grainId === 42);
+  const envAfter = vAfter ? relProc.envelopeAt(vAfter) : 0;
+  const levelAfter = envAfter * (vAfter?.amp ?? 0);
+  const postRel = renderBlock(relProc);
+  const relJump = Math.hypot(
+    postRel.L[0] - preRel.L[BLOCK - 1],
+    postRel.R[0] - preRel.R[BLOCK - 1],
+  );
+  let relPre = 0;
+  for (let k = BLOCK - 32; k < BLOCK; k++) {
+    relPre += Math.hypot(
+      preRel.L[k] - preRel.L[k - 1],
+      preRel.R[k] - preRel.R[k - 1],
+    );
+  }
+  relPre /= 31;
+  assert(
+    "reclaim during attack is still mid-grain (env was ≪ 1)",
+    vRel && envBefore > 0.05 && envBefore < 0.85,
+  );
+  assert(
+    `reclaim bakes envelope (level ${levelBefore.toFixed(3)} → ${levelAfter.toFixed(3)})`,
+    vAfter &&
+      Math.abs(levelAfter - levelBefore) <= Math.max(0.02, levelBefore * 0.08),
+  );
+  assert(
+    `reclaim-during-attack sample Δ stays small (${relJump.toFixed(4)} vs ${relPre.toFixed(4)})`,
+    relJump <= Math.max(0.02, relPre * 6),
+  );
 }
 
 await runtimeScheduler();
+await runtimeWorkletSeam();
 
 if (failed) {
   console.error(`\nPhase 2–3 verify: ${failed} failure(s)`);

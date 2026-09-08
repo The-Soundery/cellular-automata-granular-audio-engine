@@ -38,6 +38,16 @@ const W_ATTACK_FLUX = 0.35;
 const W_ANGLE = 1.0;
 const W_RADIUS = 0.85;
 const W_BAND = 0.55;
+/**
+ * Hops this far below the loudest analysis hop are file silence / noise floor
+ * — never selectable material. Relative so a quiet pad still maps.
+ */
+export const SILENCE_GATE_DB = -40;
+/** Mel bands for the offline timbre embedding (PCA → polar angle / band). */
+const MEL_BANDS = 24;
+const MEL_LO_HZ = 40;
+const MEL_HI_HZ = 16000;
+const PCA_ITERS = 40;
 
 export type RegimeMaterialBias = "sustained" | "transient" | "neutral";
 
@@ -133,7 +143,7 @@ export function buildSpectralBank(audioBuffer: AudioBuffer): SpectralBank {
 
 /**
  * HSV → material in the polar plane.
- * hue = angle, sat = radius (grey→centre), value = energy band.
+ * hue = angle (mel-PCA 1), sat = radius (grey→centre), value = band (mel-PCA 2).
  * "sustained" restricts the map to the high-stationarity subset, then nearest
  * colour wins. "transient" / "neutral" search the full map (no soft bias).
  */
@@ -272,9 +282,11 @@ export function buildPolarSegments(
     rms: number;
     flux: number;
     mag: Float32Array;
+    mel: Float64Array;
   };
   const raw: Raw[] = [];
   let prevMag: Float32Array | null = null;
+  const filterbank = makeMelFilterbank(fftSize >> 1, sampleRate, fftSize);
 
   for (let start = 0; start < n; start += hop) {
     const mid = Math.min(n - 1, start + Math.min(hop, fftSize) / 2);
@@ -305,6 +317,7 @@ export function buildPolarSegments(
       rms,
       flux,
       mag,
+      mel: melPowerFromMag(mag, filterbank),
     });
   }
 
@@ -335,8 +348,11 @@ export function buildPolarSegments(
     a.flux = flux0;
   }
 
-  const energetic = raw.filter((s) => s.energy > 1e-8);
-  const pool = energetic.length >= 2 ? energetic : raw;
+  let maxRms = 0;
+  for (const s of raw) if (s.rms > maxRms) maxRms = s.rms;
+  const rmsGate = maxRms * Math.pow(10, SILENCE_GATE_DB / 20);
+  const energetic = raw.filter((s) => s.rms >= rmsGate);
+  const pool = energetic.length >= 1 ? energetic : raw;
 
   const rmsFloor = 1e-8;
   const energyJumps = new Float32Array(pool.length);
@@ -392,6 +408,8 @@ export function buildPolarSegments(
   boundaries.push(pool.length);
 
   const segments: MaterialSegment[] = [];
+  const timbres: Float64Array[] = [];
+  const meanRms: number[] = [];
   for (let b = 0; b < boundaries.length - 1; b++) {
     const unitStart = boundaries[b]!;
     const unitEnd = boundaries[b + 1]!;
@@ -402,7 +420,9 @@ export function buildPolarSegments(
       let cenNum = 0;
       let cenDen = 0;
       let energySum = 0;
+      let rmsSum = 0;
       let attackSum = 0;
+      const melAcc = new Float64Array(MEL_BANDS);
       for (let i = s0; i < s1; i++) {
         const hopI = pool[i]!;
         // Energy-weighted position: a hit's centre sits on the hit, a pad's
@@ -413,7 +433,11 @@ export function buildPolarSegments(
         cenNum += hopI.centroid * hopI.energy;
         cenDen += hopI.energy;
         energySum += hopI.energy;
+        rmsSum += hopI.rms;
         attackSum += hopAttack[i]!;
+        for (let bMel = 0; bMel < MEL_BANDS; bMel++) {
+          melAcc[bMel]! += hopI.mel[bMel]! * wgt;
+        }
       }
       const count = Math.max(1, s1 - s0);
       const firstAttack = hopAttack[s0]!;
@@ -437,37 +461,63 @@ export function buildPolarSegments(
         radius: POLAR_SEGMENT_RADIUS,
         band: 0,
       });
+      // Log-mel shape, L2-normalised so PCA is timbre not loudness.
+      const vec = new Float64Array(MEL_BANDS);
+      const invW = 1 / wSum;
+      for (let bMel = 0; bMel < MEL_BANDS; bMel++) {
+        vec[bMel] = Math.log(1e-12 + melAcc[bMel]! * invW);
+      }
+      l2Normalize(vec);
+      timbres.push(vec);
+      meanRms.push(rmsSum / count);
     }
   }
 
-  // Rank-uniform polar axes over the finished units.
-  const byCentroid = segments
-    .map((s, i) => ({ i, c: s.centroidHz }))
-    .sort((a, b) => a.c - b.c || a.i - b.i);
-  const byEnergy = segments
-    .map((s, i) => ({ i, e: Math.log10(1e-12 + s.energy) }))
-    .sort((a, b) => a.e - b.e || a.i - b.i);
-  const denom = Math.max(1, segments.length - 1);
-  for (let rank = 0; rank < byCentroid.length; rank++) {
-    segments[byCentroid[rank]!.i]!.angle = rank / denom;
-  }
-  for (let rank = 0; rank < byEnergy.length; rank++) {
-    segments[byEnergy[rank]!.i]!.band = rank / denom;
+  if (energetic.length >= 1 && segments.length > 0) {
+    let keep = 0;
+    for (let i = 0; i < segments.length; i++) {
+      if (meanRms[i]! >= rmsGate) {
+        segments[keep] = segments[i]!;
+        timbres[keep] = timbres[i]!;
+        keep++;
+      }
+    }
+    if (keep === 0) {
+      let best = 0;
+      for (let i = 1; i < meanRms.length; i++) {
+        if (meanRms[i]! > meanRms[best]!) best = i;
+      }
+      segments[0] = segments[best]!;
+      timbres[0] = timbres[best]!;
+      keep = 1;
+    }
+    segments.length = keep;
+    timbres.length = keep;
   }
 
-  // Guarantee head/tail of file are selectable centres (keep true stationarity).
+  assignPolarFromMelPca(segments, timbres);
+
+  // Head/tail only when that edge is itself audible — never pad silence.
   if (segments.length > 0) {
-    const head = { ...segments[0]!, pos: 0 };
-    const tail = { ...segments[segments.length - 1]!, pos: 1 };
-    if (!segments.some((s) => s.pos <= 0.01)) segments.push(head);
-    if (!segments.some((s) => s.pos >= 0.99)) segments.push(tail);
+    if (
+      !segments.some((s) => s.pos <= 0.01) &&
+      raw.some((s) => s.pos <= 0.01 && s.rms >= rmsGate)
+    ) {
+      segments.push({ ...segments[0]!, pos: 0 });
+    }
+    if (
+      !segments.some((s) => s.pos >= 0.99) &&
+      raw.some((s) => s.pos >= 0.99 && s.rms >= rmsGate)
+    ) {
+      segments.push({ ...segments[segments.length - 1]!, pos: 1 });
+    }
   }
 
   return segments;
 }
 
 /** High-stationarity quantile, with a gap punched around real attack peaks. */
-function sustainedSubset(segments: MaterialSegment[]): MaterialSegment[] {
+export function sustainedSubset(segments: MaterialSegment[]): MaterialSegment[] {
   if (segments.length < 2) return segments;
   const scores = segments.map((s) => s.stationarity).sort((a, b) => a - b);
   const q = clamp01(SUSTAINED_SUBSET_QUANTILE);
@@ -659,4 +709,230 @@ function circularDistance01(a: number, b: number): number {
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+function hzToMel(hz: number): number {
+  return 2595 * Math.log10(1 + hz / 700);
+}
+
+function melToHz(mel: number): number {
+  return 700 * (Math.pow(10, mel / 2595) - 1);
+}
+
+/** Triangular mel weights, one dense vector per band, indexed by mag bin. */
+function makeMelFilterbank(
+  nMags: number,
+  sampleRate: number,
+  fftSize: number,
+): Float64Array[] {
+  const nyquist = sampleRate * 0.5;
+  const fHi = Math.min(MEL_HI_HZ, nyquist * 0.98);
+  const mLo = hzToMel(MEL_LO_HZ);
+  const mHi = hzToMel(Math.max(MEL_LO_HZ + 1, fHi));
+  const nPts = MEL_BANDS + 2;
+  const hz = new Float64Array(nPts);
+  for (let i = 0; i < nPts; i++) {
+    hz[i] = melToHz(mLo + ((mHi - mLo) * i) / (nPts - 1));
+  }
+  const bands: Float64Array[] = [];
+  for (let b = 0; b < MEL_BANDS; b++) {
+    const fL = hz[b]!;
+    const fC = hz[b + 1]!;
+    const fR = hz[b + 2]!;
+    const left = Math.max(fC - fL, 1e-9);
+    const right = Math.max(fR - fC, 1e-9);
+    const w = new Float64Array(nMags);
+    for (let k = 1; k < nMags; k++) {
+      const f = (k * sampleRate) / fftSize;
+      if (f <= fL || f >= fR) continue;
+      w[k] = f <= fC ? (f - fL) / left : (fR - f) / right;
+    }
+    bands.push(w);
+  }
+  return bands;
+}
+
+function melPowerFromMag(mag: Float32Array, bands: Float64Array[]): Float64Array {
+  const out = new Float64Array(bands.length);
+  for (let b = 0; b < bands.length; b++) {
+    const w = bands[b]!;
+    let e = 0;
+    const n = Math.min(mag.length, w.length);
+    for (let k = 1; k < n; k++) {
+      const wk = w[k]!;
+      if (wk === 0) continue;
+      const m = mag[k]!;
+      e += m * m * wk;
+    }
+    out[b] = e;
+  }
+  return out;
+}
+
+function l2Normalize(v: Float64Array): void {
+  let e = 0;
+  for (let i = 0; i < v.length; i++) e += v[i]! * v[i]!;
+  const n = Math.sqrt(e);
+  if (n < 1e-15) return;
+  const inv = 1 / n;
+  for (let i = 0; i < v.length; i++) v[i]! *= inv;
+}
+
+function hypotVec(v: Float64Array): number {
+  let e = 0;
+  for (let i = 0; i < v.length; i++) e += v[i]! * v[i]!;
+  return Math.sqrt(e);
+}
+
+function dotVec(a: Float64Array, b: Float64Array): number {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i]! * b[i]!;
+  return s;
+}
+
+function covMatVec(C: Float64Array, d: number, v: Float64Array): Float64Array {
+  const w = new Float64Array(d);
+  for (let i = 0; i < d; i++) {
+    let s = 0;
+    const row = i * d;
+    for (let j = 0; j < d; j++) s += C[row + j]! * v[j]!;
+    w[i] = s;
+  }
+  return w;
+}
+
+function rayleigh(C: Float64Array, d: number, v: Float64Array): number {
+  return dotVec(v, covMatVec(C, d, v));
+}
+
+function deflate(C: Float64Array, d: number, v: Float64Array, lam: number): void {
+  for (let i = 0; i < d; i++) {
+    for (let j = 0; j < d; j++) {
+      C[i * d + j]! -= lam * v[i]! * v[j]!;
+    }
+  }
+}
+
+function powerIterate(
+  C: Float64Array,
+  d: number,
+  orthogonalTo: Float64Array | null,
+): Float64Array {
+  const v = new Float64Array(d);
+  for (let i = 0; i < d; i++) v[i] = 1;
+  if (orthogonalTo) {
+    const p = dotVec(v, orthogonalTo);
+    for (let i = 0; i < d; i++) v[i]! -= p * orthogonalTo[i]!;
+  }
+  let n0 = hypotVec(v);
+  if (n0 < 1e-15) {
+    v.fill(0);
+    v[0] = 1;
+    if (orthogonalTo) {
+      const p = dotVec(v, orthogonalTo);
+      for (let i = 0; i < d; i++) v[i]! -= p * orthogonalTo[i]!;
+      n0 = hypotVec(v);
+    }
+  }
+  if (n0 > 1e-15) {
+    const inv = 1 / n0;
+    for (let i = 0; i < d; i++) v[i]! *= inv;
+  }
+
+  for (let it = 0; it < PCA_ITERS; it++) {
+    const w = covMatVec(C, d, v);
+    if (orthogonalTo) {
+      const p = dotVec(w, orthogonalTo);
+      for (let i = 0; i < d; i++) w[i]! -= p * orthogonalTo[i]!;
+    }
+    const n = hypotVec(w);
+    if (n < 1e-18) break;
+    const inv = 1 / n;
+    for (let i = 0; i < d; i++) v[i] = w[i]! * inv;
+  }
+  return v;
+}
+
+function rankUniformAssign(
+  segments: MaterialSegment[],
+  scores: Float64Array,
+  axis: "angle" | "band",
+): void {
+  const order: { i: number; c: number }[] = [];
+  for (let i = 0; i < scores.length; i++) order.push({ i, c: scores[i]! });
+  order.sort((a, b) => a.c - b.c || a.i - b.i);
+  const denom = Math.max(1, segments.length - 1);
+  for (let rank = 0; rank < order.length; rank++) {
+    const t = rank / denom;
+    const s = segments[order[rank]!.i]!;
+    if (axis === "angle") s.angle = t;
+    else s.band = t;
+  }
+}
+
+/**
+ * PC1 → angle, PC2 → band, then rank-uniformise so the colour circle is filled.
+ * Per-vector L2 already stripped gain; this is shape variation in the file.
+ */
+function assignPolarFromMelPca(
+  segments: MaterialSegment[],
+  vectors: Float64Array[],
+): void {
+  const n = segments.length;
+  const d = MEL_BANDS;
+  if (n === 0) return;
+  if (n === 1 || vectors.length !== n) {
+    for (const s of segments) {
+      s.angle = 0.5;
+      s.band = 0.5;
+    }
+    return;
+  }
+
+  const mean = new Float64Array(d);
+  for (let i = 0; i < n; i++) {
+    const v = vectors[i]!;
+    for (let j = 0; j < d; j++) mean[j]! += v[j]!;
+  }
+  const invN = 1 / n;
+  for (let j = 0; j < d; j++) mean[j]! *= invN;
+
+  const X: Float64Array[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = vectors[i]!;
+    const row = new Float64Array(d);
+    for (let j = 0; j < d; j++) row[j] = v[j]! - mean[j]!;
+    X.push(row);
+  }
+
+  const C = new Float64Array(d * d);
+  for (let i = 0; i < n; i++) {
+    const row = X[i]!;
+    for (let a = 0; a < d; a++) {
+      const ra = row[a]!;
+      if (ra === 0) continue;
+      for (let b = a; b < d; b++) {
+        const s = ra * row[b]!;
+        C[a * d + b]! += s;
+        if (a !== b) C[b * d + a]! += s;
+      }
+    }
+  }
+  for (let i = 0; i < C.length; i++) C[i]! *= invN;
+
+  const v1 = powerIterate(C, d, null);
+  const lam1 = rayleigh(C, d, v1);
+  deflate(C, d, v1, lam1);
+  const v2 = powerIterate(C, d, v1);
+
+  const pc1 = new Float64Array(n);
+  const pc2 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    pc1[i] = dotVec(X[i]!, v1);
+    pc2[i] = dotVec(X[i]!, v2);
+  }
+
+  rankUniformAssign(segments, pc1, "angle");
+  rankUniformAssign(segments, pc2, "band");
 }

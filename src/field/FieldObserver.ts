@@ -1240,6 +1240,35 @@ export class FieldObserver {
       return true;
     };
 
+    /**
+     * Confirmed track is still held but the matched sample failed emit gates.
+     * Publish last-good members at the coasted COM so overlay + flowClocks
+     * do not blank for a step (brief: keep emit while held).
+     */
+    const emitCoast = (good: PrevFlow, pose: PrevFlow): void => {
+      bump("emitCoast");
+      flows.push({
+        id: good.id,
+        area: good.cells.length,
+        regionArea: good.regionArea,
+        comX: pose.comX,
+        comY: pose.comY,
+        velX: good.velX,
+        velY: good.velY,
+        meanR: good.meanR,
+        meanG: good.meanG,
+        meanB: good.meanB,
+        cells: good.cells,
+        period: this.flowSitePeriod(good.cells),
+      });
+    };
+
+    /** Keep held confirmed tracks visible/audible even when emit() rejects. */
+    const emitHeld = (row: PrevFlow, good: PrevFlow, confirmed: boolean) => {
+      if (emit(row)) return;
+      if (confirmed) emitCoast(good, row);
+    };
+
     for (let p = 0; p < this.prevFlows.length; p++) {
       const prev = this.prevFlows[p]!;
       let best = -1;
@@ -1420,7 +1449,7 @@ export class FieldObserver {
       };
       if (row.hold > 0) {
         nextPrev.push(row);
-        emit(row);
+        emitHeld(row, prev, wasConfirmed);
       }
     }
 
@@ -1491,7 +1520,7 @@ export class FieldObserver {
         hold,
       };
       nextPrev.push(row);
-      emit(row);
+      emitHeld(row, prev, true);
     }
 
     this.prevFlows = nextPrev;

@@ -60,6 +60,32 @@ export interface FieldMeterStats {
   predictedActive: number;
   /** Measured CA step rate (Hz) from the scheduler's dt EMA. */
   stepHz?: number;
+  /** Top regions by area (UI shows at most 6). Omit until wired. */
+  regionRows?: {
+    id: number;
+    area: number;
+    kappa: number;
+    seats: number;
+    active: number;
+    /** Steps since birth, if known. */
+    age?: number;
+  }[];
+  /** Preformatted ticker; used only when regionTicker is absent. */
+  regionEventsLine?: string;
+  /** Birth / merge / death chips; texts joined with ` · `. */
+  regionTicker?: { kind: "birth" | "death" | "merge"; text: string }[];
+  /**
+   * Temporary flow-blink audio-impact diagnostic (gated by overlay).
+   * Live membership / trigger counts — not the smoothed FLOW spend bar.
+   */
+  flowBlink?: {
+    n: number;
+    gained: number;
+    lost: number;
+    triggers: number;
+    active: number;
+    rejects: string;
+  };
 }
 
 export interface ControlsApi {
@@ -100,9 +126,12 @@ const ICO = {
     `<path d="M2 4V2h2"/><path d="M8 2h2v2"/><path d="M10 8v2H8"/><path d="M4 10H2V8"/>`,
   ),
   load: icon(
-    `<path d="M6 1.5v7"/><path d="M3.2 6.2 6 9l2.8-2.8"/><path d="M2 10.5h8"/>`,
+    `<path d="M6 9.5V3.5"/><path d="M3.2 5.8 6 3l2.8 2.8"/><path d="M2 10.5h8"/>`,
   ),
   audio: icon(
+    `<path d="M2 4.5h2.5L7 2v8L4.5 7.5H2z" fill="currentColor" stroke="none"/>`,
+  ),
+  audioOn: icon(
     `<path d="M2 4.5h2.5L7 2v8L4.5 7.5H2z" fill="currentColor" stroke="none"/><path d="M8.5 5c.7.4.7 1.6 0 2"/><path d="M10 4.2c1.2.7 1.2 2.9 0 3.6"/>`,
   ),
   reset: icon(
@@ -122,6 +151,62 @@ function ticks(frac: number): string {
 /** Concurrent / allocated seats for a regime pool. */
 function formatSpend(active: number, share: number): string {
   return `${Math.round(active)}/${Math.round(share)}`;
+}
+
+/** Two-digit kappa, ASCII (`k.82`). VT323 has no reliable κ. */
+function formatKappa(kappa: number): string {
+  const k = Number.isFinite(kappa) ? Math.max(0, Math.min(1, kappa)) : 0;
+  if (k >= 0.995) return "k1.0";
+  return `k.${String(Math.round(k * 100)).padStart(2, "0")}`;
+}
+
+const REGION_ROW_MAX = 6;
+const REGION_TICKER_MAX = 6;
+
+function renderRegionRows(
+  host: HTMLElement,
+  rows: FieldMeterStats["regionRows"],
+) {
+  host.replaceChildren();
+  if (!rows || rows.length === 0) {
+    host.textContent = "—";
+    return;
+  }
+  const n = Math.min(REGION_ROW_MAX, rows.length);
+  for (let i = 0; i < n; i++) {
+    const r = rows[i]!;
+    const line = document.createElement("div");
+    line.className = "rr";
+    const parts = [
+      `#${Math.round(r.id)}`,
+      String(Math.round(r.area)),
+      formatKappa(r.kappa),
+      formatSpend(r.active, r.seats),
+    ];
+    if (r.age !== undefined && Number.isFinite(r.age)) {
+      parts.push(`a${Math.max(0, Math.min(99, Math.round(r.age)))}`);
+    }
+    for (const p of parts) {
+      const span = document.createElement("span");
+      span.textContent = p;
+      line.append(span);
+    }
+    host.append(line);
+  }
+}
+
+function formatRegionTicker(f: FieldMeterStats): string {
+  if (f.regionTicker && f.regionTicker.length > 0) {
+    const texts = f.regionTicker
+      .slice(-REGION_TICKER_MAX)
+      .map((e) => e.text)
+      .filter((t) => t.length > 0);
+    if (texts.length > 0) return texts.join(" · ");
+  }
+  if (f.regionEventsLine && f.regionEventsLine.length > 0) {
+    return f.regionEventsLine;
+  }
+  return "—";
 }
 
 export function mountControls(
@@ -153,6 +238,15 @@ export function mountControls(
             <span>RATE</span><b id="st-rate">—</b>
             <span>AUDIO</span><b id="st-audio">—</b>
           </div>
+          <div class="data-regions">
+            <span class="k">REG</span>
+            <div id="st-regions">—</div>
+            <div class="data-ticker" id="st-reg-ev">—</div>
+          </div>
+          <div class="data-row" id="flow-blink-row" hidden title="Live flow membership vs grain triggers (overlay diagnostic)">
+            <span class="k">FBLINK</span>
+            <span class="n" id="st-flow-blink" style="width:auto;flex:1;text-align:left;font-size:15px">—</span>
+          </div>
           <div class="data-out" id="vu" title="Drag to set output">
             <span class="k">OUTPUT</span>
             <div class="vu-track">
@@ -172,7 +266,7 @@ export function mountControls(
       </aside>
     </nav>
     <nav class="hud-corner hud-bl">
-      <button type="button" class="hud-cell" id="audio-toggle" title="Mute">${ICO.audio}</button>
+      <button type="button" class="hud-cell" id="audio-toggle" title="Unmute">${ICO.audio}</button>
       <label class="hud-cell" id="load-btn" title="Load audio">${ICO.load}
         <input id="file" type="file" accept="audio/*,.wav,.mp3,.aiff,.aif,.ogg" hidden />
       </label>
@@ -329,8 +423,7 @@ export function mountControls(
   });
   audioBtn.addEventListener("click", () => {
     void handlers.onToggleAudio().then((audible) => {
-      audioBtn.classList.toggle("is-on", audible);
-      audioBtn.title = audible ? "Mute" : "Unmute";
+      setAudioUi(audible);
     });
   });
   for (const btn of depthBtns) {
@@ -385,6 +478,12 @@ export function mountControls(
     return Number.isInteger(n) ? n : null;
   }
 
+  function setAudioUi(audible: boolean) {
+    audioBtn.innerHTML = audible ? ICO.audioOn : ICO.audio;
+    audioBtn.classList.toggle("is-on", audible);
+    audioBtn.title = audible ? "Mute" : "Unmute";
+  }
+
   function setRecordingUi(recording: boolean) {
     recordBtn.innerHTML = recording ? ICO.recOn : ICO.rec;
     recordBtn.classList.toggle("is-rec", recording);
@@ -419,8 +518,7 @@ export function mountControls(
       pauseBtn.classList.toggle("is-on", !paused);
     },
     setAudioEnabled(audible) {
-      audioBtn.classList.toggle("is-on", audible);
-      audioBtn.title = audible ? "Mute" : "Unmute";
+      setAudioUi(audible);
     },
     setRecording(recording) {
       setRecordingUi(recording);
@@ -452,11 +550,18 @@ export function mountControls(
           ? `${s.field.stepHz.toFixed(1)}/s`
           : "—";
       const f = s.field;
+      const stRegions = root.querySelector("#st-regions") as HTMLElement | null;
+      const stRegEv = root.querySelector("#st-reg-ev") as HTMLElement | null;
+      const flowBlinkRow = root.querySelector("#flow-blink-row") as HTMLElement | null;
+      const stFlowBlink = root.querySelector("#st-flow-blink") as HTMLElement | null;
       if (!f) {
         for (const id of ["#st-calm", "#st-static", "#st-chaos", "#st-osc", "#st-flow", "#st-budget", "#st-spend"]) {
           const el = root.querySelector(id);
           if (el) el.textContent = "—";
         }
+        if (stRegions) stRegions.textContent = "—";
+        if (stRegEv) stRegEv.textContent = "—";
+        if (flowBlinkRow) flowBlinkRow.hidden = true;
       } else {
         const budget = Math.max(1, f.budget);
         const shareCalm = f.shareCalm ?? 0;
@@ -484,6 +589,19 @@ export function mountControls(
           `${Math.round(f.predictedActive)}/${f.budget}`;
         (root.querySelector("#st-spend") as HTMLElement).textContent =
           `c ${formatSpend(f.calmGrains, shareCalm)} · s ${formatSpend(f.textureGrains ?? 0, shareTexture)} · x ${formatSpend(f.chaosGrains, shareChaos)} · o ${formatSpend(f.oscGrains ?? 0, shareOsc)} · f ${formatSpend(f.flowGrains ?? 0, shareFlow)}`;
+        if (stRegions) renderRegionRows(stRegions, f.regionRows);
+        if (stRegEv) stRegEv.textContent = formatRegionTicker(f);
+        if (flowBlinkRow && stFlowBlink) {
+          const fb = f.flowBlink;
+          if (fb) {
+            flowBlinkRow.hidden = false;
+            stFlowBlink.textContent =
+              `n${fb.n} +${fb.gained}/-${fb.lost} trg${fb.triggers} act${fb.active}` +
+              (fb.rejects ? ` ${fb.rejects}` : "");
+          } else {
+            flowBlinkRow.hidden = true;
+          }
+        }
       }
       const m = s.meter;
       const peak = m ? Math.min(1, m.peak) : 0;
