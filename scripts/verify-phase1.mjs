@@ -258,6 +258,45 @@ async function runtimeCheck() {
     big >= FIELD_OBS.minRegionArea * 2,
   );
 
+  // Sub-minArea coherent island: silent residual — not Calm, not Texture.
+  const speck = field((r, g, b, i) => {
+    const x = i % w;
+    const y = (i / w) | 0;
+    // 5×4 = 20 cells (< minRegionArea 24), solid colour on frozen noise bg.
+    const inBlob = x >= 10 && x < 15 && y >= 10 && y < 14;
+    if (inBlob) {
+      r[i] = 0.2;
+      g[i] = 0.55;
+      b[i] = 0.85;
+    } else {
+      r[i] = (i * 17) % 97 / 97;
+      g[i] = (i * 31) % 89 / 89;
+      b[i] = (i * 13) % 83 / 83;
+    }
+  });
+  const speckObs = new FieldObserver(w, h);
+  speckObs.observe(speck, prev);
+  for (let t = 0; t < 8; t++) speckObs.observe(speck, speck);
+  const speckOut = speckObs.observation;
+  const speckCells = new Set();
+  for (let y = 10; y < 14; y++) {
+    for (let x = 10; x < 15; x++) speckCells.add(y * w + x);
+  }
+  const speckInCalm = speckOut.coherent.some((r) =>
+    [...r.cells].some((c) => speckCells.has(c)),
+  );
+  const speckInTex = [...speckOut.textured.cells].some((c) =>
+    speckCells.has(c),
+  );
+  assert(
+    "sub-minArea still blob is not a calm region",
+    !speckInCalm && speckOut.coherent.every((r) => r.area < 20 || r.area >= FIELD_OBS.minRegionArea),
+  );
+  assert(
+    "sub-minArea still blob is not texture leftover",
+    !speckInTex,
+  );
+
   // Sparse same-direction dots are not a flow region (too spread out).
   const flowObs = new FieldObserver(w, h);
   const bg = field((r, g, b, i) => {

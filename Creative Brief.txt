@@ -60,7 +60,7 @@ We ARE building:
 - Two renderings: visual and audio
 - A physically constrained audio renderer of computational evolution
 - An instrument whose sonic complexity emerges from CA behaviour itself
-- Observational regions (calm / static / chaos / oscillators / flow)
+- Observational regions (calm / texture / chaos / oscillators / flow)
   as field measurements that set grain laws — never as owned voices
 
 
@@ -137,7 +137,7 @@ One-sentence axiom:
    - extent via region width / height / area (spatial scale of a coherent mass)
 
    Classification order (exclusive by construction): Osc → Calm → Flow →
-   then leftover split by δ into Chaos (changing) or Static (still).
+   then leftover split by δ into Chaos (changing) or Texture (still, no body).
    Spatial mix alone never chooses a regime.
 
    Membership (what each regime is — not grain laws):
@@ -146,15 +146,18 @@ One-sentence axiom:
      One body, not a bag. May sit still or slide cell→adjacent cell as that
      body (high persist: interior keeps the colour). Fill is not a membership
      gate — it shapes grains and keeps solid stamps out of Flow. Speckles
-     below min area are not Calm. Slow whole-field drift / breathing stays
-     Calm. Tracks COM, velocity, area A, κ̄, δ̄.
-   - Static (HUD name; code alias textured): temporally still remainder —
-     δ below the chaos floor, not claimed as Calm, Osc, or Flow. Typical
-     look is frozen mixed detail. A solid never-changing colour field is
-     Calm, not Static. Small similar patches that fail min area land here.
-     Delivered as one colour group per distinct frozen hue (plus a grey
-     bin) — each group has its own mean colour, COM, Y extent, and seat
-     share — not one undifferentiated bag that samples every colour at once.
+     below min area are not Calm (and not Texture — silent residual). Slow
+     whole-field drift / breathing stays Calm. Tracks COM, velocity, area A,
+     κ̄, δ̄.
+   - Texture (HUD TEX; code alias textured / regime "texture"): still cells
+     that do not form a connected similar-colour mass — δ below the chaos
+     floor, not claimed as Calm, Osc, or Flow. Typical look is frozen mixed
+     detail. A solid never-changing colour field is Calm, not Texture.
+     Speckles that pass κ + colour-join but fail min area stay silent; they
+     are not promoted into Texture. Delivered as one colour group per distinct
+     frozen hue (plus a grey bin) — each group has its own mean colour, COM,
+     Y extent, and seat share — not one undifferentiated bag that samples
+     every colour at once.
    - Osc: sitting cells whose colour repeats with a confirmed period
      (2..8 steps). The pulse does not travel; travelling period-looking
      patterns are stripped to Flow or Chaos. Wavelength-2 site-revisit
@@ -181,14 +184,15 @@ One-sentence axiom:
 
    Calm vs Flow: high persist (mass keeps its colour as it slides) → Calm;
    high hop (colour leaves cells and lands nearby) → Flow.
-   Static vs Chaos: leftover and still → Static; leftover and changing → Chaos.
+   Texture vs Chaos: leftover still with no body → Texture; leftover
+   changing → Chaos.
 
    δ is spatially averaged (3×3) before regime decisions so single-cell
    speckle cannot masquerade as chaos.
 
    Regions are re-derived each frame with smoothing / confirm streaks.
    They are measurements, not voice owners. Do not score “interestingness”
-   or prefer one regime. Calm and Flow are tracked bodies; Static, Chaos,
+   or prefer one regime. Calm and Flow are tracked bodies; Texture, Chaos,
    and Osc are bags (no pan/Y follow except Flow/Calm region ids).
 
    Region lifecycle is part of the observation: births, deaths, and merges
@@ -212,8 +216,9 @@ One-sentence axiom:
                   (calm → overlap allowed; chaos → overlap ≈ 0)
 
    Calm packing:  few long overlapping grains → one continuous wash
-   Static packing: few long overlapping grains; identity diversity across
-                  spawn sites carries frozen detail (same pool shape as calm)
+   Texture packing: few long overlapping grains; identity diversity across
+                  hue groups / spawn sites carries frozen detail (same pool
+                  shape as calm)
    Osc packing:   pulse-locked bursts at the visual period; share spent at
                   the hit; silence between hits is not an unspent share
    Chaos packing: many short non-overlapping grains from random cells
@@ -309,7 +314,7 @@ One-sentence axiom:
    and spend it as few long overlapping grains. Chaotic areas receive share
    by their area and spend it as many short hits.
 
-   Every confirmed calm region, flow group, oscillator group, and static colour
+   Every confirmed calm region, flow group, oscillator group, and texture colour
    group gets at least one seat before leftovers (area-ranked if guaranteed
    seats overflow the budget). A structure large enough to detect must not be
    silent because rounding took its seat.
@@ -361,8 +366,10 @@ Regime borders (overlay + Field % + scheduler pools) — membership only:
            may sit or slide as a continuous mass (moving-bar, filled
            stamps / ribbons / 1-cell-wide bars that translate as fixed
            silhouettes). Fill is not a membership gate.
-  Static   still remainder (δ below chaos floor); not Calm / Osc / Flow.
-           Frozen mixed detail is the typical case — not “one solid colour”.
+  Texture  still cells with no similar-colour body (δ below chaos floor);
+           not Calm / Osc / Flow. Frozen mixed detail is the typical case —
+           not “one solid colour”. Speckles below min area are silent
+           residual, not Texture. Overlay draws each hue group + COM.
   Osc      sitting confirmed period 2..8. Travelling period-looking cells
            are stripped. Wavelength-2 site-revisit with cancelling hops
            (train tracks, checkerboards) stays Osc. Periods longer than
@@ -392,13 +399,14 @@ Regime borders (overlay + Field % + scheduler pools) — membership only:
            scramble-as-one-flow; stationary flicker.
            Two mono-colour streams may coexist. No “moving static” pool.
   Chaos    changing remainder — not periodic, not coherent correspondence.
-           Spatial mix alone does not make Chaos (frozen noise is Static).
+           Spatial mix alone does not make Chaos (frozen noise is Texture).
 
-Overlay (one colour per regime, not per region id): gold calm, grey static,
+Overlay (one colour per regime, not per region id): gold calm, grey texture,
 orange chaos, blue osc, green flow. Drawn as 1px outlines at display
 resolution — no interior wash. Tracked calm / oscillator / flow regions
-get L-brackets and a COM mark; chaos is edge fragments. Live grains are
-ticks on the source waveform under the field, not dots on the CA.
+get L-brackets and a COM mark; texture hue groups get outlines + COM (no
+brackets); chaos is edge fragments. Live grains are ticks on the source
+waveform under the field, not dots on the CA.
 
 Detection (cheap): 4×4 spatial×colour blocks → match each to the previous
 same-hue block → cluster by colour + heading + lane, or nearby same-heading
@@ -526,7 +534,7 @@ Live pipeline
 ------------------------------------------------------------------------------
 
   Utomata → FrameObserver
-    → FieldObserver (δ, s, κ; Osc → Calm → Flow → Chaos/Static remainder)
+    → FieldObserver (δ, s, κ; Osc → Calm → Flow → Chaos/Texture remainder)
     → GrainScheduler (five area-share pools; polar HSV material; X→pan +
                       channel mix; absolute Y; freeze-at-spawn window;
                       region-bound pan/Y/channelMix follow; flow conveyor)

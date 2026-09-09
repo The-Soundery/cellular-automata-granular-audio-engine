@@ -166,8 +166,8 @@ const GLIDER_DIRS: readonly [number, number][] = [
 
 export const TEST_PATTERNS: TestPattern[] = [
   {
-    id: "uniform-static",
-    label: "Uniform static",
+    id: "uniform-calm",
+    label: "Uniform calm",
     fill(field) {
       fillUniform(field, 0.2, 0.55, 0.85);
     },
@@ -192,8 +192,8 @@ export const TEST_PATTERNS: TestPattern[] = [
     },
   },
   {
-    id: "checkerboard-static",
-    label: "Static checkerboard",
+    id: "checkerboard-calm",
+    label: "Calm checkerboard",
     fill(field) {
       const { width: w, height: h } = field;
       for (let y = 0; y < h; y++) {
@@ -288,8 +288,8 @@ export const TEST_PATTERNS: TestPattern[] = [
     },
   },
   {
-    id: "gradient-static",
-    label: "Static hue gradient",
+    id: "gradient-calm",
+    label: "Calm hue gradient",
     fill(field) {
       const { width: w, height: h } = field;
       for (let y = 0; y < h; y++) {
@@ -674,8 +674,16 @@ export function fillRgba(
   }
 }
 
+/** Old harness / SIM ids → current ids (saved selections still resolve). */
+const PATTERN_ID_ALIASES: Record<string, string> = {
+  "uniform-static": "uniform-calm",
+  "checkerboard-static": "checkerboard-calm",
+  "gradient-static": "gradient-calm",
+};
+
 export function getTestPattern(id: string): TestPattern | undefined {
-  return TEST_PATTERNS.find((p) => p.id === id);
+  const resolved = PATTERN_ID_ALIASES[id] ?? id;
+  return TEST_PATTERNS.find((p) => p.id === resolved);
 }
 
 function clamp01(v: number): number {

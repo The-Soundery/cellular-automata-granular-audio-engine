@@ -1011,25 +1011,25 @@ const chaosSites = countDistinctSites(
   "chaos",
 );
 const uniformSites = countDistinctSites(
-  TEST_PATTERNS.find((p) => p.id === "uniform-static"),
+  TEST_PATTERNS.find((p) => p.id === "uniform-calm"),
   "calm+texture",
 );
 console.log(
   `chaos sites (full-flicker): distinct=${chaosSites.distinct} events=${chaosSites.events}`,
 );
 console.log(
-  `uniform-static mean pan (calm+tex): ${uniformSites.meanPan.toFixed(3)}`,
+  `uniform-calm mean pan (calm+tex): ${uniformSites.meanPan.toFixed(3)}`,
 );
 console.log("");
 
 // ---- Stage 3 ----
 {
-  const u = results.get("uniform-static")?.total;
+  const u = results.get("uniform-calm")?.total;
   const f = results.get("full-flicker")?.total;
   const h = results.get("half-half")?.total;
-  const g = results.get("gradient-static")?.total;
+  const g = results.get("gradient-calm")?.total;
   const fr = results.get("frozen-noise");
-  const uu = results.get("uniform-static");
+  const uu = results.get("uniform-calm");
   const hh = results.get("half-half")?.byPool;
 
   if (u && f && h) {
@@ -1063,7 +1063,7 @@ console.log("");
     assertLe(
       3,
       "frozen-vs-uniform",
-      "frozen-noise vs uniform-static total RMS within 3dB",
+      "frozen-noise vs uniform-calm total RMS within 3dB",
       Math.abs(db(fr.total.rms) - db(u.rms)),
       3,
     );
@@ -1072,7 +1072,7 @@ console.log("");
     assert(
       3,
       "frozen-vs-uniform",
-      "frozen-noise mean Q < uniform-static mean Q",
+      "frozen-noise mean Q < uniform-calm mean Q",
       fQ < uQ,
       "frozen Q < uniform Q",
       `frozen=${fQ.toFixed(3)} uniform=${uQ.toFixed(3)}`,
@@ -1119,7 +1119,7 @@ console.log("");
   const checkDispMin = (id, panMin, yMin) => {
     const r = results.get(id);
     if (!r) return;
-    if (id === "gradient-static") {
+    if (id === "gradient-calm") {
       assertGe(4, id, `pan spread ≥${panMin}`, r.byPool.calm.panSpread, panMin);
       return;
     }
@@ -1134,15 +1134,15 @@ console.log("");
   // has a moving hole, so slots near the bar's path legitimately snap a few
   // cells aside when it passes — sound reacting to real field change, not
   // sampler wander. The three frozen-mask sims cover stasis exactly (sd 0).
-  checkSlotStable("uniform-static");
+  checkSlotStable("uniform-calm");
   checkSlotStable("breathing-uniform");
   checkSlotStable("glider-swarm");
   checkDispMin("frozen-noise", 0.7, 0.7);
-  checkDispMin("gradient-static", 0.7, null);
+  checkDispMin("gradient-calm", 0.7, null);
 
   assertIn(
     4,
-    "uniform-static",
+    "uniform-calm",
     "mean pan ∈ [-0.15, 0.15]",
     uniformSites.meanPan,
     -0.15,
@@ -1160,13 +1160,13 @@ console.log("");
       max,
     );
   };
-  siteMax("uniform-static", 70);
+  siteMax("uniform-calm", 70);
   siteMax("frozen-noise", 70);
-  siteMax("checkerboard-static", 70);
+  siteMax("checkerboard-calm", 70);
   siteMax("hue-drift", 70);
   siteMax("breathing-uniform", 70);
   siteMax("glider-swarm", 70);
-  siteMax("gradient-static", 12);
+  siteMax("gradient-calm", 12);
 
   assertGe(
     4,
@@ -1246,8 +1246,8 @@ console.log("");
   const fFlicker = flux("full-flicker");
   for (const id of [
     "frozen-noise",
-    "uniform-static",
-    "checkerboard-static",
+    "uniform-calm",
+    "checkerboard-calm",
     "hue-drift",
     "full-flicker",
   ]) {
@@ -1369,7 +1369,7 @@ async function renderedEnvelopeCrestDb(
 
 // ---- Segmentation coherence diagnostic (assertion stays; do not widen band) ----
 {
-  const pattern = TEST_PATTERNS.find((p) => p.id === "uniform-static");
+  const pattern = TEST_PATTERNS.find((p) => p.id === "uniform-calm");
   const recorded = recordScenario(pattern);
   const clonePatch = (forceZero) => {
     const steps = recorded.steps.map((s) => ({
@@ -1397,7 +1397,7 @@ async function renderedEnvelopeCrestDb(
   );
   const gapDb = db(correlated.rms) - db(decorrelated.rms);
   console.log(
-    `  Coherence test (uniform-static): readOffset=0 rms=${correlated.rms.toExponential(3)}  per-slot rms=${decorrelated.rms.toExponential(3)}  gap=${gapDb.toFixed(2)} dB`,
+    `  Coherence test (uniform-calm): readOffset=0 rms=${correlated.rms.toExponential(3)}  per-slot rms=${decorrelated.rms.toExponential(3)}  gap=${gapDb.toFixed(2)} dB`,
   );
   console.log(
     gapDb >= 0.4 && gapDb <= 1.2
@@ -1414,8 +1414,8 @@ if (STAGE >= 6 || COLD_START || STAGE === 0) {
   for (const id of [
     "frozen-noise",
     "breathing-uniform",
-    "gradient-static",
-    "uniform-static",
+    "gradient-calm",
+    "uniform-calm",
   ]) {
     const pattern = TEST_PATTERNS.find((p) => p.id === id);
     if (!pattern) continue;

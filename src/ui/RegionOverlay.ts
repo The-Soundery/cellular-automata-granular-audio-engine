@@ -64,7 +64,13 @@ export class RegionOverlay {
     ctx.lineJoin = "miter";
     ctx.setLineDash([]);
 
-    if (obs.textured.cells.length) {
+    if (obs.texturedGroups?.length) {
+      for (const g of obs.texturedGroups) {
+        if (!g.cells.length) continue;
+        strokeEdges(ctx, g.cells, gridW, gridH, cw, ch, REGIME_HEX.tex);
+        drawCross(ctx, g.comX * cw, g.comY * ch, REGIME_HEX.tex);
+      }
+    } else if (obs.textured.cells.length) {
       strokeEdges(ctx, obs.textured.cells, gridW, gridH, cw, ch, REGIME_HEX.tex);
     }
     if (obs.chaotic.cells.length) {

@@ -830,11 +830,9 @@ export class FieldObserver {
 
       const area = cellBuf.length;
       if (area < minArea) {
-        // Too small to voice — but the cells were genuinely coherent. Clear
-        // the mask (remainder/flow must not see them as calm) yet remember
-        // them so hysteresis still applies next frame: zeroing prevCalm here
-        // forced marginal regions back to the *enter* threshold every frame,
-        // making them blink in and out (clock resets, budget churn).
+        // Too small to voice as Calm. Clear the mask so remainder/flow do not
+        // treat them as confirmed Calm; remember them for hysteresis AND so
+        // buildTextured skips them (silent residual — not Texture).
         for (const i of cellBuf) {
           this.labels[i] = -1;
           this.calmMask[i] = 0;
@@ -2406,6 +2404,10 @@ export class FieldObserver {
         inCalm[r.cells[i]!] = 1;
       }
     }
+    // Bodies that passed κ + colour-join but failed minRegionArea are silent
+    // residual — not Calm seats, and not Texture hue groups.
+    const culled = new Uint8Array(n);
+    for (const i of this.culledCalm) culled[i] = 1;
 
     const chaosMin = FIELD_OBS.chaosDeltaMin;
     const cells: number[] = [];
@@ -2416,7 +2418,7 @@ export class FieldObserver {
     let sumG = 0;
     let sumB = 0;
     for (let i = 0; i < n; i++) {
-      if (inCalm[i] || this.oscMask[i] || this.flowMark[i]) continue;
+      if (inCalm[i] || culled[i] || this.oscMask[i] || this.flowMark[i]) continue;
       const d = this.deltaSmooth[i]!;
       if (d >= chaosMin) continue;
       cells.push(i);

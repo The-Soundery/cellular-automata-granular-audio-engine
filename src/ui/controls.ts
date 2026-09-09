@@ -86,6 +86,8 @@ export interface FieldMeterStats {
     active: number;
     rejects: string;
   };
+  /** Live Texture hue-group count (overlay / DATA). */
+  textureGroupCount?: number;
 }
 
 export interface ControlsApi {
@@ -227,7 +229,7 @@ export function mountControls(
         <div class="head" id="data-close">DATA</div>
         <div class="body">
           <div class="data-row"><span class="k">CALM</span><span class="data-ticks" id="tk-calm"></span><span class="n" id="st-calm">—</span></div>
-          <div class="data-row"><span class="k">STAT</span><span class="data-ticks" id="tk-static"></span><span class="n" id="st-static">—</span></div>
+          <div class="data-row"><span class="k">TEX</span><span class="data-ticks" id="tk-static"></span><span class="n" id="st-static">—</span></div>
           <div class="data-row"><span class="k">CHAOS</span><span class="data-ticks" id="tk-chaos"></span><span class="n" id="st-chaos">—</span></div>
           <div class="data-row"><span class="k">OSC</span><span class="data-ticks" id="tk-osc"></span><span class="n" id="st-osc">—</span></div>
           <div class="data-row"><span class="k">FLOW</span><span class="data-ticks" id="tk-flow"></span><span class="n" id="st-flow">—</span></div>
@@ -572,8 +574,10 @@ export function mountControls(
         // Regime meters = grain-budget use (concurrent/share), not field cell %.
         (root.querySelector("#st-calm") as HTMLElement).textContent =
           formatSpend(f.calmGrains, shareCalm);
+        const texSpend = formatSpend(f.textureGrains ?? 0, shareTexture);
+        const texGroups = f.textureGroupCount ?? 0;
         (root.querySelector("#st-static") as HTMLElement).textContent =
-          formatSpend(f.textureGrains ?? 0, shareTexture);
+          texGroups > 0 ? `${texSpend} · ${texGroups}g` : texSpend;
         (root.querySelector("#st-chaos") as HTMLElement).textContent =
           formatSpend(f.chaosGrains, shareChaos);
         (root.querySelector("#st-osc") as HTMLElement).textContent =
@@ -588,7 +592,7 @@ export function mountControls(
         (root.querySelector("#st-budget") as HTMLElement).textContent =
           `${Math.round(f.predictedActive)}/${f.budget}`;
         (root.querySelector("#st-spend") as HTMLElement).textContent =
-          `c ${formatSpend(f.calmGrains, shareCalm)} · s ${formatSpend(f.textureGrains ?? 0, shareTexture)} · x ${formatSpend(f.chaosGrains, shareChaos)} · o ${formatSpend(f.oscGrains ?? 0, shareOsc)} · f ${formatSpend(f.flowGrains ?? 0, shareFlow)}`;
+          `c ${formatSpend(f.calmGrains, shareCalm)} · t ${texSpend} · x ${formatSpend(f.chaosGrains, shareChaos)} · o ${formatSpend(f.oscGrains ?? 0, shareOsc)} · f ${formatSpend(f.flowGrains ?? 0, shareFlow)}`;
         if (stRegions) renderRegionRows(stRegions, f.regionRows);
         if (stRegEv) stRegEv.textContent = formatRegionTicker(f);
         if (flowBlinkRow && stFlowBlink) {

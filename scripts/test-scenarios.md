@@ -27,19 +27,19 @@ Grid 128×128 @ 30 steps/s. Default measure: last 7 s of 14 s
 Verify: `npm run verify` runs investigate `--stage 9` and render `--stage 7`.
 
 Regime membership (brief = observer): Osc → Calm → Flow → leftover split by δ
-into Chaos (changing) or Static (still; code `textured`). A solid never-changing
-colour field is **Calm**, not Static. Frozen mixed detail is **Static**. Solid
-translating silhouettes stay **Calm** (persist); gappy correspondence travel is
-**Flow** (hop). Scenario *names* like `uniform-static` are historical harness
-labels — trust Ground truth / Observer lines for the regime.
+into Chaos (changing) or Texture (still, no body; code `textured`). A solid
+never-changing colour field is **Calm**, not Texture. Frozen mixed detail is
+**Texture**. Speckles below min area are silent residual. Solid translating
+silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
+(hop).
 
 ---
 
-## uniform-static
+## uniform-calm
 
 - **Simulates:** One solid colour, never changes.
 - **Ground truth:** 100% **Calm** (connected similar colour + κ; zero temporal δ).
-  Not the Static regime — Static is still *remainder*, not one filled colour.
+  Not Texture — Texture is still cells with no similar-colour body.
 - **Observer:** calm% ≈ 100; chaos% ≈ 0; one region.
 - **Audio:** calm wash at area share (~64 concurrent), long grains (DUR_MAX),
   centred pan/yNorm, low spectral flux; mean Q low on a full-height field
@@ -61,29 +61,30 @@ labels — trust Ground truth / Observer lines for the regime.
 ## frozen-noise
 
 - **Simulates:** Per-cell random colours, frozen forever.
-- **Ground truth:** **Static** regime — temporally still remainder, partitioned
-  into deterministic hue groups (plus grey). Not Chaos (no change); not Calm
-  (no connected similar-colour mass).
-- **Observer:** ≥95% static/textured.
+- **Ground truth:** **Texture** regime — still cells with no connected
+  similar-colour mass, partitioned into deterministic hue groups (plus grey).
+  Not Chaos (no change); not Calm (no body).
+- **Observer:** ≥90% textured (accidental sub-minArea κ-islands are silent residual).
 - **Audio:** several frozen colour voices (one window each), packing rate
   higher than a single bag because group areas are smaller; pan/yNorm from
-  each group’s COM/extent.
-- **Assertions:** investigate stage 4 (static%, texture rate/dur, per-group
-  slot sampleCenter spread ≤0.005); render dispersion ≥0.7, sites ≤70.
+  each group’s COM/extent. Concurrent tracks textured area (not full grid).
+- **Assertions:** investigate stage 4 (static%/textured% ≥90, texture rate/dur,
+  avg active ∈ [45, 64], per-group slot sampleCenter spread ≤0.005); render
+  dispersion ≥0.7, sites ≤70.
 
-## checkerboard-static
+## checkerboard-calm
 
 - **Simulates:** Checkerboard contrast 0.3, never changes.
 - **Ground truth:** Two interleaved **Calm** masses — same-value cells
-  8-connect on diagonals, so this is not Static leftover. (Frozen mixed
-  detail without a connected similar-colour mass is Static; see frozen-noise.)
+  8-connect on diagonals, so this is not Texture leftover. (Frozen mixed
+  detail without a connected similar-colour mass is Texture; see frozen-noise.)
 - **Observer/Audio:** calm% ≈ 100; two regions; long calm grains.
-- **Assertions:** investigate stage 4 (calm%, not static%); render sites/flux.
+- **Assertions:** investigate stage 4 (calm%, not textured%); render sites/flux.
 
 ## half-half
 
 - **Simulates:** Left half one solid colour (still); right half fresh noise every step.
-- **Ground truth:** ~50/50 **Calm** vs **Chaos** (left is Calm, not Static).
+- **Ground truth:** ~50/50 **Calm** vs **Chaos** (left is Calm, not Texture).
 - **Observer:** calm% in [45, 55].
 - **Audio:** calm wash left; chaos right at share/duration rate (~1100 Hz ideal
   after DUR_MIN 0.03); pool RMS balanced within ~6 dB.
@@ -139,15 +140,15 @@ labels — trust Ground truth / Observer lines for the regime.
   (absolute map; no scrub); level may breathe but unit-energy flux stays near
   static (value≠spectrum).
 - **Assertions:** investigate stage 7 sampleCenter spread ≥0.005; render
-  dispersion like uniform-static.
+  dispersion like uniform-calm.
 
-## gradient-static
+## gradient-calm
 
 - **Simulates:** Horizontal hue gradient, never changes
   (`hsv(x/w, 0.7, 0.8)` — hue only; sat/value fixed; not the full HSV volume).
 - **Ground truth:** Zero temporal change → not Chaos. Adjacent similar hues join
-  as multiple **Calm** regions across the width (not one Static bag of mixed
-  leftover — connected similar colour still qualifies as Calm).
+  as multiple **Calm** regions across the width (not Texture — connected
+  similar colour still qualifies as Calm).
 - **Audio:** many calm regions across the width; pan spread ≥0.7; RMS near
   uniform (±1 dB target, see log if marginal). Absolute colour→material means
   unique `sampleCenter` counts track distinct polar neighbours — expected to

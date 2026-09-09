@@ -103,9 +103,11 @@ Closed — do not reopen without new evidence
   period. Fifth spend pool: trailing-edge piece-spawn,
   hop-velocity conveyor (`FLOW_ID_BASE`), packing→mid duration.
   Grains die at the leading edge and respawn at the trailing edge.
-- Regime membership: Osc → Calm → Flow → Chaos/Static remainder. Static is
-  the still leftover (not “one solid colour” — that is Calm). Chaos is
-  leftover change (frozen noise is Static). Fill gates Flow rejects only.
+- Regime membership: Osc → Calm → Flow → Chaos/Texture remainder. Texture is
+  still cells with no similar-colour body (not “one solid colour” — that is
+  Calm). Speckles below minRegionArea are silent residual, not Texture.
+  Chaos is leftover change (frozen noise is Texture). Fill gates Flow rejects
+  only.
 
 ------------------------------------------------------------------------------
 Still deferred
@@ -129,25 +131,27 @@ Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
                      direct pan/Y/channelMix follow with one-block param ramp)
 
 Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
-  Chaos (changing) or Static (still; code alias textured). Calm = connected
-  similar colour + κ (fill is not a membership gate). Flow = similarity
-  travel (correspondence / hop), punched out of chaos remainder, not out of
-  calm. Persist (sliding body) → Calm; hop (colour leaves and lands nearby)
-  → Flow. Solid never-changing colour is Calm; frozen mixed detail is Static.
-  Chaos bag is partitioned into connected chaotic areas (ChaosCluster,
-  Chebyshev join; small fragments → one residual scatter entry) — spatial
-  measurements with COM-matched ids for rate-clock phase, never owners.
+  Chaos (changing) or Texture (still, no body; code alias textured). Calm =
+  connected similar colour + κ (fill is not a membership gate). Flow =
+  similarity travel (correspondence / hop), punched out of chaos remainder,
+  not out of calm. Persist (sliding body) → Calm; hop (colour leaves and
+  lands nearby) → Flow. Solid never-changing colour is Calm; frozen mixed
+  detail is Texture. Speckles that pass κ + colour-join but fail
+  minRegionArea stay silent — not promoted into Texture. Chaos bag is
+  partitioned into connected chaotic areas (ChaosCluster, Chebyshev join;
+  small fragments → one residual scatter entry) — spatial measurements with
+  COM-matched ids for rate-clock phase, never owners.
   Region id matching / velocity ignore torus-degenerate COM axes
   (regionComResultantMin — absolute circular resultant, NOT conc-relative:
   a full-height mass has float-noise COM; a near-wrapping strip does not).
   Without this a stable wrapping region churns ids every few steps.
   Calm lifecycle (births / deaths / merges) exported as regionEvents.
-Scheduler: five pools (calm / texture(=static) / chaos / osc / flow); area-share
-  concurrency; every confirmed calm / flow / osc / static colour group gets
+Scheduler: five pools (calm / texture / chaos / osc / flow); area-share
+  concurrency; every confirmed calm / flow / osc / texture colour group gets
   at least one seat (area-ranked via largest remainder if guaranteed seats
   overflow); chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄,
   duration from own bag stats; residual bag included; global share + budget
-  still the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; static colour
+  still the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; texture colour
   groups use TEXTURE_ID_BASE; timeOrder→dur/env, vertical extent→Q;
   stratified+dispersion sites (calm/texture groups); SPAWN_ANCHOR_R_MIN;
   no inter-grain scrub clock; CHAOS_EVENTS_MAX_HZ CPU rail only;
@@ -168,10 +172,11 @@ Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
 
 Presentation (locked):
 - Dark grey chrome `#1c1c1c`. Colour lives in the CA; overlay/DATA may use
-  regime colours only when those layers are on (calm gold, static grey,
+  regime colours only when those layers are on (calm gold, texture grey,
   chaos red, osc blue, flow green). VT323 chrome, Share Tech Mono readout.
 - Corner HUD. Overlay off by default: 1px vector outlines at display
-  resolution, L-brackets + COM on tracked calm/osc/flow, chaos as fragments.
+  resolution, L-brackets + COM on tracked calm/osc/flow, texture hue groups
+  as outlines + COM (no brackets), chaos as fragments.
 - Source waveform + grain ticks sit under the field (chrome), not on the sim.
 - DATA fold: regime budget meters (concurrent/share seats + tick bar =
   allocated share / budget; display EMA so seat jumps do not strobe), spend,

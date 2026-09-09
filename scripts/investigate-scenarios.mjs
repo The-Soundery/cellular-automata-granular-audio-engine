@@ -638,12 +638,12 @@ console.log("");
 
 // Stage 1
 {
-  const r = results.get("uniform-static");
-  assertGe(1, "uniform-static", "calm%", r.calmPct, 99);
-  assertLe(1, "uniform-static", "chaos ev/s", r.chaosEvPerSec, 0.01);
+  const r = results.get("uniform-calm");
+  assertGe(1, "uniform-calm", "calm%", r.calmPct, 99);
+  assertLe(1, "uniform-calm", "chaos ev/s", r.chaosEvPerSec, 0.01);
   // A2: calm ev/s = budget / DUR_MAX = 64 / 8.0 = 8.0; band [6,10]
-  assertIn(1, "uniform-static", "calm ev/s", r.calmEvPerSec, 6, 10);
-  assertIn(1, "uniform-static", "avg active", r.avgActive, 55, 64);
+  assertIn(1, "uniform-calm", "calm ev/s", r.calmEvPerSec, 6, 10);
+  assertIn(1, "uniform-calm", "avg active", r.avgActive, 55, 64);
 }
 {
   const r = results.get("half-half");
@@ -712,26 +712,29 @@ for (const q of [0.8, 2, 4, 8]) {
 // Stage 4
 {
   const r = results.get("frozen-noise");
-  assertGe(4, "frozen-noise", "static%", r.staticPct, 95);
+  // Texture = still cells with no body. Accidental κ-islands below minRegionArea
+  // are silent residual, so textured% sits a bit under 100.
+  assertGe(4, "frozen-noise", "static%", r.staticPct, 90);
   assertLe(4, "frozen-noise", "chaos ev/s", r.chaosEvPerSec, 1);
-  // Hue-grouped static: several colour voices share the bag; packing rate
+  // Hue-grouped texture: several colour voices share the bag; packing rate
   // rises because each group's area (and duration) is smaller than the bag.
   assertIn(4, "frozen-noise", "texture ev/s", r.textureEvPerSec, 8, 24);
   assertGe(4, "frozen-noise", "min texture grain duration", r.textureDurMin, 1.5);
-  assertIn(4, "frozen-noise", "avg active", r.avgActive, 55, 64);
+  // Seat spend follows textured area (silent residual does not get seats).
+  assertIn(4, "frozen-noise", "avg active", r.avgActive, 45, 64);
 }
 {
-  const r = results.get("checkerboard-static");
+  const r = results.get("checkerboard-calm");
   // 1-cell greyscale checkerboard: same-value cells 8-connect on diagonals
-  // → two interleaved Calm masses (not Static leftover). Frozen-noise is
-  // the Static harness case.
-  assertGe(4, "checkerboard-static", "calm%", r.calmPct, 95);
-  assertLe(4, "checkerboard-static", "chaos ev/s", r.chaosEvPerSec, 1);
+  // → two interleaved Calm masses (not Texture leftover). Frozen-noise is
+  // the Texture harness case.
+  assertGe(4, "checkerboard-calm", "calm%", r.calmPct, 95);
+  assertLe(4, "checkerboard-calm", "chaos ev/s", r.chaosEvPerSec, 1);
 }
 {
-  const r = results.get("gradient-static");
-  assertLe(4, "gradient-static", "chaos ev/s", r.chaosEvPerSec, 1);
-  assertIn(4, "gradient-static", "avg active", r.avgActive, 55, 64);
+  const r = results.get("gradient-calm");
+  assertLe(4, "gradient-calm", "chaos ev/s", r.chaosEvPerSec, 1);
+  assertIn(4, "gradient-calm", "avg active", r.avgActive, 55, 64);
 }
 {
   const r = results.get("half-half");
@@ -746,8 +749,8 @@ for (const q of [0.8, 2, 4, 8]) {
   const fFlicker = results.get("full-flicker").eventFlux;
   for (const id of [
     "frozen-noise",
-    "uniform-static",
-    "checkerboard-static",
+    "uniform-calm",
+    "checkerboard-calm",
     "hue-drift",
   ]) {
     const f = results.get(id).eventFlux;
@@ -852,10 +855,10 @@ for (const q of [0.8, 2, 4, 8]) {
   );
 }
 {
-  const r = results.get("uniform-static");
+  const r = results.get("uniform-calm");
   assertLe(
     7,
-    "uniform-static",
+    "uniform-calm",
     "calm sampleCenter spread",
     r.calmSampleCenterSpread,
     0.001,

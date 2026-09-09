@@ -586,6 +586,8 @@ const controls = mountControls(app, {
     // The pattern clock is running — Pause button controls it, not Utomata.
     controls.setPaused(false);
     controls.setTypeUEnabled(false);
+    // Resolve aliases (e.g. uniform-static → uniform-calm) so the SIM select matches.
+    controls.setSimSource(pattern.id);
     syntheticStep = 0;
     syntheticAccSec = 0;
     clearPipeline();
@@ -962,6 +964,7 @@ function pushStats(forceMeter = false) {
       budget: lastBatch?.budget ?? scheduler.budget,
       predictedActive: smoothBudget!.predictedActive,
       stepHz: lastBatch?.measuredStepHz,
+      textureGroupCount: lastObs.texturedGroups?.length ?? 0,
       regionRows: buildRegionRows(
         lastObs,
         lastBatch,
