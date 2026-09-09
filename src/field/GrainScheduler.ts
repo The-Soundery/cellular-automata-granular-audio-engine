@@ -4,6 +4,7 @@ import type {
   FlowGroup,
   OscillatorGroup,
   TexturedArea,
+  TexturedGroup,
 } from "./FieldObserver.ts";
 import { FIELD_OBS, toroidalDelta } from "./FieldObserver.ts";
 import type { RgbField } from "./FrameObserver.ts";
@@ -12,7 +13,6 @@ import {
   queryMaterialFromHsv,
   rgbToHsv,
   type MaterialSegment,
-  type RegimeMaterialBias,
 } from "../audio/spectral.ts";
 
 /** Negotiable physical budget — raise after listening + CPU check. */
@@ -24,6 +24,8 @@ export const MASTER_GAIN = 1.0;
  * (both counters start at 1). Worklet applyTracks keys on regionId.
  */
 export const FLOW_ID_BASE = 1_000_000;
+/** Static colour-group ids — above flow so reclaim keys never collide. */
+export const TEXTURE_ID_BASE = 2_000_000;
 
 /** Negotiable scheduler curves (Sonic Laws shape; numbers are tunable). */
 export const SCHED = {
@@ -47,16 +49,16 @@ export const SCHED = {
   REL_CHAOS: 0.98,
   /** Release fraction at timeOrder = 1 (calm): sustained wash. */
   REL_CALM: 0.34,
-  /** Spatial similarity → filter Q (spectral purity). */
-  Q_MIN: 0.8,
-  Q_MAX: 8.0,
-  /** Short-grain Q ceiling; qMax lerps to Q_MAX as duration → 0.25 s. */
-  Q_MAX_SHORT: 3,
-  /** Log-area → window half-width (seconds). Colour still sets sample centre. */
-  WINDOW_HALF_MIN_S: 0.06,
-  WINDOW_HALF_MAX_S: 0.8,
+  /** Vertical extent → bandpass Q (derived from Y→frequency law). */
+  Q_MIN: 0.1,
+  Q_MAX: 26.0,
   /** Absolute floor on window half-width (seconds) — avoids degenerate ping-pong. */
   WINDOW_HALF_ABS_MIN_S: 0.005,
+  /**
+   * Calm/texture playheads stay past this much of the window start (seconds),
+   * or 25% of the window if shorter — keeps sustained grains off the onset.
+   */
+  SUSTAINED_ONSET_SKIP_S: 0.08,
   /** Legacy calm Hz band — packing rate supersedes for calm wash. */
   calmRateMinHz: 0.8,
   calmRateMaxHz: 6,
@@ -122,8 +124,6 @@ export const SCHED = {
   OSC_DUTY: 0.35,
   /** EMA for oscillator phase histogram buckets. */
   oscPhaseEma: 0.2,
-  /** File-seconds advanced per real second at full activity (inter-grain scrub). */
-  SCRUB_RATE_MAX: 1.0,
   /** Colour spread at which spawn sites use the region's full extent. */
   SPAWN_SPREAD_FULL: 0.12,
   /** Floor on spawn dispersion — at 0.5 the 2-sigma envelope
@@ -280,7 +280,7 @@ type ActiveRecord = {
 type ShareAlloc = {
   calm: Map<number, number>;
   chaos: number;
-  texture: number;
+  texture: Map<number, number>;
   osc: Map<number, number>;
   flow: Map<number, number>;
 };
@@ -296,8 +296,6 @@ type RegionClock = {
   histWrite: number;
   periodSec: number;
   confidence: number;
-  /** Inter-grain scrub advance (file-seconds); frozen grains keep their window. */
-  scrubSec: number;
   /** Next stratified spawn slot for this region (cursor, not ownership). */
   siteSlot: number;
   /**
@@ -364,7 +362,8 @@ export class GrainScheduler {
   private calmClocks = new Map<number, RegionClock>();
   /** Per-chaos-area packing accumulators, keyed by cluster id (-1 = residual). */
   private chaosAccs = new Map<number, number>();
-  private textureAcc = 0;
+  /** Per static colour-group packing accumulators. */
+  private textureAccs = new Map<number, number>();
   private lastStepMs = 0;
   private stepIndex = 0;
   /**
@@ -381,10 +380,8 @@ export class GrainScheduler {
   private mergeAliases = new Map<number, number>();
   /** Per-period phase histograms for oscillator pulse locking. */
   private oscPhase = new Map<number, Float32Array>();
-  /** Textured-pool scrub clock (δ̄≈0 → frozen). */
-  private textureScrubSec = 0;
-  /** Next stratified spawn slot for the texture bag. */
-  private textureSiteSlot = 0;
+  /** Next stratified spawn slot per static colour group. */
+  private textureSiteSlots = new Map<number, number>();
   /** Per-flow packing accumulators, trailing-edge cursors, hop conveyor. */
   private flowClocks = new Map<
     number,
@@ -438,14 +435,13 @@ export class GrainScheduler {
     this.active = [];
     this.calmClocks.clear();
     this.chaosAccs.clear();
-    this.textureAcc = 0;
+    this.textureAccs.clear();
     this.lastStepMs = 0;
     this.stepIndex = 0;
     this.stepSec = 1 / SCHED.stepsPerSec;
     this.mergeAliases.clear();
     this.oscPhase.clear();
-    this.textureScrubSec = 0;
-    this.textureSiteSlot = 0;
+    this.textureSiteSlots.clear();
     this.flowClocks.clear();
     this.anchorLocks.clear();
     this.nextGrainId = 1;
@@ -473,6 +469,10 @@ export class GrainScheduler {
     for (const f of obs.flows ?? []) {
       liveFlow.set(FLOW_ID_BASE + f.id, shares.flow.get(f.id) ?? 0);
     }
+    const liveTexture = new Map<number, number>();
+    for (const [id, n] of shares.texture) {
+      liveTexture.set(TEXTURE_ID_BASE + id, n);
+    }
     let oscShare = 0;
     for (const n of shares.osc.values()) oscShare += n;
 
@@ -482,7 +482,7 @@ export class GrainScheduler {
       }
       if (a.regime === "flow") return liveFlow.get(a.regionId) ?? 0;
       if (a.regime === "chaos") return shares.chaos;
-      if (a.regime === "texture") return shares.texture;
+      if (a.regime === "texture") return liveTexture.get(a.regionId) ?? 0;
       if (a.regime === "osc") return oscShare;
       return 0;
     };
@@ -491,6 +491,7 @@ export class GrainScheduler {
         return `calm:${resolveAlias(a.regionId, this.mergeAliases)}`;
       }
       if (a.regime === "flow") return `flow:${a.regionId}`;
+      if (a.regime === "texture") return `texture:${a.regionId}`;
       return a.regime;
     };
 
@@ -620,7 +621,6 @@ export class GrainScheduler {
           histWrite: 0,
           periodSec: 0,
           confidence: 0,
-          scrubSec: 0,
           siteSlot: 0,
           followX: anchor.x,
           followY: anchor.y,
@@ -667,11 +667,6 @@ export class GrainScheduler {
 
       const desired = desiredCalmConcurrent(region, share);
 
-      clock.scrubSec +=
-        dtSec *
-        SCHED.SCRUB_RATE_MAX *
-        clamp01(region.meanDelta / SCHED.deltaRateNorm);
-
       pushHistory(clock, region.meanDelta);
       const rhythm = estimatePeriod(clock, dtSec);
       clock.periodSec = rhythm.periodSec;
@@ -703,7 +698,6 @@ export class GrainScheduler {
           bankDur,
           dtSec,
           this.segments,
-          clock!.scrubSec,
           slot,
           this.maskStamp,
           calmMaskStamp,
@@ -812,31 +806,62 @@ export class GrainScheduler {
       }
     }
 
-    // Texture: long overlapping grains; identity from spawn cell.
-    const desiredTexture = shares.texture;
-    if (desiredTexture > 0 && obs.textured.cells.length > 0) {
-      this.textureScrubSec +=
-        dtSec *
-        SCHED.SCRUB_RATE_MAX *
-        clamp01(obs.textured.meanDelta / SCHED.deltaRateNorm);
-      const texMat = materialFromTexture(obs.textured, nCells);
-      const texMaskStamp = this.stampPoolMask(obs.textured.cells, nCells);
+    // Texture: one voice pool per frozen colour group.
+    const textureGroups =
+      obs.texturedGroups && obs.texturedGroups.length > 0
+        ? obs.texturedGroups
+        : obs.textured.cells.length > 0
+          ? [
+              {
+                id: -1,
+                area: obs.textured.area,
+                comX: (obs.width - 1) / 2,
+                comY: (obs.height - 1) / 2,
+                height: obs.height,
+                width: obs.width,
+                meanDelta: obs.textured.meanDelta,
+                meanSimilarity: obs.textured.meanSimilarity,
+                meanR: obs.textured.meanR,
+                meanG: obs.textured.meanG,
+                meanB: obs.textured.meanB,
+                colourSpread: obs.textured.colourSpread,
+                cells: obs.textured.cells,
+              } satisfies TexturedGroup,
+            ]
+          : [];
+    const liveTexIds = new Set(textureGroups.map((g) => g.id));
+    for (const id of [...this.textureAccs.keys()]) {
+      if (!liveTexIds.has(id)) this.textureAccs.delete(id);
+    }
+    for (const id of [...this.textureSiteSlots.keys()]) {
+      if (!liveTexIds.has(id)) this.textureSiteSlots.delete(id);
+    }
+    for (const group of textureGroups) {
+      const desiredTexture = shares.texture.get(group.id) ?? 0;
+      if (desiredTexture <= 0 || group.cells.length === 0) continue;
+      const texMat = materialFromTexture(group, nCells);
+      const texMaskStamp = this.stampPoolMask(group.cells, nCells);
       const texPackHz = desiredTexture / Math.max(0.05, texMat.durationSec);
-      const texRateHz = calmPackRateHz(texPackHz, obs.textured.meanDelta);
-      this.textureAcc += texRateHz * dtSec;
-      const textureAlready = countActiveRegime(this.active, "texture");
+      const texRateHz = calmPackRateHz(texPackHz, group.meanDelta);
+      let acc = this.textureAccs.get(group.id) ?? 0;
+      acc += texRateHz * dtSec;
+      const textureAlready = countActiveSeat(
+        this.active,
+        "texture",
+        TEXTURE_ID_BASE + group.id,
+      );
+      let siteSlot = this.textureSiteSlots.get(group.id) ?? 0;
       while (
-        this.textureAcc >= 1 &&
-        textureAlready + countEventsRegime(events, "texture") <
+        acc >= 1 &&
+        textureAlready + countEventsSeat(events, "texture", TEXTURE_ID_BASE + group.id) <
           desiredTexture &&
         this.active.length < this.budget
       ) {
-        this.textureAcc -= 1;
-        const texSlot =
-          this.textureSiteSlot % Math.max(1, desiredTexture);
-        this.textureSiteSlot += 1;
+        acc -= 1;
+        const texSlot = siteSlot % Math.max(1, desiredTexture);
+        siteSlot += 1;
         const ev = spawnTexture(
-          obs.textured,
+          group,
           obs,
           rgb,
           amp,
@@ -844,7 +869,6 @@ export class GrainScheduler {
           bankDur,
           dtSec,
           this.segments,
-          this.textureScrubSec,
           texSlot,
           this.maskStamp,
           texMaskStamp,
@@ -852,11 +876,11 @@ export class GrainScheduler {
         events.push(ev);
         this.rememberActive(ev, nowMs);
       }
-      if (this.textureAcc > Math.max(3, desiredTexture)) {
-        this.textureAcc = Math.max(3, desiredTexture);
+      if (acc > Math.max(3, desiredTexture)) {
+        acc = Math.max(3, desiredTexture);
       }
-    } else {
-      this.textureAcc = 0;
+      this.textureAccs.set(group.id, acc);
+      this.textureSiteSlots.set(group.id, siteSlot);
     }
 
     // Chaos pack-to-share: spend area budget as many short concurrent hits.
@@ -1064,6 +1088,8 @@ export class GrainScheduler {
     for (const s of shares.osc.values()) oscShareSum += s;
     let flowShareSum = 0;
     for (const s of shares.flow.values()) flowShareSum += s;
+    let textureShareSum = 0;
+    for (const s of shares.texture.values()) textureShareSum += s;
 
     const activeByRegion = new Map<number, number>();
     for (const a of this.active) {
@@ -1106,7 +1132,7 @@ export class GrainScheduler {
       flowActive: countActiveRegime(this.active, "flow"),
       shares: {
         calm: calmShareSum,
-        texture: shares.texture,
+        texture: textureShareSum,
         chaos: shares.chaos,
         osc: oscShareSum,
         flow: flowShareSum,
@@ -1246,18 +1272,19 @@ function hamiltonSeats(
   return parts;
 }
 
-/** Visible mid-size calm/flow (exact ≥ ¼) must not stay 0 while a pool holds ≥2. */
+/** Confirmed calm/flow/osc/texture must not stay 0 while a pool holds ≥2. */
 function stealQuarterSeats(
   calm: Map<number, number>,
   flow: Map<number, number>,
   osc: Map<number, number>,
-  textureRef: { n: number },
+  texture: Map<number, number>,
   claims: StableClaim[],
 ): void {
   const silent = claims.filter((c) => {
-    if (c.exact < 0.25) return false;
     if (c.pool === "calm") return (calm.get(c.id) ?? 0) === 0;
     if (c.pool === "flow") return (flow.get(c.id) ?? 0) === 0;
+    if (c.pool === "osc") return (osc.get(c.id) ?? 0) === 0;
+    if (c.pool === "texture") return (texture.get(c.id) ?? 0) === 0;
     return false;
   });
   silent.sort((a, b) => b.area - a.area || a.id - b.id);
@@ -1280,26 +1307,28 @@ function stealQuarterSeats(
     for (const [id, n] of calm) consider("calm", id, n);
     for (const [id, n] of flow) consider("flow", id, n);
     for (const [id, n] of osc) consider("osc", id, n);
-    consider("texture", -1, textureRef.n);
+    for (const [id, n] of texture) consider("texture", id, n);
     if (!bestKind) return false;
     if (bestKind === "calm") calm.set(bestId, bestN - 1);
     else if (bestKind === "flow") flow.set(bestId, bestN - 1);
     else if (bestKind === "osc") osc.set(bestId, bestN - 1);
-    else textureRef.n -= 1;
+    else texture.set(bestId, bestN - 1);
     return true;
   };
 
   for (const s of silent) {
     if (!takeOne()) break;
     if (s.pool === "calm") calm.set(s.id, 1);
-    else flow.set(s.id, 1);
+    else if (s.pool === "flow") flow.set(s.id, 1);
+    else if (s.pool === "osc") osc.set(s.id, 1);
+    else if (s.pool === "texture") texture.set(s.id, 1);
   }
 }
 
 /**
- * Area-proportional concurrent shares. Rounding leftovers among calm regions
- * are redistributed by largest remainder so a full-calm field reaches the
- * budget; leftovers must never be donated to chaos.
+ * Area-proportional concurrent shares. Every confirmed calm / flow / osc /
+ * static colour group gets at least one seat; leftovers among calm are
+ * redistributed by largest remainder. Leftovers must never be donated to chaos.
  */
 function allocateShares(
   obs: FieldObservation,
@@ -1308,53 +1337,63 @@ function allocateShares(
 ): {
   calm: Map<number, number>;
   chaos: number;
-  texture: number;
+  texture: Map<number, number>;
   osc: Map<number, number>;
   flow: Map<number, number>;
 } {
   const calm = new Map<number, number>();
   const osc = new Map<number, number>();
   const flow = new Map<number, number>();
+  const texture = new Map<number, number>();
   let assigned = 0;
   /** Fractional remainders for largest-remainder redistribution. */
   const calmRemainders: { id: number; frac: number; area: number }[] = [];
   for (const r of obs.coherent) {
     const exact = (budget * r.area) / nCells;
-    // Same ¼-seat floor flow already has: a confirmed region whose exact
-    // share is at least a quarter seat gets one voice, so mid-size visible
-    // structures are not silent. Overflow scaling below still yields to
-    // chaos when the total exceeds the budget.
-    const share = Math.max(exact >= 0.25 ? 1 : 0, Math.floor(exact));
+    // Confirmed regions always speak — minRegionArea already culled dust.
+    const share = Math.max(1, Math.floor(exact));
     calm.set(r.id, share);
     assigned += share;
     calmRemainders.push({ id: r.id, frac: exact - share, area: r.area });
   }
   let oscFromArea = 0;
   for (const g of obs.oscillators ?? []) {
-    const share = Math.max(0, Math.round((budget * g.area) / nCells));
+    const exact = (budget * g.area) / nCells;
+    const share = Math.max(1, Math.floor(exact));
     osc.set(g.period, (osc.get(g.period) ?? 0) + share);
     oscFromArea += share;
   }
   let flowFromArea = 0;
   for (const f of obs.flows ?? []) {
-    // Occupied patch (including gaps) — larger than member-cell observation
-    // fraction on the field. Floor of 1 once the patch is ≥¼ seat so thin
-    // streams spend; smaller dust stays 0.
     const exact = (budget * f.regionArea) / nCells;
-    const share = Math.max(exact >= 0.25 ? 1 : 0, Math.round(exact));
+    const share = Math.max(1, Math.floor(exact));
     flow.set(f.id, (flow.get(f.id) ?? 0) + share);
     flowFromArea += share;
   }
-  const texturedArea = obs.textured?.area ?? 0;
-  const textureFromArea = Math.max(
-    0,
-    Math.round((budget * texturedArea) / nCells),
-  );
+
+  const texGroups =
+    obs.texturedGroups && obs.texturedGroups.length > 0
+      ? obs.texturedGroups
+      : obs.textured?.area
+        ? [
+            {
+              id: -1,
+              area: obs.textured.area,
+            },
+          ]
+        : [];
+  let textureFromArea = 0;
+  for (const g of texGroups) {
+    const exact = (budget * g.area) / nCells;
+    const share = Math.max(1, Math.floor(exact));
+    texture.set(g.id, share);
+    textureFromArea += share;
+  }
+
   const chaosFromArea = Math.max(
     0,
     Math.round((budget * obs.chaotic.area) / nCells),
   );
-  // Overflow scaling treats texture/osc/flow like calm (stable pools yield to chaos).
   const stableAssigned =
     assigned + textureFromArea + oscFromArea + flowFromArea;
   if (stableAssigned + chaosFromArea > budget && stableAssigned > 0) {
@@ -1391,28 +1430,29 @@ function allocateShares(
         area: f.regionArea,
       });
     }
-    if (texturedArea > 0) {
+    for (const g of texGroups) {
       claims.push({
         pool: "texture",
-        id: -2,
-        exact: (budget * texturedArea) / nCells,
-        area: texturedArea,
+        id: g.id,
+        exact: (budget * g.area) / nCells,
+        area: g.area,
       });
     }
     const filled = hamiltonSeats(claims, roomForStable);
     for (const id of calm.keys()) calm.set(id, 0);
     for (const id of osc.keys()) osc.set(id, 0);
     for (const id of flow.keys()) flow.set(id, 0);
-    const textureRef = { n: 0 };
+    for (const id of texture.keys()) texture.set(id, 0);
     for (const p of filled) {
       if (p.seats <= 0) continue;
       if (p.pool === "calm") calm.set(p.id, p.seats);
       else if (p.pool === "osc") osc.set(p.id, p.seats);
       else if (p.pool === "flow") flow.set(p.id, p.seats);
-      else textureRef.n = p.seats;
+      else texture.set(p.id, p.seats);
     }
-    stealQuarterSeats(calm, flow, osc, textureRef, claims);
-    let sum = textureRef.n;
+    stealQuarterSeats(calm, flow, osc, texture, claims);
+    let sum = 0;
+    for (const n of texture.values()) sum += n;
     for (const n of calm.values()) sum += n;
     for (const n of osc.values()) sum += n;
     for (const n of flow.values()) sum += n;
@@ -1420,19 +1460,41 @@ function allocateShares(
       calm,
       osc,
       flow,
-      texture: textureRef.n,
+      texture,
       chaos: Math.min(chaosFromArea, Math.max(0, budget - sum)),
     };
   }
-  const texture = Math.min(
+  const textureCapped = Math.min(
     textureFromArea,
     Math.max(0, budget - assigned - oscFromArea - flowFromArea),
   );
+  if (textureCapped < textureFromArea && textureFromArea > 0) {
+    const scale = textureCapped / textureFromArea;
+    let sum = 0;
+    for (const [id, s] of texture) {
+      const ns = Math.max(0, Math.floor(s * scale));
+      texture.set(id, ns);
+      sum += ns;
+    }
+    let leftover = textureCapped - sum;
+    if (leftover > 0) {
+      let bestId = Number.NaN;
+      let best = -1;
+      for (const [id, s] of texture) {
+        if (s > best) {
+          best = s;
+          bestId = id;
+        }
+      }
+      if (!Number.isNaN(bestId)) {
+        texture.set(bestId, (texture.get(bestId) ?? 0) + leftover);
+      }
+    }
+  }
   const flowCapped = Math.min(
     flowFromArea,
-    Math.max(0, budget - assigned - oscFromArea - texture),
+    Math.max(0, budget - assigned - oscFromArea - textureCapped),
   );
-  // Scale per-group flow shares if the cap trimmed the total.
   if (flowCapped < flowFromArea && flowFromArea > 0) {
     const scale = flowCapped / flowFromArea;
     let sum = 0;
@@ -1441,7 +1503,6 @@ function allocateShares(
       flow.set(id, ns);
       sum += ns;
     }
-    // Absorb rounding leftover into the largest flow group.
     let leftover = flowCapped - sum;
     if (leftover > 0) {
       let bestId = -1;
@@ -1457,10 +1518,9 @@ function allocateShares(
   }
   let chaos = Math.min(
     chaosFromArea,
-    Math.max(0, budget - assigned - oscFromArea - texture - flowCapped),
+    Math.max(0, budget - assigned - oscFromArea - textureCapped - flowCapped),
   );
-  // Largest-remainder: give unused seats to calm regions (never to chaos).
-  let used = assigned + oscFromArea + texture + flowCapped + chaos;
+  let used = assigned + oscFromArea + textureCapped + flowCapped + chaos;
   if (used < budget && calmRemainders.length > 0) {
     calmRemainders.sort((a, b) => b.frac - a.frac || b.area - a.area);
     let i = 0;
@@ -1503,7 +1563,7 @@ function chaosPackRateHz(packHz: number, meanDelta: number): number {
 
 /**
  * Log-area size ∈ [0,1]. Speck → 0, full field → 1. area ≤ 0 → 0 (tight).
- * Shared by duration (with fill) and window half-width (raw).
+ * Shared by duration (with fill).
  */
 function areaT(area: number, nCells: number): number {
   if (area <= 0) return 0;
@@ -1514,12 +1574,34 @@ function areaT(area: number, nCells: number): number {
   );
 }
 
+/** Same log span as the worklet Y→frequency law (12000/80). */
+const FILT_RATIO = 12000 / 80;
+
 /**
- * Split material law: timeOrder → duration/envelope; spectralT → Q only.
- * similarity is the spatial axis (not κ — κ would double-count stability into Q).
+ * Bandpass Q from a structure's vertical extent.
+ * r = 150^(Δy), Q = √r/(r−1). One row ≈ 25.5; half grid ≈ 0.31.
+ * Capped by how many cycles a grain of this length can carry at fc.
+ */
+function qFromVerticalExtent(
+  heightCells: number,
+  gridH: number,
+  durationSec: number,
+  yNorm: number,
+): number {
+  const dy = Math.max(1, heightCells) / Math.max(1, gridH - 1);
+  const r = Math.pow(FILT_RATIO, dy);
+  let q =
+    r <= 1 + 1e-9 ? SCHED.Q_MAX : Math.sqrt(r) / (r - 1);
+  q = clamp(q, SCHED.Q_MIN, SCHED.Q_MAX);
+  const fc = 80 * Math.pow(FILT_RATIO, clamp01(yNorm));
+  const cycleCeiling = Math.max(1, durationSec * fc);
+  return Math.min(q, cycleCeiling);
+}
+
+/**
+ * Time law only: order → duration/envelope. Q comes from vertical extent.
  */
 function grainMaterial(
-  similarity: number,
   delta: number,
   area: number,
   fillT: number,
@@ -1534,18 +1616,12 @@ function grainMaterial(
   const durationSec =
     SCHED.DUR_MIN * Math.pow(SCHED.DUR_MAX / SCHED.DUR_MIN, order);
   const s = smoothstep01(order);
-  const spectralT = clamp01(similarity);
-  const qMax = lerp(
-    SCHED.Q_MAX_SHORT,
-    SCHED.Q_MAX,
-    clamp01(durationSec / 0.25),
-  );
   return {
     order,
     durationSec,
     attackFrac: lerp(SCHED.ATT_MIN, SCHED.ATT_MAX, s),
     releaseFrac: lerp(SCHED.REL_CHAOS, SCHED.REL_CALM, s),
-    q: SCHED.Q_MIN * Math.pow(qMax / SCHED.Q_MIN, spectralT),
+    q: SCHED.Q_MIN,
   };
 }
 
@@ -1554,7 +1630,6 @@ function materialFromRegion(
   nCells: number,
 ): GrainMaterial {
   return grainMaterial(
-    region.meanSimilarity,
     region.meanDelta,
     region.area,
     region.fillRatio ?? 1,
@@ -1565,26 +1640,14 @@ function materialFromRegion(
 /** Representative chaos duration from bag means (for packing rate). */
 function durationChaosMean(chaotic: ChaosSpendBag, nCells: number): number {
   // Chaos bag: areaT = 0 (not a coherent extent).
-  return grainMaterial(
-    chaotic.meanSimilarity,
-    chaotic.meanDelta,
-    0,
-    0,
-    nCells,
-  ).durationSec;
+  return grainMaterial(chaotic.meanDelta, 0, 0, nCells).durationSec;
 }
 
 function materialFromTexture(
-  textured: TexturedArea,
+  textured: TexturedArea | TexturedGroup,
   nCells: number,
 ): GrainMaterial {
-  return grainMaterial(
-    textured.meanSimilarity,
-    textured.meanDelta,
-    textured.area,
-    1,
-    nCells,
-  );
+  return grainMaterial(textured.meanDelta, textured.area, 1, nCells);
 }
 
 function spawnOsc(
@@ -1607,25 +1670,13 @@ function spawnOsc(
   const r = rgb.r[ci] ?? group.meanR;
   const g = rgb.g[ci] ?? group.meanG;
   const b = rgb.b[ci] ?? group.meanB;
-  const similarity = obs.similarity[ci] ?? 0.5;
-  const delta = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? group.meanDelta;
-  const nCells = obs.width * obs.height;
-  const mat = grainMaterial(similarity, delta, 0, 0, nCells);
   // Period in steps × measured step interval — pulses lock to the *visual*
   // period even when the CA is not running at the nominal 30 steps/s.
   const periodSec = group.period * stepSec;
   const durationSec = Math.max(SCHED.DUR_MIN, SCHED.OSC_DUTY * periodSec);
-  const sizeT = areaT(group.area, nCells);
-  const win = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    segments,
-    "transient",
-    sizeT,
-  );
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments);
   const yNorm = 1 - y / Math.max(1, h - 1);
+  const q = qFromVerticalExtent(1, h, durationSec, yNorm);
   return {
     x,
     y,
@@ -1640,7 +1691,7 @@ function spawnOsc(
     // Onset spread inside the perceptual fusion window (~20–30 ms), capped
     // at 15 ms so a large simultaneous burst still reads as one attack.
     startOffsetSec: Math.random() * Math.min(0.15 * periodSec, 0.015),
-    q: mat.q,
+    q,
     yNorm,
     channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
@@ -1657,15 +1708,14 @@ function spawnOsc(
 }
 
 function spawnTexture(
-  textured: TexturedArea,
+  textured: TexturedGroup,
   obs: FieldObservation,
-  rgb: RgbField,
+  _rgb: RgbField,
   amplitude: number,
   mat: GrainMaterial,
   bankDur: number,
   dtSec: number,
   segments: MaterialSegment[],
-  scrubSec = 0,
   siteSlot = 0,
   mask: Uint32Array = EMPTY_MASK,
   maskStamp = 0,
@@ -1673,16 +1723,14 @@ function spawnTexture(
   const w = obs.width;
   const h = obs.height;
   const cells = textured.cells;
-  // A bag has no COM; any point on a torus is equivalent, so use the stable
-  // grid centre — it is also what puts a uniform field at centre pan.
   const site = pickStratifiedSite(
     siteSlot,
     SCHED.SITE_SALT_TEXTURE,
     textured.colourSpread,
-    (w - 1) / 2,
-    (h - 1) / 2,
-    w / 2,
-    h / 2,
+    textured.comX,
+    textured.comY,
+    textured.width / 2,
+    textured.height / 2,
     w,
     h,
     mask,
@@ -1696,21 +1744,18 @@ function spawnTexture(
         : 0;
   const x = ci % w;
   const y = (ci / w) | 0;
-  const r = rgb.r[ci] ?? textured.meanR;
-  const g = rgb.g[ci] ?? textured.meanG;
-  const b = rgb.b[ci] ?? textured.meanB;
-  const sizeT = areaT(textured.area, w * h);
-  const win = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    segments,
-    "sustained",
-    sizeT,
+  // Group mean colour → one material window for the whole frozen voice.
+  const r = textured.meanR;
+  const g = textured.meanG;
+  const b = textured.meanB;
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments);
+  const yNorm = 1 - textured.comY / Math.max(1, h - 1);
+  const q = qFromVerticalExtent(
+    textured.height,
+    h,
+    mat.durationSec,
+    yNorm,
   );
-  const sampleCenter = wrap01(win.sampleCenter + scrubSec / bankDur);
-  const yNorm = 1 - y / Math.max(1, h - 1);
   return {
     x,
     y,
@@ -1720,26 +1765,22 @@ function spawnTexture(
     durationSec: mat.durationSec,
     amplitude,
     direction: 1,
-    sampleCenter,
+    sampleCenter: win.sampleCenter,
     sampleHalf: win.sampleHalf,
     startOffsetSec: Math.random() * dtSec,
-    q: mat.q,
+    q,
     yNorm,
-    channelMix: channelMixFromX(x, w),
-    pan: panFromX(x, w),
+    channelMix: channelMixFromX(textured.comX, w),
+    pan: panFromX(textured.comX, w),
     attackFrac: mat.attackFrac,
     releaseFrac: mat.releaseFrac,
     regime: "texture",
-    regionId: -1,
+    regionId: TEXTURE_ID_BASE + textured.id,
     trackDx: 0,
     trackDy: 0,
-    readOffset: site.readOffset,
+    readOffset: sustainedReadOffset(site.readOffset, win, bankDur),
     siteSlot,
   };
-}
-
-function wrap01(x: number): number {
-  return ((x % 1) + 1) % 1;
 }
 
 /** Spawn/follow anchor: true COM when concentrated, else stable grid centre. */
@@ -1784,7 +1825,6 @@ function spawnCalm(
   bankDur: number,
   dtSec: number,
   segments: MaterialSegment[],
-  scrubSec = 0,
   siteSlot = 0,
   mask: Uint32Array = EMPTY_MASK,
   maskStamp = 0,
@@ -1835,7 +1875,6 @@ function spawnCalm(
     dtSec,
     ci,
     segments,
-    scrubSec,
     readOffset,
     siteSlot,
     anchorX,
@@ -1853,7 +1892,6 @@ function spawnCalmAt(
   dtSec: number,
   ci: number,
   segments: MaterialSegment[],
-  scrubSec = 0,
   readOffset = 0,
   siteSlot = 0,
   anchorX = (obs.width - 1) / 2,
@@ -1867,18 +1905,14 @@ function spawnCalmAt(
   const r = rgb.r[ci] ?? region.meanR;
   const g = rgb.g[ci] ?? region.meanG;
   const b = rgb.b[ci] ?? region.meanB;
-  const sizeT = areaT(region.area, w * h);
-  const win = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    segments,
-    "sustained",
-    sizeT,
-  );
-  const sampleCenter = wrap01(win.sampleCenter + scrubSec / bankDur);
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments);
   const yNorm = 1 - cy / Math.max(1, h - 1);
+  const q = qFromVerticalExtent(
+    region.height,
+    h,
+    mat.durationSec,
+    yNorm,
+  );
 
   // Offset from the same anchor used for spawn placement (not raw COM).
   const trackDx = toroidalOffset(cx, anchorX, w);
@@ -1893,10 +1927,10 @@ function spawnCalmAt(
     durationSec: mat.durationSec,
     amplitude,
     direction: region.velX < -SCHED.velDirEps ? -1 : 1,
-    sampleCenter,
+    sampleCenter: win.sampleCenter,
     sampleHalf: win.sampleHalf,
     startOffsetSec: Math.random() * dtSec,
-    q: mat.q,
+    q,
     yNorm,
     channelMix: channelMixFromX(cx, w),
     pan: panFromX(cx, w),
@@ -1906,7 +1940,7 @@ function spawnCalmAt(
     regionId: region.id,
     trackDx,
     trackDy,
-    readOffset,
+    readOffset: sustainedReadOffset(readOffset, win, bankDur),
     siteSlot,
   };
 }
@@ -1930,25 +1964,16 @@ function spawnChaos(
   const r = rgb.r[ci] ?? 0.5;
   const g = rgb.g[ci] ?? 0.5;
   const b = rgb.b[ci] ?? 0.5;
-  const similarity = obs.similarity[ci] ?? chaotic.meanSimilarity;
-  // Envelope/Q from smoothed δ (regime plane); duration spray from raw δ so
+  // Envelope from smoothed δ (regime plane); duration spray from raw δ so
   // saturated scramble still has a lifetime distribution (blur flattens).
   const deltaSmooth = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? chaotic.meanDelta;
   const deltaRaw = obs.delta[ci] ?? deltaSmooth;
   const nCells = w * h;
-  const mat = grainMaterial(similarity, deltaSmooth, 0, 0, nCells);
+  const mat = grainMaterial(deltaSmooth, 0, 0, nCells);
   const durationSec = chaosDurationAroundMean(meanDur, bagMeanDelta, deltaRaw);
-  const sizeT = areaT(chaotic.area, nCells);
-  const win = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    segments,
-    "transient",
-    sizeT,
-  );
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments);
   const yNorm = 1 - y / Math.max(1, h - 1);
+  const q = qFromVerticalExtent(1, h, durationSec, yNorm);
 
   return {
     x,
@@ -1962,7 +1987,7 @@ function spawnChaos(
     sampleCenter: win.sampleCenter,
     sampleHalf: win.sampleHalf,
     startOffsetSec: Math.random() * dtSec,
-    q: mat.q,
+    q,
     yNorm,
     channelMix: channelMixFromX(x, w),
     pan: panFromX(x, w),
@@ -2146,29 +2171,14 @@ function spawnFlow(
   const r = rgb.r[ci] ?? flow.meanR;
   const g = rgb.g[ci] ?? flow.meanG;
   const b = rgb.b[ci] ?? flow.meanB;
-  const similarity = obs.similarity[ci] ?? 0.5;
   const order = flowTimeOrder(flow);
   const s = smoothstep01(order);
   const attackFrac = lerp(SCHED.ATT_MIN, SCHED.ATT_MAX, s);
   const releaseFrac = lerp(SCHED.REL_CHAOS, SCHED.REL_CALM, s);
-  const spectralT = clamp01(similarity);
-  const qMax = lerp(
-    SCHED.Q_MAX_SHORT,
-    SCHED.Q_MAX,
-    clamp01(durationSec / 0.25),
-  );
-  const q = SCHED.Q_MIN * Math.pow(qMax / SCHED.Q_MIN, spectralT);
-  const sizeT = areaT(flow.regionArea, w * h);
-  const win = sampleWindowFromColour(
-    r,
-    g,
-    b,
-    bankDur,
-    segments,
-    "neutral",
-    sizeT,
-  );
+  const win = sampleWindowFromColour(r, g, b, bankDur, segments);
   const yNorm = 1 - y / Math.max(1, h - 1);
+  const flowHeight = flowVerticalExtent(flow, w, h);
+  const q = qFromVerticalExtent(flowHeight, h, durationSec, yNorm);
   const trackDx = toroidalOffset(x, followX, w);
   const trackDy = toroidalOffset(y, followY, h);
 
@@ -2203,6 +2213,26 @@ function durationFromTimeOrder(order: number): number {
   return SCHED.DUR_MIN * Math.pow(SCHED.DUR_MAX / SCHED.DUR_MIN, o);
 }
 
+/** Toroidal Y span of a flow's member cells (≥1). */
+function flowVerticalExtent(flow: FlowGroup, w: number, h: number): number {
+  const cells = flow.cells;
+  if (cells.length === 0) return 1;
+  let minDy = 0;
+  let maxDy = 0;
+  for (let c = 0; c < cells.length; c++) {
+    const i = cells[c]!;
+    const y = (i / w) | 0;
+    const dy = toroidalDelta(y, flow.comY, h);
+    if (c === 0) {
+      minDy = maxDy = dy;
+    } else {
+      if (dy < minDy) minDy = dy;
+      if (dy > maxDy) maxDy = dy;
+    }
+  }
+  return Math.max(1, maxDy - minDy + 1);
+}
+
 /** δ-weighted rejection sampling over the chaos bag (uses smoothed δ). */
 function pickChaosCell(chaotic: ChaosSpendBag, obs: FieldObservation): number {
   const cells = chaotic.cells;
@@ -2225,10 +2255,8 @@ export function rgbToHueNorm(r: number, g: number, b: number): number {
 }
 
 /**
- * HSV → polar material centre + log-area → window half-width.
- * regimeBias "sustained" (calm/texture) searches only the high-stationarity
- * subset; "transient"/"neutral" use the full map.
- * sizeT is log-area ∈ [0,1] of the spawning mass (0 = tight, 1 = wide).
+ * HSV → polar material centre + real slice bounds as the sample window.
+ * Window width comes from the segment itself, not from region area.
  */
 function sampleWindowFromColour(
   r: number,
@@ -2236,25 +2264,46 @@ function sampleWindowFromColour(
   b: number,
   bankDur: number,
   segments: MaterialSegment[],
-  regimeBias: RegimeMaterialBias,
-  sizeT = 0,
-): { sampleCenter: number; sampleHalf: number } {
+): { sampleCenter: number; sampleHalf: number; startPos: number; endPos: number } {
   const { h, s, v } = rgbToHsv(r, g, b);
-  const halfSec = lerp(
-    SCHED.WINDOW_HALF_MIN_S,
-    SCHED.WINDOW_HALF_MAX_S,
-    clamp01(sizeT),
-  );
-  const mat = queryMaterialFromHsv(segments, h, s, v, regimeBias);
+  const mat = queryMaterialFromHsv(segments, h, s, v);
+  const start = clamp01(mat.startPos);
+  const end = clamp01(mat.endPos);
+  const lo = Math.min(start, end);
+  const hi = Math.max(start, end);
   const absFloor = SCHED.WINDOW_HALF_ABS_MIN_S / Math.max(1e-3, bankDur);
-  const sampleHalf = Math.min(
-    0.49,
-    Math.max(absFloor, halfSec / Math.max(1e-3, bankDur)),
-  );
+  let half = Math.max(absFloor, (hi - lo) * 0.5);
+  half = Math.min(0.49, half);
+  const center = clamp01((lo + hi) * 0.5);
   return {
-    sampleCenter: mat.sampleCenter,
-    sampleHalf: Math.max(1e-4, sampleHalf),
+    sampleCenter: center,
+    sampleHalf: Math.max(1e-4, half),
+    startPos: lo,
+    endPos: hi,
   };
+}
+
+/**
+ * Map a full-window readOffset ∈ [-1,1] so calm/texture stay past the onset.
+ * Skip the first ~80 ms (or 25% of a shorter window), then span the remainder.
+ */
+function sustainedReadOffset(
+  rawOffset: number,
+  win: { sampleCenter: number; sampleHalf: number },
+  bankDur: number,
+): number {
+  const half = Math.max(1e-6, win.sampleHalf);
+  const windowSec = 2 * half * bankDur;
+  const skipSec = Math.min(
+    SCHED.SUSTAINED_ONSET_SKIP_S,
+    0.25 * windowSec,
+  );
+  const skipNorm = skipSec / Math.max(1e-6, windowSec); // fraction of full width
+  // Window spans [-1,1] in readOffset; onset is at -1.
+  const lo = -1 + 2 * skipNorm;
+  const hi = 1;
+  const t = (clamp(rawOffset, -1, 1) + 1) * 0.5; // 0..1
+  return lo + t * (hi - lo);
 }
 
 function panFromX(x: number, width: number): number {
@@ -2415,6 +2464,18 @@ function countEventsRegime(
 ): number {
   let n = 0;
   for (const e of events) if (e.regime === regime) n++;
+  return n;
+}
+
+function countEventsSeat(
+  events: GrainSpawnEvent[],
+  regime: GrainRegime,
+  seatId: number,
+): number {
+  let n = 0;
+  for (const e of events) {
+    if (e.regime === regime && e.regionId === seatId) n++;
+  }
   return n;
 }
 

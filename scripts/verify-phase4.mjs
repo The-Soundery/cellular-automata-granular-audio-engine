@@ -34,8 +34,9 @@ assert(
 );
 assert("brief has no velocity-hybrid", !/velocity-hybrid/i.test(brief));
 assert(
-  "brief forbids sample scrub chase",
-  /sample scrub window|Sample \/ scrub window/i.test(brief),
+  "brief forbids mid-grain sample-window chase and inter-grain scrub",
+  /sample window during playback|sample-window scrub chase/i.test(brief) &&
+    /no\s+inter-grain scrub/i.test(brief),
 );
 assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/.test(main) && /scheduler\.step/.test(main) && /sendEvents/.test(main));
 assert(
@@ -70,11 +71,28 @@ assert(
     /stationarity/.test(spectral),
 );
 assert(
-  "calm sustained subset (not soft 0.22 bias)",
-  /SUSTAINED_SUBSET_QUANTILE/.test(spectral) &&
-    /SUSTAINED_ATTACK_GAP/.test(spectral) &&
-    /sustainedSubset/.test(spectral) &&
+  "colour to material is absolute (no regime bias / sustained subset)",
+  !/SUSTAINED_SUBSET_QUANTILE/.test(spectral) &&
+    !/SUSTAINED_ATTACK_GAP/.test(spectral) &&
+    !/sustainedSubset/.test(spectral) &&
+    !/RegimeMaterialBias/.test(spectral) &&
     !/REGIME_STATIONARITY_BIAS/.test(spectral),
+);
+assert(
+  "segments keep real start/end bounds",
+  /startPos/.test(spectral) && /endPos/.test(spectral),
+);
+assert(
+  "scheduler uses segment bounds (not area window lerp)",
+  /startPos/.test(sched) &&
+    /WINDOW_HALF_ABS_MIN_S/.test(sched) &&
+    !/WINDOW_HALF_MIN_S/.test(sched) &&
+    !/WINDOW_HALF_MAX_S/.test(sched) &&
+    !/SCRUB_RATE_MAX/.test(sched),
+);
+assert(
+  "Q from vertical extent",
+  /qFromVerticalExtent/.test(sched) && /FILT_RATIO/.test(sched),
 );
 assert(
   "attack score uses energy jump (first hop not zero-flux sustain)",
@@ -135,7 +153,7 @@ assert(
   !/regime === "calm" \? Q_CALM/.test(worklet),
 );
 
-// Runtime: sustain tone + one click — calm must miss the click hop.
+// Runtime: absolute colour map + real segment bounds.
 {
   const { pathToFileURL } = await import("node:url");
   const {
@@ -147,12 +165,10 @@ assert(
   const durSec = 2.0;
   const n = Math.floor(sr * durSec);
   const pcm = new Float32Array(n);
-  // Quiet sustained tone for most of the file.
   for (let i = 0; i < n; i++) {
     const t = i / sr;
     pcm[i] = 0.08 * Math.sin(2 * Math.PI * 220 * t);
   }
-  // One short click ~0.35 s in (well clear of the seam fade).
   const clickAt = Math.floor(0.35 * sr);
   const clickN = Math.floor(0.004 * sr);
   for (let i = 0; i < clickN; i++) {
@@ -162,12 +178,22 @@ assert(
 
   const segments = buildPolarSegments(pcm, sr);
   assert("fixture produced multiple segments", segments.length >= 8);
+  assert(
+    "every segment has startPos ≤ pos ≤ endPos",
+    segments.every(
+      (s) =>
+        typeof s.startPos === "number" &&
+        typeof s.endPos === "number" &&
+        s.startPos <= s.pos + 1e-9 &&
+        s.pos <= s.endPos + 1e-9 &&
+        s.startPos <= s.endPos,
+    ),
+  );
 
   const clickPos = clickAt / (n - 1);
-  const clickTol = 0.06; // ~±120 ms at 2 s
+  const clickTol = 0.06;
   const nearClick = (pos) => Math.abs(pos - clickPos) < clickTol;
 
-  // Some segment near the click should score as relatively transient.
   let minStatNearClick = 1;
   for (const s of segments) {
     if (nearClick(s.pos) && s.stationarity < minStatNearClick) {
@@ -179,27 +205,31 @@ assert(
     minStatNearClick < 0.55,
   );
 
-  // Grey + mid-hue sustained queries must not land on the click.
+  // Same HSV always hits the same segment (absolute colour → material).
   const queries = [
-    { h: 0.0, s: 0.0, v: 0.5, label: "grey mid" },
-    { h: 0.5, s: 0.9, v: 0.6, label: "vivid mid-hue" },
-    { h: 0.15, s: 0.8, v: 0.4, label: "vivid warm" },
-    { h: 0.7, s: 0.7, v: 0.7, label: "vivid cool" },
+    { h: 0.0, s: 0.0, v: 0.5 },
+    { h: 0.5, s: 0.9, v: 0.6 },
+    { h: 0.15, s: 0.8, v: 0.4 },
+    { h: 0.7, s: 0.7, v: 0.7 },
   ];
-  let sustainedMissed = true;
+  let absoluteOk = true;
   for (const q of queries) {
-    const r = queryMaterialFromHsv(segments, q.h, q.s, q.v, "sustained");
-    if (nearClick(r.sampleCenter)) {
-      sustainedMissed = false;
-      console.error(
-        `  sustained (${q.label}) landed near click at ${r.sampleCenter.toFixed(3)}`,
-      );
+    const a = queryMaterialFromHsv(segments, q.h, q.s, q.v);
+    const b = queryMaterialFromHsv(segments, q.h, q.s, q.v);
+    if (
+      a.sampleCenter !== b.sampleCenter ||
+      a.startPos !== b.startPos ||
+      a.endPos !== b.endPos
+    ) {
+      absoluteOk = false;
+    }
+    if (!(a.startPos <= a.sampleCenter && a.sampleCenter <= a.endPos)) {
+      absoluteOk = false;
     }
   }
-  assert("sustained queries miss the click hop", sustainedMissed);
+  assert("same HSV → same segment bounds", absoluteOk);
 
-  // File-start must not win grey sustained just because first-hop flux was 0.
-  // Build a second fixture that *opens* with a click, then pad.
+  // Opening click still scores as transient (first-hop flux fix).
   {
     const pcm2 = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -212,11 +242,6 @@ assert(
       pcm2[i] = 0.95 * env * (i % 2 === 0 ? 1 : -1);
     }
     const segs2 = buildPolarSegments(pcm2, sr);
-    const startHit = queryMaterialFromHsv(segs2, 0.5, 0, 0.5, "sustained");
-    assert(
-      "grey sustained does not pin to opening click (first-hop lie)",
-      startHit.sampleCenter > 0.05,
-    );
     const openSeg = segs2.reduce((best, s) =>
       Math.abs(s.pos - 0) < Math.abs(best.pos - 0) ? s : best,
     );
@@ -226,17 +251,9 @@ assert(
     );
   }
 
-  // Transient may still find the click (colour + chance — at least allowed).
-  let transientNear = false;
-  for (const q of queries) {
-    const r = queryMaterialFromHsv(segments, q.h, q.s, q.v, "transient");
-    if (nearClick(r.sampleCenter)) transientNear = true;
-  }
-  // Not required to hit — only that the map still has low-stationarity material.
   assert(
     "map retains transient material near click",
-    segments.some((s) => nearClick(s.pos) && s.stationarity < 0.55) ||
-      transientNear,
+    segments.some((s) => nearClick(s.pos) && s.stationarity < 0.55),
   );
 }
 
@@ -320,9 +337,9 @@ assert(
   );
   let hueHitSilence = false;
   for (let i = 0; i < 24; i++) {
-    const r = queryMaterialFromHsv(segs, i / 24, 1, 0.5, "neutral");
+    const r = queryMaterialFromHsv(segs, i / 24, 1, 0.5);
     if (inSilence(r.sampleCenter)) hueHitSilence = true;
-    const g = queryMaterialFromHsv(segs, i / 24, 0, i / 23, "sustained");
+    const g = queryMaterialFromHsv(segs, i / 24, 0, i / 23);
     if (inSilence(g.sampleCenter)) hueHitSilence = true;
   }
   assert("no HSV query lands in file silence", !hueHitSilence);

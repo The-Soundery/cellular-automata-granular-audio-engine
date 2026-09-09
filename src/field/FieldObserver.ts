@@ -326,6 +326,28 @@ export interface TexturedArea {
   cells: Uint32Array;
 }
 
+/**
+ * One frozen colour mass inside the static leftover bag.
+ * Grouped by hue (plus a grey bin), not by spatial contiguity.
+ */
+export interface TexturedGroup {
+  id: number;
+  area: number;
+  comX: number;
+  comY: number;
+  /** Toroidal Y extent in cells (≥1). */
+  height: number;
+  /** Toroidal X extent in cells (≥1). */
+  width: number;
+  meanDelta: number;
+  meanSimilarity: number;
+  meanR: number;
+  meanG: number;
+  meanB: number;
+  colourSpread: number;
+  cells: Uint32Array;
+}
+
 /** Confirmed travelling colour: nearby cells sharing direction and speed. */
 export interface FlowGroup {
   id: number;
@@ -370,6 +392,8 @@ export interface FieldObservation {
   coherent: CoherentRegion[];
   chaotic: ChaoticArea;
   textured: TexturedArea;
+  /** Frozen leftover cells partitioned by hue (plus grey). */
+  texturedGroups: TexturedGroup[];
   oscillators: OscillatorGroup[];
   flows: FlowGroup[];
   meanDelta: number;
@@ -668,7 +692,10 @@ export class FieldObserver {
         FIELD_OBS.flowFracRelease * (measured - this.flowFracDisp);
       if (this.flowFracDisp < 0.001) this.flowFracDisp = 0;
     }
-    const { chaotic, textured } = this.buildRemainder(coherent, current);
+    const { chaotic, textured, texturedGroups } = this.buildRemainder(
+      coherent,
+      current,
+    );
     let calmCells = coherent.reduce((sum, r) => sum + r.area, 0);
     if (flows.length) {
       for (const f of flows) {
@@ -693,6 +720,7 @@ export class FieldObserver {
       coherent,
       chaotic,
       textured,
+      texturedGroups,
       oscillators,
       flows,
       meanDelta,
@@ -2159,10 +2187,16 @@ export class FieldObserver {
   private buildRemainder(
     coherent: CoherentRegion[],
     current: RgbField,
-  ): { chaotic: ChaoticArea; textured: TexturedArea } {
+  ): {
+    chaotic: ChaoticArea;
+    textured: TexturedArea;
+    texturedGroups: TexturedGroup[];
+  } {
+    const texturedPack = this.buildTextured(coherent, current);
     return {
       chaotic: this.buildChaotic(coherent, current),
-      textured: this.buildTextured(coherent, current),
+      textured: texturedPack.aggregate,
+      texturedGroups: texturedPack.groups,
     };
   }
 
@@ -2363,8 +2397,9 @@ export class FieldObserver {
   private buildTextured(
     coherent: CoherentRegion[],
     current: RgbField,
-  ): TexturedArea {
+  ): { aggregate: TexturedArea; groups: TexturedGroup[] } {
     const n = this.width * this.height;
+    const { width: w, height: h } = this;
     const inCalm = new Uint8Array(n);
     for (const r of coherent) {
       for (let i = 0; i < r.cells.length; i++) {
@@ -2397,7 +2432,6 @@ export class FieldObserver {
     const avgG = area ? sumG / area : 0;
     const avgB = area ? sumB / area : 0;
 
-    // Second pass: colour spread needs the finished bag mean.
     let sumSpreadSq = 0;
     for (let c = 0; c < cells.length; c++) {
       const i = cells[c]!;
@@ -2412,7 +2446,7 @@ export class FieldObserver {
       sumSpreadSq += cd * cd;
     }
 
-    return {
+    const aggregate: TexturedArea = {
       area,
       meanDelta: area ? sumD / area : 0,
       meanCoherence: area ? sumK / area : 0,
@@ -2423,6 +2457,18 @@ export class FieldObserver {
       colourSpread: area ? Math.sqrt(sumSpreadSq / area) : 0,
       cells: Uint32Array.from(cells),
     };
+
+    const groups = partitionTexturedByHue(
+      cells,
+      current,
+      this.deltaSmooth,
+      this.similarity,
+      w,
+      h,
+      FIELD_OBS.minRegionArea,
+    );
+
+    return { aggregate, groups };
   }
 
   private pushHistory(current: RgbField): void {
@@ -3038,6 +3084,7 @@ function emptyObservation(
       colourSpread: 0,
       cells: new Uint32Array(0),
     },
+    texturedGroups: [],
     oscillators: [],
     flows: [],
     meanDelta: 0,
@@ -3056,6 +3103,176 @@ function colourBin(r: number, g: number, b: number): number {
   const qg = Math.min(3, Math.max(0, (g * 4) | 0));
   const qb = Math.min(3, Math.max(0, (b * 4) | 0));
   return qr * 16 + qg * 4 + qb;
+}
+
+/** Grey + 12 circular hue bins for frozen leftover colour groups. */
+const TEXTURE_HUE_BINS = 12;
+const TEXTURE_GREY_SAT = 0.15;
+/** Stable id for the grey static group (hue bins use 0..TEXTURE_HUE_BINS-1). */
+const TEXTURE_GREY_ID = -1;
+
+function textureColourBin(r: number, g: number, b: number): number {
+  const { h, s } = rgbToHsvLite(r, g, b);
+  if (s < TEXTURE_GREY_SAT) return TEXTURE_GREY_ID;
+  return Math.min(TEXTURE_HUE_BINS - 1, Math.floor(h * TEXTURE_HUE_BINS));
+}
+
+function hueBinDistance(a: number, b: number): number {
+  if (a === TEXTURE_GREY_ID || b === TEXTURE_GREY_ID) {
+    return a === b ? 0 : 100;
+  }
+  let d = Math.abs(a - b);
+  if (d > TEXTURE_HUE_BINS / 2) d = TEXTURE_HUE_BINS - d;
+  return d;
+}
+
+function partitionTexturedByHue(
+  cells: number[],
+  current: RgbField,
+  deltaSmooth: Float32Array,
+  similarity: Float32Array,
+  w: number,
+  h: number,
+  minArea: number,
+): TexturedGroup[] {
+  if (cells.length === 0) return [];
+
+  const bins = new Map<number, number[]>();
+  for (const i of cells) {
+    const bin = textureColourBin(current.r[i]!, current.g[i]!, current.b[i]!);
+    let list = bins.get(bin);
+    if (!list) {
+      list = [];
+      bins.set(bin, list);
+    }
+    list.push(i);
+  }
+
+  const kept: { id: number; cells: number[] }[] = [];
+  const small: { id: number; cells: number[] }[] = [];
+  for (const [id, members] of bins) {
+    if (members.length >= minArea) kept.push({ id, cells: members });
+    else small.push({ id, cells: members });
+  }
+
+  if (kept.length === 0) {
+    // Nothing meets minArea — keep the largest bin alone so the bag still speaks.
+    let best: { id: number; cells: number[] } | null = null;
+    for (const [id, members] of bins) {
+      if (!best || members.length > best.cells.length) {
+        best = { id, cells: members };
+      }
+    }
+    if (!best) return [];
+    kept.push(best);
+    for (const s of small) {
+      if (s.id === best.id) continue;
+      best.cells.push(...s.cells);
+    }
+  } else {
+    for (const s of small) {
+      let bestIdx = 0;
+      let bestD = Infinity;
+      for (let k = 0; k < kept.length; k++) {
+        const d = hueBinDistance(s.id, kept[k]!.id);
+        if (d < bestD) {
+          bestD = d;
+          bestIdx = k;
+        }
+      }
+      kept[bestIdx]!.cells.push(...s.cells);
+    }
+  }
+
+  return kept.map((g) => measureTexturedGroup(g.id, g.cells, current, deltaSmooth, similarity, w, h));
+}
+
+function measureTexturedGroup(
+  id: number,
+  cellList: number[],
+  current: RgbField,
+  deltaSmooth: Float32Array,
+  similarity: Float32Array,
+  w: number,
+  h: number,
+): TexturedGroup {
+  let sumXCos = 0;
+  let sumXSin = 0;
+  let sumYCos = 0;
+  let sumYSin = 0;
+  let sumD = 0;
+  let sumS = 0;
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
+  for (const i of cellList) {
+    const x = i % w;
+    const y = (i / w) | 0;
+    const angX = (2 * Math.PI * x) / w;
+    const angY = (2 * Math.PI * y) / h;
+    sumXCos += Math.cos(angX);
+    sumXSin += Math.sin(angX);
+    sumYCos += Math.cos(angY);
+    sumYSin += Math.sin(angY);
+    sumD += deltaSmooth[i]!;
+    sumS += similarity[i]!;
+    sumR += current.r[i]!;
+    sumG += current.g[i]!;
+    sumB += current.b[i]!;
+  }
+  const area = Math.max(1, cellList.length);
+  const comX = ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w;
+  const comY = ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h;
+  const avgR = sumR / area;
+  const avgG = sumG / area;
+  const avgB = sumB / area;
+
+  let minDx = 0;
+  let maxDx = 0;
+  let minDy = 0;
+  let maxDy = 0;
+  let sumSpreadSq = 0;
+  for (let c = 0; c < cellList.length; c++) {
+    const i = cellList[c]!;
+    const x = i % w;
+    const y = (i / w) | 0;
+    const dx = toroidalDelta(x, comX, w);
+    const dy = toroidalDelta(y, comY, h);
+    if (c === 0) {
+      minDx = maxDx = dx;
+      minDy = maxDy = dy;
+    } else {
+      if (dx < minDx) minDx = dx;
+      if (dx > maxDx) maxDx = dx;
+      if (dy < minDy) minDy = dy;
+      if (dy > maxDy) maxDy = dy;
+    }
+    const cd = rgbDelta(
+      current.r[i]!,
+      current.g[i]!,
+      current.b[i]!,
+      avgR,
+      avgG,
+      avgB,
+    );
+    sumSpreadSq += cd * cd;
+  }
+
+  return {
+    id,
+    area: cellList.length,
+    comX,
+    comY,
+    width: Math.max(1, maxDx - minDx + 1),
+    height: Math.max(1, maxDy - minDy + 1),
+    meanDelta: sumD / area,
+    meanSimilarity: sumS / area,
+    meanR: avgR,
+    meanG: avgG,
+    meanB: avgB,
+    colourSpread: Math.sqrt(sumSpreadSq / area),
+    cells: Uint32Array.from(cellList),
+  };
 }
 
 function clusterLooksLikeFlow(

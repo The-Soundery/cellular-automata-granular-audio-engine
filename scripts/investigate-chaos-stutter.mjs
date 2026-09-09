@@ -129,11 +129,14 @@ function chaosRateScale(delta) {
 function makeTestMaterialSegments(n = 64) {
   const segs = [];
   const denom = Math.max(1, n - 1);
+  const half = 0.5 / denom;
   for (let i = 0; i < n; i++) {
     const t = i / denom;
     const band = ((i * 7) % n) / denom;
     segs.push({
       pos: t,
+      startPos: Math.max(0, t - half),
+      endPos: Math.min(1, t + half),
       centroidHz: 120 * Math.pow(50, t),
       stationarity: 0.15 + 0.7 * ((i % 5) / 4),
       energy: 1,

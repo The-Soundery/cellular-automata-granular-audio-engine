@@ -143,16 +143,16 @@ Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
   Without this a stable wrapping region churns ids every few steps.
   Calm lifecycle (births / deaths / merges) exported as regionEvents.
 Scheduler: five pools (calm / texture(=static) / chaos / osc / flow); area-share
-  concurrency; calm gets flow's ¼-seat floor (exact ≥ 0.25 → 1 voice);
-  if those floors overflow the budget, re-apportion by largest remainder
-  on exact area (do not floor(1×scale) → 0);
-  chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄, duration
-  from own bag stats; residual bag included; global share + budget still
-  the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; split material
-  (timeOrder→dur/env, spectralT→Q); stratified+dispersion sites (calm/texture);
-  SPAWN_ANCHOR_R_MIN; scrub clocks; CHAOS_EVENTS_MAX_HZ CPU rail only;
-  HSV→polar material query (mel-PCA angle/band from offline prep);
-  calm/texture restricted to sustained subset; silence never selectable.
+  concurrency; every confirmed calm / flow / osc / static colour group gets
+  at least one seat (area-ranked via largest remainder if guaranteed seats
+  overflow); chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄,
+  duration from own bag stats; residual bag included; global share + budget
+  still the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; static colour
+  groups use TEXTURE_ID_BASE; timeOrder→dur/env, vertical extent→Q;
+  stratified+dispersion sites (calm/texture groups); SPAWN_ANCHOR_R_MIN;
+  no inter-grain scrub clock; CHAOS_EVENTS_MAX_HZ CPU rail only;
+  HSV→polar material query absolute (segment startPos/endPos = window);
+  calm/texture read past onset inside the window; silence never selectable.
   Periods in steps convert to seconds with the measured step interval
   (stepSec EMA; HUD RATE row) — not the nominal 30 (display-quantised CA
   rarely runs at 30 and osc pitch must lock to the visual period).
@@ -200,20 +200,21 @@ Negotiable (not doctrine):
   chaosClusterJoin≈2 / chaosClusterMinArea≈16 / chaosClusterMax≈24,
   regionComResultantMin≈2, …
 - SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
-  REL_CHAOS 0.98, REL_CALM 0.34, Q_*, Q_MAX_SHORT 3,
-  WINDOW_HALF_* (log-area → half-width; colour = sample centre only),
+  REL_CHAOS 0.98, REL_CALM 0.34, Q_MIN≈0.1, Q_MAX≈26 (vertical extent → Q),
+  WINDOW_HALF_ABS_MIN_S (safety rail; window = segment start/end),
+  SUSTAINED_ONSET_SKIP_S 0.08 (calm/texture read past onset),
   FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_ID_BASE 1e6,
-  FLOW_TRAVEL_DUR_BLEND 1, FLOW_DUR_SPREAD 1.5, FLOW_DUR_EXP 1.0,
-  maxCalmConcurrent/textureMaxConcurrent 64, calmPackRateMin 1.0,
-  CHAOS_EVENTS_MAX_HZ 4000, CHAOS_DUR_SPREAD 1.7, CHAOS_DUR_EXP 1.0,
-  deltaRateNorm 0.35 (← chaos live-balance lever),
+  TEXTURE_ID_BASE 2e6, FLOW_TRAVEL_DUR_BLEND 1, FLOW_DUR_SPREAD 1.5,
+  FLOW_DUR_EXP 1.0, maxCalmConcurrent/textureMaxConcurrent 64,
+  calmPackRateMin 1.0, CHAOS_EVENTS_MAX_HZ 4000, CHAOS_DUR_SPREAD 1.7,
+  CHAOS_DUR_EXP 1.0, deltaRateNorm 0.35 (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
-  SITE_SALT_*, SCRUB_RATE_MAX, rhythm_*, oscBurstMax
+  SITE_SALT_*, rhythm_*, oscBurstMax
 - Spectral — CENTROID_HOP_SEC, analysis FFT, MEL_BANDS≈24, SILENCE_GATE_DB
-  −40 (relative to loudest hop), polar weight / regime bias,
-  ONSET_ATTACK_MIN 0.45, SEGMENT_MAX_SEC 1.0 (onset-aligned units: segments
-  sit between detected attacks; transient units pin pos to their onset,
-  sustained stretches split for coverage — replaces fixed-hop slices;
+  −40 (relative to loudest hop), polar weights (absolute colour → material),
+  ONSET_ATTACK_MIN 0.45, SEGMENT_MAX_SEC 1.0 (onset-aligned units with
+  startPos/endPos; transient units pin pos to their onset, sustained
+  stretches split for coverage — replaces fixed-hop slices;
   polar axes = rank-uniform mel-PCA 1/2, not centroid/energy)
 - Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS,
   NORM_ATTACK 0.06, NORM_RELEASE 0.0004, PRESCALE_SMOOTH 0.004 (independent),
@@ -229,9 +230,8 @@ Harnesses:
   still 1-cell strip = Calm; travelling solid 1-cell strip = Calm persist)
 - verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band /
   hop2 period-2 pulse; wrapping glider trailing edge; worklet Y-seam saturate
-- verify-phase4.mjs — polar / stereo / absolute Y contract; mel-PCA axes;
-  silence gate (no segment/query in leading–trailing silence); timbre
-  neighbourhood (same sound at file ends closer in hue than mid noise)
+- verify-phase4.mjs — polar / stereo / absolute Y; absolute colour→material;
+  segment start/end bounds; silence gate; timbre neighbourhood
 - investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q);
   Stage 5: chaos duration p95/p5 spray + chaos-blob-2pct ~1 hit/step
 - investigate-chaos-stutter.mjs — offline 30 Hz fold / voice-steal / reset

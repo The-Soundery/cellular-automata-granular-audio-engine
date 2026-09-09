@@ -49,6 +49,7 @@ const STAGE = parseStage(process.argv.slice(2));
 function makeTestMaterialSegments(n = 64) {
   const segs = [];
   const denom = Math.max(1, n - 1);
+  const half = 0.5 / denom;
   for (let i = 0; i < n; i++) {
     const t = i / denom;
     // Band decorrelated from angle so hue-drift is not pinned by value.
@@ -56,6 +57,8 @@ function makeTestMaterialSegments(n = 64) {
     const stationarity = 0.15 + 0.7 * ((i % 5) / 4);
     segs.push({
       pos: t,
+      startPos: Math.max(0, t - half),
+      endPos: Math.min(1, t + half),
       centroidHz: 120 * Math.pow(50, t),
       stationarity,
       energy: 1,
@@ -224,11 +227,15 @@ function runScenario(pattern) {
         } else if (e.regime === "texture") {
           textureEvents++;
           textureCenters.push(e.sampleCenter);
-          const slot = typeof e.siteSlot === "number" ? e.siteSlot : -1;
-          let arr = textureCentersBySlot.get(slot);
+          // Key by colour-group + slot — slot alone collides across groups.
+          const slotKey =
+            typeof e.siteSlot === "number"
+              ? `${e.regionId}:${e.siteSlot}`
+              : `${e.regionId}:-1`;
+          let arr = textureCentersBySlot.get(slotKey);
           if (!arr) {
             arr = [];
-            textureCentersBySlot.set(slot, arr);
+            textureCentersBySlot.set(slotKey, arr);
           }
           arr.push(e.sampleCenter);
           if (e.durationSec < textureDurMin) textureDurMin = e.durationSec;
@@ -707,9 +714,10 @@ for (const q of [0.8, 2, 4, 8]) {
   const r = results.get("frozen-noise");
   assertGe(4, "frozen-noise", "static%", r.staticPct, 95);
   assertLe(4, "frozen-noise", "chaos ev/s", r.chaosEvPerSec, 1);
-  // A2 companion: texture spends area share — rate = budget/DUR_MAX = 8
-  assertIn(4, "frozen-noise", "texture ev/s", r.textureEvPerSec, 6, 10);
-  assertGe(4, "frozen-noise", "min texture grain duration", r.textureDurMin, 6.0);
+  // Hue-grouped static: several colour voices share the bag; packing rate
+  // rises because each group's area (and duration) is smaller than the bag.
+  assertIn(4, "frozen-noise", "texture ev/s", r.textureEvPerSec, 8, 24);
+  assertGe(4, "frozen-noise", "min texture grain duration", r.textureDurMin, 1.5);
   assertIn(4, "frozen-noise", "avg active", r.avgActive, 55, 64);
 }
 {
@@ -757,14 +765,13 @@ for (const q of [0.8, 2, 4, 8]) {
 // Gate 4(iv) — sampleCenter drift (event domain; V5 polar HSV)
 {
   const r = results.get("frozen-noise");
-  // δ=0 ⇒ HSV fixed per cell and scrubSec never advances. Global spread is large
-  // (many hues across stratified sites); stasis is per siteSlot.
+  // δ=0 ⇒ HSV fixed per colour group. Stasis is per (group, siteSlot).
   assertGe(
     4,
     "frozen-noise",
     "texture slots with ≥2 hits (stasis sample)",
     r.textureSlotsMulti,
-    32,
+    8,
   );
   assertLe(
     4,
@@ -776,7 +783,7 @@ for (const q of [0.8, 2, 4, 8]) {
 }
 {
   const r = results.get("hue-drift");
-  // Saturated uniform hue walk moves polar angle → sampleCenter (V5).
+  // Saturated uniform hue walk moves polar angle → sampleCenter (absolute map).
   // Floor = ½ × hue-rate × stepsPerSec × windowSec (same geometric bound).
   const floor = 0.5 * 0.0006 * 30 * r.measureWindowSec;
   assertGe(

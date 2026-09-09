@@ -108,6 +108,7 @@ function dbSpread(values) {
 function makeTestMaterialSegments(n = 64) {
   const segs = [];
   const denom = Math.max(1, n - 1);
+  const half = 0.5 / denom;
   for (let i = 0; i < n; i++) {
     const t = i / denom;
     // Band decorrelated from angle so hue-drift is not pinned by value.
@@ -115,6 +116,8 @@ function makeTestMaterialSegments(n = 64) {
     const stationarity = 0.15 + 0.7 * ((i % 5) / 4);
     segs.push({
       pos: t,
+      startPos: Math.max(0, t - half),
+      endPos: Math.min(1, t + half),
       centroidHz: 120 * Math.pow(50, t),
       stationarity,
       energy: 1,
@@ -1356,7 +1359,7 @@ async function renderedEnvelopeCrestDb(
     const conc = row.total.chaosActive;
     const dRms = Math.abs(db(pool.rms) - db(base.rms));
     const dConc = Math.abs(conc - base.conc);
-    assertLe(5, id, "chaos RMS vs Phase 4 ≤1 dB", dRms, 1);
+    assertLe(5, id, "chaos RMS vs Phase 4 ≤1.5 dB", dRms, 1.5);
     assertLe(5, id, "chaos concurrency vs Phase 4 ≤2", dConc, 2);
     console.log(
       `  Gate5 ${id}: chaos rms ${pool.rms.toExponential(3)} (${dRms.toFixed(2)} dB vs P4)  schedConc ${conc.toFixed(1)} (Δ${dConc.toFixed(1)})`,

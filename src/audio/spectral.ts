@@ -6,17 +6,6 @@ export const SEAM_FADE_SEC = 0.05;
 export const CENTROID_HOP_SEC = 0.046439;
 /** Analysis window for FFT (samples, power of two). ~46.4 ms at 44.1 kHz. */
 const CENTROID_FFT_SIZE = 2048;
-/**
- * Calm/texture listen only inside segments at or above this stationarity
- * quantile (0.5 = quieter/sustained half). Colour still chooses within that set.
- */
-export const SUSTAINED_SUBSET_QUANTILE = 0.5;
-/**
- * After the quantile cut, also drop sustained candidates within this fraction
- * of the file from a low-stationarity (attack) peak — stops colour landing on
- * the pad hop that shares a window with the hit.
- */
-export const SUSTAINED_ATTACK_GAP = 0.05;
 /** Fixed polar radius for all segments (outer annulus). Grey queries sit at 0. */
 export const POLAR_SEGMENT_RADIUS = 0.85;
 /**
@@ -49,11 +38,13 @@ const MEL_LO_HZ = 40;
 const MEL_HI_HZ = 16000;
 const PCA_ITERS = 40;
 
-export type RegimeMaterialBias = "sustained" | "transient" | "neutral";
-
 export interface MaterialSegment {
   /** File position of segment midpoint [0,1]. */
   pos: number;
+  /** Inclusive start of the slice in file position [0,1]. */
+  startPos: number;
+  /** Exclusive-ish end of the slice in file position [0,1]. */
+  endPos: number;
   centroidHz: number;
   /** 1 = sustained / low attack; 0 = transient / high attack. */
   stationarity: number;
@@ -66,6 +57,8 @@ export interface MaterialSegment {
 
 export interface MaterialQueryResult {
   sampleCenter: number;
+  startPos: number;
+  endPos: number;
   centroidHz: number;
   stationarity: number;
 }
@@ -144,23 +137,26 @@ export function buildSpectralBank(audioBuffer: AudioBuffer): SpectralBank {
 /**
  * HSV → material in the polar plane.
  * hue = angle (mel-PCA 1), sat = radius (grey→centre), value = band (mel-PCA 2).
- * "sustained" restricts the map to the high-stationarity subset, then nearest
- * colour wins. "transient" / "neutral" search the full map (no soft bias).
+ * Colour maps absolutely — same HSV always hits the same segment.
  */
 export function queryMaterialFromHsv(
   segments: MaterialSegment[],
   hue: number,
   sat: number,
   value: number,
-  regimeBias: RegimeMaterialBias = "neutral",
 ): MaterialQueryResult {
   if (!segments.length) {
-    return { sampleCenter: clamp01(value), centroidHz: 1000, stationarity: 0.5 };
+    const c = clamp01(value);
+    return {
+      sampleCenter: c,
+      startPos: Math.max(0, c - 0.05),
+      endPos: Math.min(1, c + 0.05),
+      centroidHz: 1000,
+      stationarity: 0.5,
+    };
   }
 
-  const pool =
-    regimeBias === "sustained" ? sustainedSubset(segments) : segments;
-  return nearestPolar(pool, hue, sat, value);
+  return nearestPolar(segments, hue, sat, value);
 }
 
 /** Fallback bank for tests before a source loads (flat mid-file material). */
@@ -175,6 +171,8 @@ export function identitySpectralBank(
   const segments: MaterialSegment[] = [
     {
       pos: 0.5,
+      startPos: 0,
+      endPos: 1,
       centroidHz: 1000,
       stationarity: 0.5,
       energy: 1,
@@ -245,6 +243,8 @@ export function buildPolarSegments(
     return [
       {
         pos: 0.5,
+        startPos: 0,
+        endPos: 1,
         centroidHz: 1000,
         stationarity: 0.5,
         energy: 1,
@@ -260,6 +260,8 @@ export function buildPolarSegments(
     return [
       {
         pos: 0.5,
+        startPos: 0,
+        endPos: 1,
         centroidHz: 1000,
         stationarity: 0.5,
         energy: 1,
@@ -325,6 +327,8 @@ export function buildPolarSegments(
     return [
       {
         pos: 0.5,
+        startPos: 0,
+        endPos: 1,
         centroidHz: 1000,
         stationarity: 0.5,
         energy: 1,
@@ -444,15 +448,23 @@ export function buildPolarSegments(
       const meanAttack = attackSum / count;
       const attack = clamp01(0.7 * firstAttack + 0.3 * meanAttack);
       // A unit that starts on an onset IS its attack — pin the position to
-      // the onset hop so transient identity (and the sustained-subset punch
-      // around it) lands on the hit, not on an energy-smeared tail. Sustained
-      // splits keep the energy-weighted centre.
+      // the onset hop so transient identity lands on the hit, not on an
+      // energy-smeared tail. Sustained splits keep the energy-weighted centre.
       const pos =
         firstAttack >= ONSET_ATTACK_MIN
           ? pool[s0]!.pos
           : clamp01(posSum / wSum);
+      // Half-hop pad around the hop range so the window covers the analysed
+      // unit rather than only midpoints.
+      const halfHop = hopSec / (2 * Math.max(1e-9, durationSec));
+      const startPos = clamp01(pool[s0]!.pos - halfHop);
+      const endPos = clamp01(
+        pool[Math.max(s0, s1 - 1)]!.pos + halfHop,
+      );
       segments.push({
         pos,
+        startPos: Math.min(startPos, endPos),
+        endPos: Math.max(startPos, endPos),
         centroidHz: Math.max(40, cenDen > 1e-12 ? cenNum / cenDen : 0),
         stationarity: 1 - attack,
         // Mean energy per hop so long pads don't rank top band by length.
@@ -503,49 +515,28 @@ export function buildPolarSegments(
       !segments.some((s) => s.pos <= 0.01) &&
       raw.some((s) => s.pos <= 0.01 && s.rms >= rmsGate)
     ) {
-      segments.push({ ...segments[0]!, pos: 0 });
+      segments.push({
+        ...segments[0]!,
+        pos: 0,
+        startPos: 0,
+        endPos: Math.max(segments[0]!.endPos, 0.01),
+      });
     }
     if (
       !segments.some((s) => s.pos >= 0.99) &&
       raw.some((s) => s.pos >= 0.99 && s.rms >= rmsGate)
     ) {
-      segments.push({ ...segments[segments.length - 1]!, pos: 1 });
+      const last = segments[segments.length - 1]!;
+      segments.push({
+        ...last,
+        pos: 1,
+        startPos: Math.min(last.startPos, 0.99),
+        endPos: 1,
+      });
     }
   }
 
   return segments;
-}
-
-/** High-stationarity quantile, with a gap punched around real attack peaks. */
-export function sustainedSubset(segments: MaterialSegment[]): MaterialSegment[] {
-  if (segments.length < 2) return segments;
-  const scores = segments.map((s) => s.stationarity).sort((a, b) => a - b);
-  const q = clamp01(SUSTAINED_SUBSET_QUANTILE);
-  const idx = Math.min(
-    scores.length - 1,
-    Math.max(0, Math.floor(q * (scores.length - 1))),
-  );
-  const threshold = scores[idx]!;
-  let kept = segments.filter((s) => s.stationarity >= threshold);
-  if (kept.length === 0) return segments;
-
-  // Only punch around clearly transient hops. Comparing to the median cut
-  // alone treats pad micro-jitter (0.995 vs 0.999) as attacks and empties
-  // the subset, which then falls back to the un-punched half.
-  const attackCut = Math.min(0.5, threshold - 0.15);
-  const attacks = segments.filter((s) => s.stationarity <= attackCut);
-  if (attacks.length > 0 && attacks.length < segments.length) {
-    const gap = Math.max(1e-4, SUSTAINED_ATTACK_GAP);
-    const cleared = kept.filter((s) => {
-      for (const a of attacks) {
-        if (Math.abs(s.pos - a.pos) < gap) return false;
-      }
-      return true;
-    });
-    if (cleared.length > 0) kept = cleared;
-  }
-
-  return kept.length > 0 ? kept : segments;
 }
 
 function nearestPolar(
@@ -579,6 +570,8 @@ function nearestPolar(
 
   return {
     sampleCenter: best.pos,
+    startPos: best.startPos,
+    endPos: best.endPos,
     centroidHz: best.centroidHz,
     stationarity: best.stationarity,
   };

@@ -89,16 +89,17 @@ One-sentence axiom:
 
    From the spawn cell (or calm spawn site):
 
-   - HSV → sample position / locked scrub window via a polar descriptor plane
+   - HSV → sample window via a polar descriptor plane
            (hue = angle on a mel-spectrum PCA circle, rank-uniformised so
            similar timbres sit together regardless of file position;
            saturation = radius from centre so grey still reaches material
-           via value; value = second PCA axis, rank-uniformised). Soft
-           regime bias prefers sustained material for calm/texture
-           and transient material for chaos/osc — FROZEN at spawn
-   - Region/bag log-area → window half-width in seconds (large = diffuse /
-                  wide; small = focused / tight); colour still sets sample
-                  centre — FROZEN at spawn
+           via value; value = second PCA axis, rank-uniformised). Colour
+           maps absolutely — same HSV always hits the same onset-aligned
+           segment (startPos/endPos). Calm/texture read past the onset
+           inside that window; chaos/osc may use the full window —
+           FROZEN at spawn
+   - Segment bounds → window half-width (real slice edges from offline
+                  prep; not reinvented from region area) — FROZEN at spawn
    - X        → stereo pan (−1 left … +1 right) AND source L/R channel mix
                 (left of grid hears left of recording). Initial at spawn;
                 while a grain belongs to a region it directly follows that
@@ -107,8 +108,11 @@ One-sentence axiom:
                 spectrum (80 Hz at the bottom of the grid, 12 kHz at the top);
                 independent of the chosen segment’s spectral centroid
                 — same direct region follow
-   - Envelope / duration / filter Q → continuous functions of κ/δ (and calm
-                area/fill) at spawn — not binary calm|chaos presets, not RGB
+   - Envelope / duration → continuous functions of δ and extent at spawn —
+                not binary calm|chaos presets, not RGB
+   - Filter Q → vertical extent of the spawning mass (same log law as Y→fc:
+                thin structures narrow, tall masses wide), capped by how
+                many cycles the grain length can carry at the centre frequency
 
    Colour chooses where in the source the grain listens. Selectable centres
    are audible material only — file silence is never a colour. Spatial X
@@ -117,7 +121,7 @@ One-sentence axiom:
    is not volume. Playback rate stays ±1 (no Doppler).
 
    Two axes, two consequences: timeOrder (stability + extent) → duration and
-   envelope; spatial similarity → Q. Still-and-uniform and still-and-detailed
+   envelope; region height → Q. Still-and-uniform and still-and-detailed
    differ in material at matched loudness. Q is spectral purity, not loudness;
    the bandpass is unity-gain at its centre frequency.
 
@@ -148,6 +152,9 @@ One-sentence axiom:
      δ below the chaos floor, not claimed as Calm, Osc, or Flow. Typical
      look is frozen mixed detail. A solid never-changing colour field is
      Calm, not Static. Small similar patches that fail min area land here.
+     Delivered as one colour group per distinct frozen hue (plus a grey
+     bin) — each group has its own mean colour, COM, Y extent, and seat
+     share — not one undifferentiated bag that samples every colour at once.
    - Osc: sitting cells whose colour repeats with a confirmed period
      (2..8 steps). The pulse does not travel; travelling period-looking
      patterns are stripped to Flow or Chaos. Wavelength-2 site-revisit
@@ -243,7 +250,7 @@ One-sentence axiom:
 
    Frozen at birth (must not chase):
 
-   - Sample / scrub window and ping-pong bounds
+   - Sample window and ping-pong bounds
    - Playback direction
    - Envelope shape (attack/release fractions for that grain’s life)
 
@@ -261,12 +268,12 @@ One-sentence axiom:
    those audio parameters to the new target inside one render block so a
    step is not a sample discontinuity — that is zipper prevention, not lag.
 
-   Forbidden: modulating the sample scrub window during playback to chase a
+   Forbidden: modulating the sample window during playback to chase a
    moving region or cell (causes undesirable glitches / pitch tears).
 
-   Sonic time follows CA time via inter-grain scrub: each calm region / the
-   texture pool advances a scrub offset for newly spawned grains. Living
-   grains never move their window.
+   Colour already moves material when a region’s HSV changes. There is no
+   inter-grain scrub clock — elapsed time must not drag every rule through
+   the whole source file.
 
    How region texture follows motion: grains that belong to a coherent region
    move their pan and spectrum with that region; sample material stays locked;
@@ -280,15 +287,15 @@ One-sentence axiom:
    Decided only at spawn:
 
    - Hue → sample window + ping-pong: spawn-cell hue maps to a sample range
-     locked at spawn (calm wider than chaos). If the read head reaches either
-     edge before the grain ends, it reverses and continues (ping-pong) until
-     the grain’s defined length completes.
+     locked at spawn (absolute colour → material; window = segment bounds).
+     If the read head reaches either edge before the grain ends, it reverses
+     and continues (ping-pong) until the grain’s defined length completes.
    - X → pan: spawn cell horizontal position maps to equal-power stereo pan.
    - Motion → direction: if the region’s COM is moving left/right, playback
      direction may be forward or reverse to match that motion.
-   - Height → Y spread: tall coherent regions bias the few calm grains toward
-     varied Y spawn heights (fuller harmonic spread). Thin/short regions keep
-     a narrower Y spread.
+   - Height → filter Q: the structure’s vertical span sets bandpass Q through
+     the same log law as Y→frequency (thin → narrow; tall → wide). Each grain’s
+     centre frequency still comes from its own Y.
 
    These are physics of colour, geometry, and motion — not aesthetic effects.
 
@@ -302,9 +309,10 @@ One-sentence axiom:
    and spend it as few long overlapping grains. Chaotic areas receive share
    by their area and spend it as many short hits.
 
-   A confirmed region whose exact share is at least a quarter seat gets a
-   floor of one voice (calm and flow alike) — a structure large enough to
-   see must not be silent because rounding took its seat.
+   Every confirmed calm region, flow group, oscillator group, and static colour
+   group gets at least one seat before leftovers (area-ranked if guaranteed
+   seats overflow the budget). A structure large enough to detect must not be
+   silent because rounding took its seat.
 
    Area share is spent, not merely allocated. Caps that prevent a pool from
    reaching its share are loudness policy in disguise.
@@ -405,10 +413,10 @@ the track is still held.
 
 Flow grain laws:
 
-  - Share ∝ Σ flow.regionArea (occupied patch, including gaps). A confirmed
-    flow whose patch is at least a quarter-seat gets a floor of one seat.
-    Member-cell grid fraction is an observation detail, not the DATA budget
-    meter.
+  - Share ∝ Σ flow.regionArea (occupied patch, including gaps). Every
+    confirmed flow gets at least one seat (area-ranked if guaranteed seats
+    overflow the budget). Member-cell grid fraction is an observation
+    detail, not the DATA budget meter.
   - Spawn on trailing-edge member cells (start of hop motion), never the
     COM or dilated gaps. Extra concurrent grains space along the heading.
   - Pack-to-share; duration in a mid chaos–calm band from packing density
@@ -416,10 +424,8 @@ Flow grain laws:
     length / hop speed so a grain dies near the leading edge. RegionArea
     buys concurrency; packing shapes duration/envelope. Chaos stays
     area-blind (short).
-  - Envelope from that timeOrder; polar material bias neutral;
-    window half-width from log-area of the occupied patch (same size law
-    as every pool — no flow-only widen). Sample scrub width is not
-    driven by packing.
+  - Envelope from that timeOrder; absolute colour → material;
+    window from the chosen segment’s start/end (same for every pool).
   - Pan / Y / channelMix follow via applyTracks with
     regionId = FLOW_ID_BASE + flow.id (disjoint from calm ids).
     Follow hop-velocity conveyor (velX/velY), not group COM deltas.

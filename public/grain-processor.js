@@ -480,7 +480,7 @@ class GrainProcessor extends AudioWorkletProcessor {
 
   updateFilterCoeffs(voice) {
     const y = clamp01(voice.yNorm);
-    const q = Math.max(0.5, voice.q);
+    const q = Math.max(0.1, voice.q);
     if (
       Math.abs(y - voice.fcNorm) < 1e-6 &&
       Math.abs(q - voice.filtQ) < 1e-6

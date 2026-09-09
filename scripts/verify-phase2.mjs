@@ -66,10 +66,12 @@ assert(
 );
 assert("fillRatio used in duration", /fillRatio/.test(schedSrc));
 assert(
-  "log-area drives window width",
-  /WINDOW_HALF/.test(schedSrc) &&
+  "segment bounds drive window (not area half-width lerp)",
+  /WINDOW_HALF_ABS_MIN_S/.test(schedSrc) &&
+    /startPos/.test(schedSrc) &&
     /function areaT/.test(schedSrc) &&
-    /sizeT/.test(schedSrc) &&
+    !/WINDOW_HALF_MIN_S/.test(schedSrc) &&
+    !/WINDOW_HALF_MAX_S/.test(schedSrc) &&
     !/FLOW_WINDOW_T/.test(schedSrc),
 );
 assert(

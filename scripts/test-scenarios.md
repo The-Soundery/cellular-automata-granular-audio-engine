@@ -42,9 +42,10 @@ labels — trust Ground truth / Observer lines for the regime.
   Not the Static regime — Static is still *remainder*, not one filled colour.
 - **Observer:** calm% ≈ 100; chaos% ≈ 0; one region.
 - **Audio:** calm wash at area share (~64 concurrent), long grains (DUR_MAX),
-  centred pan/yNorm, low spectral flux; mean Q high (focused).
-- **Assertions:** investigate stage 1/7 (calm%, sampleCenter frozen); render
-  stage 2–4 (loudness, dispersion ≤0.35/0.30, sites ≤70, flux ×2 ≤ flicker).
+  centred pan/yNorm, low spectral flux; mean Q low on a full-height field
+  (vertical extent → wide bandpass).
+- **Assertions:** investigate stage 1/7 (calm%, sampleCenter frozen — no scrub);
+  render stage 2–4 (loudness, dispersion ≤0.35/0.30, sites ≤70, flux ×2 ≤ flicker).
 
 ## hue-drift
 
@@ -52,22 +53,23 @@ labels — trust Ground truth / Observer lines for the regime.
 - **Ground truth:** Still one **Calm** mass; tiny continuous δ; not rhythmic;
   not Osc (period ≫ 8 steps).
 - **Observer:** calm% ≈ 100.
-- **Audio:** calm packing; sampleCenter drifts with polar hue angle;
-  flux near static on a flat source spectrum.
+- **Audio:** calm packing; sampleCenter drifts with polar hue angle (absolute
+  colour→material; no scrub clock); flux near static on a flat source spectrum.
 - **Assertions:** investigate stage 4(iv) sampleCenter spread ≥½·0.0006·30·window
   (polar hue); stage 6 pulse-burst ≤1; render flux ×2 ≤ flicker.
 
 ## frozen-noise
 
 - **Simulates:** Per-cell random colours, frozen forever.
-- **Ground truth:** **Static** regime — temporally still remainder (spatially
-  mixed). Not Chaos (no change); not Calm (no connected similar-colour mass).
+- **Ground truth:** **Static** regime — temporally still remainder, partitioned
+  into deterministic hue groups (plus grey). Not Chaos (no change); not Calm
+  (no connected similar-colour mass).
 - **Observer:** ≥95% static/textured.
-- **Audio:** texture wash at share, long grains, wide pan/yNorm (≥0.7), mean Q
-  low vs uniform (gated by mean-Q, not flux).
-- **Assertions:** investigate stage 4 (static%, texture rate/dur, per-slot
-  sampleCenter spread ≤0.005); render dispersion ≥0.7, sites ≤70, mean Q <
-  uniform.
+- **Audio:** several frozen colour voices (one window each), packing rate
+  higher than a single bag because group areas are smaller; pan/yNorm from
+  each group’s COM/extent.
+- **Assertions:** investigate stage 4 (static%, texture rate/dur, per-group
+  slot sampleCenter spread ≤0.005); render dispersion ≥0.7, sites ≤70.
 
 ## checkerboard-static
 
@@ -133,8 +135,9 @@ labels — trust Ground truth / Observer lines for the regime.
 - **Simulates:** Whole field one colour; HSV value breathes sinusoidally (period 90 steps).
 - **Ground truth:** **Calm** with small nonzero δ̄ (below chaos floor). Not Osc
   (period ≫ 8 steps); not Chaos.
-- **Audio:** inter-grain scrub advances sampleCenter; level may breathe but
-  unit-energy flux stays near static (value≠spectrum).
+- **Audio:** sampleCenter drifts with polar value/hue of the breathing colour
+  (absolute map; no scrub); level may breathe but unit-energy flux stays near
+  static (value≠spectrum).
 - **Assertions:** investigate stage 7 sampleCenter spread ≥0.005; render
   dispersion like uniform-static.
 
@@ -146,10 +149,9 @@ labels — trust Ground truth / Observer lines for the regime.
   as multiple **Calm** regions across the width (not one Static bag of mixed
   leftover — connected similar colour still qualifies as Calm).
 - **Audio:** many calm regions across the width; pan spread ≥0.7; RMS near
-  uniform (±1 dB target, see log if marginal). Calm uses the sustained polar
-  subset + nearest-neighbour, so unique `sampleCenter` counts are far below
-  the hue count when the file has few distinct sustained textures — expected,
-  not a missing-colour bug.
+  uniform (±1 dB target, see log if marginal). Absolute colour→material means
+  unique `sampleCenter` counts track distinct polar neighbours — expected to
+  be below the hue count when the file has few distinct textures.
 - **Assertions:** investigate stage 4; render stage 3/4.
 
 ## two-blobs-merge

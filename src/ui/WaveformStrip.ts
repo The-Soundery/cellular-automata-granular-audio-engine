@@ -1,14 +1,11 @@
 import type { AudioStats } from "../audio/AudioEngine.ts";
-import {
-  type MaterialSegment,
-  sustainedSubset,
-} from "../audio/spectral.ts";
+import { type MaterialSegment } from "../audio/spectral.ts";
 import { REGIME_HEX } from "./RegionOverlay.ts";
 
 const ONSET_PERSIST_MS = 300;
-const MIN_SUSTAINED_SPAN_PX = 3;
+const MIN_SEGMENT_SPAN_PX = 3;
 const SEGMENT_LINE = "#5a5a5a";
-const SUSTAINED_FILL = "rgba(207, 207, 207, 0.10)";
+const SEGMENT_FILL = "rgba(207, 207, 207, 0.10)";
 const ONSET_TICK = "#cfcfcf";
 
 /** Source waveform + live grain ticks. Chrome, not part of the CA field. */
@@ -41,7 +38,7 @@ export class WaveformStrip {
 
     const segments = diagnostics?.segments;
     if (segments && segments.length > 0) {
-      this.drawSustainedBands(segments, css.w, css.h);
+      this.drawSegmentBands(segments, css.w, css.h);
       this.drawSegmentBoundaries(segments, css.w, css.h);
     }
 
@@ -92,15 +89,24 @@ export class WaveformStrip {
     }
   }
 
-  private drawSustainedBands(
+  private drawSegmentBands(
     segments: MaterialSegment[],
     w: number,
     h: number,
   ): void {
     const { ctx } = this;
-    ctx.fillStyle = SUSTAINED_FILL;
-    for (const span of sustainedCoverageSpans(segments, w)) {
-      ctx.fillRect(span.x0, 0, span.x1 - span.x0, h);
+    ctx.fillStyle = SEGMENT_FILL;
+    for (const seg of segments) {
+      let x0 = seg.startPos * w;
+      let x1 = seg.endPos * w;
+      if (x1 - x0 < MIN_SEGMENT_SPAN_PX) {
+        const mid = seg.pos * w;
+        x0 = mid - MIN_SEGMENT_SPAN_PX * 0.5;
+        x1 = mid + MIN_SEGMENT_SPAN_PX * 0.5;
+      }
+      x0 = Math.max(0, x0);
+      x1 = Math.min(w, x1);
+      if (x1 > x0) ctx.fillRect(x0, 0, x1 - x0, h);
     }
   }
 
@@ -157,36 +163,6 @@ export class WaveformStrip {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { w, h };
   }
-}
-
-/** Voronoi-style coverage among sustained centres, with a ~3px floor. */
-function sustainedCoverageSpans(
-  segments: MaterialSegment[],
-  width: number,
-): { x0: number; x1: number }[] {
-  const kept = sustainedSubset(segments);
-  if (kept.length === 0) return [];
-  const sorted = kept.slice().sort((a, b) => a.pos - b.pos);
-  const n = sorted.length;
-  const spans: { x0: number; x1: number }[] = [];
-  for (let i = 0; i < n; i++) {
-    const pos = sorted[i]!.pos;
-    const prev = i > 0 ? sorted[i - 1]!.pos : 0;
-    const next = i < n - 1 ? sorted[i + 1]!.pos : 1;
-    const left = (prev + pos) * 0.5;
-    const right = (pos + next) * 0.5;
-    let x0 = left * width;
-    let x1 = right * width;
-    if (x1 - x0 < MIN_SUSTAINED_SPAN_PX) {
-      const mid = pos * width;
-      x0 = mid - MIN_SUSTAINED_SPAN_PX * 0.5;
-      x1 = mid + MIN_SUSTAINED_SPAN_PX * 0.5;
-    }
-    x0 = Math.max(0, x0);
-    x1 = Math.min(width, x1);
-    if (x1 > x0) spans.push({ x0, x1 });
-  }
-  return spans;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
