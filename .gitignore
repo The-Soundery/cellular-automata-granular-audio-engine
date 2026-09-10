@@ -25,3 +25,4 @@ dist-ssr
 
 # Generated investigation reports
 scripts/.chaos-stutter-report.json
+scripts/probe-typeu-see-hear-report.json

@@ -90,6 +90,22 @@ assert(
   "continuous envelope fracs on spawn",
   /attackFrac/.test(schedSrc) && /ATT_MIN/.test(schedSrc) && /ATT_MAX/.test(schedSrc),
 );
+assert(
+  "calm attack seconds cap + catch-up fill",
+  /ATT_ABS_MAX_S/.test(schedSrc) &&
+    /CALM_FILL_S/.test(schedSrc) &&
+    /attackFracCapped/.test(schedSrc) &&
+    /catchHz/.test(schedSrc),
+);
+assert(
+  "DUR_MAX is 2s wash (not multi-second drone)",
+  /DUR_MAX:\s*2(?:\.0)?/.test(schedSrc),
+);
+assert(
+  "compact chaos uses measured height for Q",
+  /qFromVerticalExtent\(heightCells/.test(schedSrc) &&
+    /chaotic\.height/.test(schedSrc),
+);
 assert("no ySpread special case", !/ySpreadFillMin/.test(schedSrc) && !/pickNearestCellInColumn/.test(schedSrc));
 assert("no velocity-hybrid calm laws", !/hybridCalmLaws/.test(schedSrc) && !/velChaosNorm/.test(schedSrc));
 assert("region tracks for pan/Y", /RegionTrack/.test(schedSrc) && /tracks/.test(schedSrc) && /trackDx/.test(schedSrc));
@@ -129,6 +145,24 @@ assert("overlay toggle present", /overlay-toggle/.test(controls));
 assert("Type-U spatial neighbors", /neighborPrograms/.test(main) && /programAt/.test(readFileSync(join(root, "src/ca/typeU.ts"), "utf8")));
 assert("explore telescope", /explore-sky/.test(main) && /mountExploreNeighbors/.test(main));
 assert("worklet direct pan/Y follow", /applyTracks/.test(worklet) && /trackDx/.test(worklet));
+assert(
+  "worklet Q follows track qExtent",
+  /qExtent/.test(worklet) && /qFromVerticalExtent/.test(worklet),
+);
+assert(
+  "scheduler sends qExtent on region tracks",
+  /qExtent: qExtentFromShape/.test(schedSrc),
+);
+assert(
+  "merge inherits absorbed packing credit",
+  /survivor\.acc = Math\.min\(3, survivor\.acc \+ absorbed\.acc\)/.test(
+    schedSrc,
+  ),
+);
+assert(
+  "death short-releases that id's grains",
+  /deathIds\.has\(a\.regionId\)/.test(schedSrc),
+);
 assert("worklet saturates pan and Y at torus seam", /panSaturated/.test(worklet) && /ySaturated/.test(worklet));
 assert("worklet follow Y does not wrapCoord", !/wrapCoord\(voice\.y/.test(worklet));
 assert("flow heading projection is toroidal", /function flowHeadingEdges[\s\S]*?toroidalOffset\(x, flow\.comX/.test(schedSrc));
@@ -258,7 +292,7 @@ async function runtimeScheduler() {
             typeof e.sampleHalf === "number" &&
             e.sampleHalf > 0 &&
             e.durationSec >= 0.03 &&
-            e.durationSec <= 8.0 &&
+            e.durationSec <= SCHED.DUR_MAX + 1e-9 &&
             typeof e.q === "number" &&
             e.q > 0
           )
@@ -275,13 +309,16 @@ async function runtimeScheduler() {
         ) {
           envOk = false;
         }
+        if (e.attackFrac * e.durationSec > SCHED.ATT_ABS_MAX_S + 1e-6) {
+          envOk = false;
+        }
       }
       if (e.regime === "chaos") {
         sawChaos = true;
         if (
           !(
             e.durationSec >= 0.03 &&
-            e.durationSec <= 8.0 &&
+            e.durationSec <= SCHED.DUR_MAX + 1e-9 &&
             typeof e.sampleCenter === "number" &&
             typeof e.q === "number"
           )
@@ -336,6 +373,82 @@ async function runtimeScheduler() {
     "static full-calm sustains overlapping grains (peak calmActive ≥ 3)",
     peakCalm >= 3,
   );
+
+  // Tall flickering chaos column: compact cluster height drives Q (not 1-row).
+  {
+    const FILT_RATIO = 12000 / 80;
+    function qFromHeight(heightCells, gridH, durationSec, yNorm) {
+      const dy = Math.max(1, heightCells) / Math.max(1, gridH - 1);
+      const r = Math.pow(FILT_RATIO, dy);
+      let q = r <= 1 + 1e-9 ? SCHED.Q_MAX : Math.sqrt(r) / (r - 1);
+      q = Math.max(SCHED.Q_MIN, Math.min(SCHED.Q_MAX, q));
+      const fc = 80 * Math.pow(FILT_RATIO, Math.max(0, Math.min(1, yNorm)));
+      return Math.min(q, Math.max(1, durationSec * fc));
+    }
+    function fillTallChaos(field, t) {
+      for (let i = 0; i < n; i++) {
+        const x = i % w;
+        const y = (i / w) | 0;
+        if (x >= 14 && x < 18) {
+          const seed = (t + 1) * 9973 + i * 17;
+          field.r[i] = ((seed * 31) % 97) / 97;
+          field.g[i] = ((seed * 57) % 89) / 89;
+          field.b[i] = ((seed * 13) % 83) / 83;
+        } else {
+          field.r[i] = 0.2;
+          field.g[i] = 0.55;
+          field.b[i] = 0.85;
+        }
+      }
+    }
+    const tall = makeField(() => {});
+    const tallPrev = makeField(() => {});
+    fillTallChaos(tallPrev, 0);
+    fillTallChaos(tall, 1);
+    const tallFo = new FieldObserver(w, h);
+    tallFo.observe(tall, tallPrev);
+    for (let t = 0; t < 16; t++) {
+      tallPrev.r.set(tall.r);
+      tallPrev.g.set(tall.g);
+      tallPrev.b.set(tall.b);
+      fillTallChaos(tall, t + 2);
+      tallFo.observe(tall, tallPrev);
+    }
+    const tallObs = tallFo.observation;
+    const compact = (tallObs.chaotic.clusters ?? []).filter((c) => c.compact);
+    assert(
+      "tall chaos column yields a compact cluster with height ≫ 1",
+      compact.some((c) => c.height >= 8),
+    );
+    const tallSched = new GrainScheduler(GRAIN_BUDGET);
+    let nowTall = 9000;
+    let chaosQOk = true;
+    let sawTallChaos = false;
+    let sawOpenQ = false;
+    for (let t = 0; t < 45; t++) {
+      nowTall += 1000 / 30;
+      const batch = tallSched.step(tallObs, tall, nowTall);
+      for (const e of batch.events) {
+        if (e.regime !== "chaos") continue;
+        sawTallChaos = true;
+        const oneRow = qFromHeight(1, h, e.durationSec, e.yNorm);
+        // Never sharper than a one-row sliver at the same site.
+        if (e.q > oneRow + 0.05) chaosQOk = false;
+        // Where the extent law actually opens (cycle ceiling does not bind
+        // both to the same value), we must hear a wider bandpass.
+        if (oneRow > 4 && e.q < oneRow - 0.5) sawOpenQ = true;
+      }
+    }
+    assert("tall chaos column produced chaos grains", sawTallChaos);
+    assert(
+      "compact tall chaos Q never exceeds one-row Q",
+      chaosQOk,
+    );
+    assert(
+      "compact tall chaos opens bandpass vs one-row where law allows",
+      sawOpenQ,
+    );
+  }
 
   // Mostly-calm with a thin chaotic strip: chaos concurrent must stay near area share
   // (no leftover-budget donate + no 0.15 rate floor inflation).
@@ -1228,6 +1341,74 @@ async function runtimeWorkletSeam() {
   assert(
     `worklet Y-seam sample Δ stays near interior (${wrapDelta.toFixed(4)} vs ${preDelta.toFixed(4)})`,
     wrapDelta <= Math.max(0.015, preDelta * 4),
+  );
+
+  const qProc = new Processor();
+  send(qProc, {
+    type: "source",
+    sampleRate: FS,
+    length: pcm.length,
+    pcmL: pcm,
+    pcmR: pcm.slice(),
+  });
+  qProc.masterGain = 1;
+  qProc.masterGainTarget = 1;
+  qProc.normGain = 1;
+  qProc.preScale = 1;
+  send(qProc, {
+    type: "events",
+    masterGain: 1,
+    events: [
+      {
+        durationSec: 2,
+        amplitude: 0.4,
+        r: 0.9,
+        g: 0.5,
+        b: 0.2,
+        x: 64,
+        y: 64,
+        yNorm: 0.5,
+        pan: 0,
+        channelMix: 0.5,
+        sampleCenter: 0.5,
+        sampleHalf: 0.2,
+        attackFrac: 0.05,
+        releaseFrac: 0.15,
+        q: 20,
+        regime: "calm",
+        regionId: 1,
+        direction: 1,
+      },
+    ],
+  });
+  for (let i = 0; i < 8; i++) processBlock(qProc);
+  const qVoice0 = qProc.voices.find((g) => g.active);
+  const qSpawn = qVoice0?.q ?? 0;
+  const boundLo0 = qVoice0?.boundLo;
+  send(qProc, {
+    type: "track",
+    tracks: [
+      {
+        regionId: 1,
+        anchorX: 64,
+        anchorY: 64,
+        comX: 64,
+        comY: 64,
+        gridWidth: W,
+        gridHeight: H,
+        qExtent: 64,
+      },
+    ],
+  });
+  processBlock(qProc);
+  const qVoice1 = qProc.voices.find((g) => g.active);
+  assert(
+    "worklet Q follows a taller mass (narrow→wide bandpass)",
+    (qVoice1?.q ?? 20) < qSpawn * 0.25,
+  );
+  assert(
+    "Q follow does not rewrite frozen sample bounds",
+    qVoice1?.boundLo === boundLo0,
   );
 
   // Dropout then re-acquire far away must not apply the gap as one hop.

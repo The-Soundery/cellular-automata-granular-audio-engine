@@ -30,8 +30,9 @@ const W_BAND = 0.55;
 /**
  * Hops this far below the loudest analysis hop are file silence / noise floor
  * — never selectable material. Relative so a quiet pad still maps.
+ * -32 keeps "almost silent" tails out while still admitting soft pads.
  */
-export const SILENCE_GATE_DB = -40;
+export const SILENCE_GATE_DB = -32;
 /** Mel bands for the offline timbre embedding (PCA → polar angle / band). */
 const MEL_BANDS = 24;
 const MEL_LO_HZ = 40;
@@ -63,6 +64,13 @@ export interface MaterialQueryResult {
   stationarity: number;
 }
 
+export interface RateLayers {
+  pcmLHalf: Float32Array;
+  pcmRHalf: Float32Array;
+  pcmLDbl: Float32Array;
+  pcmRDbl: Float32Array;
+}
+
 export interface SpectralBank {
   sampleRate: number;
   length: number;
@@ -76,6 +84,12 @@ export interface SpectralBank {
    * Playback must use pcmL/pcmR.
    */
   pcm: Float32Array;
+  /** Half-speed stereo (2× samples). Read at ±1 = octave down. */
+  pcmLHalf: Float32Array;
+  pcmRHalf: Float32Array;
+  /** Double-speed stereo (½× samples). Read at ±1 = octave up. */
+  pcmLDbl: Float32Array;
+  pcmRDbl: Float32Array;
   /** Analysed segments in polar space. */
   segments: MaterialSegment[];
 }
@@ -122,6 +136,7 @@ export function buildSpectralBank(audioBuffer: AudioBuffer): SpectralBank {
   }
 
   const segments = buildPolarSegments(pcm, sampleRate);
+  const layers = buildRateLayers(pcmL, pcmR, sampleRate);
 
   return {
     sampleRate,
@@ -130,6 +145,7 @@ export function buildSpectralBank(audioBuffer: AudioBuffer): SpectralBank {
     pcmL,
     pcmR,
     pcm,
+    ...layers,
     segments,
   };
 }
@@ -181,6 +197,7 @@ export function identitySpectralBank(
       band: 0.5,
     },
   ];
+  const layers = buildRateLayers(pcmL, pcmR, sampleRate);
   return {
     sampleRate,
     length,
@@ -188,8 +205,32 @@ export function identitySpectralBank(
     pcmL,
     pcmR,
     pcm,
+    ...layers,
     segments,
   };
+}
+
+/**
+ * Pre-render half-speed (2× length) and double-speed (½× length) stereo
+ * copies. Polar analysis stays on the native file; these layers are a
+ * scale axis, not live resampling.
+ */
+export function buildRateLayers(
+  pcmL: Float32Array,
+  pcmR: Float32Array,
+  sampleRate: number,
+): RateLayers {
+  const pcmLHalf = resampleChannel(pcmL, 2);
+  const pcmRHalf = resampleChannel(pcmR, 2);
+  const pcmLDbl = resampleChannel(pcmL, 0.5);
+  const pcmRDbl = resampleChannel(pcmR, 0.5);
+  applySeamCrossfade(pcmLHalf, sampleRate);
+  applySeamCrossfade(pcmRHalf, sampleRate);
+  applySeamCrossfade(pcmLDbl, sampleRate);
+  applySeamCrossfade(pcmRDbl, sampleRate);
+  matchPairRms(pcmL, pcmR, pcmLHalf, pcmRHalf);
+  matchPairRms(pcmL, pcmR, pcmLDbl, pcmRDbl);
+  return { pcmLHalf, pcmRHalf, pcmLDbl, pcmRDbl };
 }
 
 /** @deprecated Use queryMaterialFromHsv — kept for harness string continuity. */
@@ -285,6 +326,8 @@ export function buildPolarSegments(
     flux: number;
     mag: Float32Array;
     mel: Float64Array;
+    /** Index in the full hop list (for contiguous-run windows). */
+    rawIdx: number;
   };
   const raw: Raw[] = [];
   let prevMag: Float32Array | null = null;
@@ -320,6 +363,7 @@ export function buildPolarSegments(
       flux,
       mag,
       mel: melPowerFromMag(mag, filterbank),
+      rawIdx: raw.length,
     });
   }
 
@@ -391,6 +435,8 @@ export function buildPolarSegments(
 
   // Onset-aligned units: a boundary wherever a hop's attack is strong and
   // locally maximal; long sustained stretches split so coverage holds.
+  // Also split wherever energetic hops are not contiguous in the file —
+  // otherwise startPos..endPos would span the silent gap between them.
   const hopSec = hop / sampleRate;
   const durationSec = n / sampleRate;
   const maxUnitSec = Math.min(
@@ -400,6 +446,11 @@ export function buildPolarSegments(
   const maxUnitHops = Math.max(1, Math.round(maxUnitSec / hopSec));
   const boundaries: number[] = [0];
   for (let i = 1; i < pool.length; i++) {
+    const gap = pool[i]!.rawIdx - pool[i - 1]!.rawIdx;
+    if (gap > 1) {
+      boundaries.push(i);
+      continue;
+    }
     const a = hopAttack[i]!;
     if (
       a >= ONSET_ATTACK_MIN &&
@@ -455,12 +506,30 @@ export function buildPolarSegments(
           ? pool[s0]!.pos
           : clamp01(posSum / wSum);
       // Half-hop pad around the hop range so the window covers the analysed
-      // unit rather than only midpoints.
+      // unit rather than only midpoints — but never pad into a silent hop.
       const halfHop = hopSec / (2 * Math.max(1e-9, durationSec));
-      const startPos = clamp01(pool[s0]!.pos - halfHop);
-      const endPos = clamp01(
-        pool[Math.max(s0, s1 - 1)]!.pos + halfHop,
-      );
+      const firstHop = pool[s0]!;
+      const lastHop = pool[Math.max(s0, s1 - 1)]!;
+      let startPos = clamp01(firstHop.pos - halfHop);
+      let endPos = clamp01(lastHop.pos + halfHop);
+      if (firstHop.rawIdx > 0 && raw[firstHop.rawIdx - 1]!.rms < rmsGate) {
+        startPos = Math.max(startPos, firstHop.pos);
+      }
+      if (
+        lastHop.rawIdx + 1 < raw.length &&
+        raw[lastHop.rawIdx + 1]!.rms < rmsGate
+      ) {
+        endPos = Math.min(endPos, lastHop.pos);
+      }
+      // Guard: if any in-range raw hop is silent, snap to energetic-only span.
+      // Contiguous pool runs should already exclude gaps; this catches edge pad.
+      for (let ri = firstHop.rawIdx; ri <= lastHop.rawIdx; ri++) {
+        if (raw[ri]!.rms < rmsGate) {
+          startPos = firstHop.pos;
+          endPos = lastHop.pos;
+          break;
+        }
+      }
       segments.push({
         pos,
         startPos: Math.min(startPos, endPos),
@@ -604,6 +673,65 @@ function peakAbs(pcm: Float32Array): number {
     if (a > peak) peak = a;
   }
   return peak;
+}
+
+function pairRms(pcmL: Float32Array, pcmR: Float32Array): number {
+  const n = Math.max(pcmL.length, pcmR.length);
+  if (n <= 0) return 0;
+  let e = 0;
+  for (let i = 0; i < n; i++) {
+    const l = pcmL[i] ?? 0;
+    const r = pcmR[i] ?? 0;
+    e += l * l + r * r;
+  }
+  return Math.sqrt(e / n);
+}
+
+function matchPairRms(
+  srcL: Float32Array,
+  srcR: Float32Array,
+  dstL: Float32Array,
+  dstR: Float32Array,
+): void {
+  const src = pairRms(srcL, srcR);
+  const dst = pairRms(dstL, dstR);
+  if (src <= 1e-8 || dst <= 1e-8) return;
+  const g = src / dst;
+  for (let i = 0; i < dstL.length; i++) dstL[i]! *= g;
+  for (let i = 0; i < dstR.length; i++) dstR[i]! *= g;
+}
+
+function wrapIndex(i: number, len: number): number {
+  if (len <= 0) return 0;
+  let x = i % len;
+  if (x < 0) x += len;
+  return x;
+}
+
+/** Cubic (Hermite) resample. ratio = outLength / inLength (2 = half-speed). */
+function resampleChannel(src: Float32Array, ratio: number): Float32Array {
+  const n = src.length;
+  const outLen = Math.max(2, Math.round(n * ratio));
+  const out = new Float32Array(outLen);
+  if (n < 2) {
+    out[0] = src[0] ?? 0;
+    return out;
+  }
+  const scale = (n - 1) / Math.max(1, outLen - 1);
+  for (let i = 0; i < outLen; i++) {
+    const x = i * scale;
+    const i1 = Math.floor(x);
+    const t = x - i1;
+    const y0 = src[wrapIndex(i1 - 1, n)]!;
+    const y1 = src[wrapIndex(i1, n)]!;
+    const y2 = src[wrapIndex(i1 + 1, n)]!;
+    const y3 = src[wrapIndex(i1 + 2, n)]!;
+    const c1 = 0.5 * (y2 - y0);
+    const c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
+    const c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    out[i] = ((c3 * t + c2) * t + c1) * t + y1;
+  }
+  return out;
 }
 
 function windowRms(pcm: Float32Array, start: number, length: number): number {

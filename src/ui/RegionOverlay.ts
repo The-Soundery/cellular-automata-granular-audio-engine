@@ -84,9 +84,8 @@ export class RegionOverlay {
     for (const g of obs.oscillators) {
       if (!g.cells.length) continue;
       strokeEdges(ctx, g.cells, gridW, gridH, cw, ch, REGIME_HEX.osc);
-      const mark = marksOf(g.cells, gridW);
-      drawBrackets(ctx, mark.box, cw, ch, REGIME_HEX.osc);
-      drawCross(ctx, mark.comX * cw, mark.comY * ch, REGIME_HEX.osc);
+      drawBrackets(ctx, boundsOf(g.cells, gridW), cw, ch, REGIME_HEX.osc);
+      drawCross(ctx, g.comX * cw, g.comY * ch, REGIME_HEX.osc);
     }
     for (const r of obs.coherent) {
       if (!r.cells.length) continue;
@@ -205,26 +204,6 @@ function boundsOf(
     if (y > maxY) maxY = y;
   }
   return { minX, minY, maxX, maxY };
-}
-
-function marksOf(
-  cells: Uint32Array,
-  w: number,
-): {
-  box: { minX: number; minY: number; maxX: number; maxY: number };
-  comX: number;
-  comY: number;
-} {
-  const box = boundsOf(cells, w);
-  let sx = 0;
-  let sy = 0;
-  for (let i = 0; i < cells.length; i++) {
-    const ci = cells[i]!;
-    sx += ci % w;
-    sy += (ci / w) | 0;
-  }
-  const n = Math.max(1, cells.length);
-  return { box, comX: sx / n, comY: sy / n };
 }
 
 function drawBrackets(

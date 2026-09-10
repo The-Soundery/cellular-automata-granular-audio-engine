@@ -5,13 +5,14 @@ Headless runs inject a synthetic polar segment map so HSV axes move
 `sampleCenter` without loading a WAV (see `makeTestMaterialSegments` in the
 investigate/render scripts). Live app uses `buildSpectralBank` on the upload:
 onset-aligned units, mel-spectrum PCA → polar angle/band (rank-uniform),
-hops below `SILENCE_GATE_DB` dropped so colour never chooses silence.
+hops below `SILENCE_GATE_DB` dropped so colour never chooses silence
+(contiguous audible runs only — windows do not bridge silent gaps).
 
 These patterns often *saturate* δ. Passing rates/balance here does **not**
 prove chaos is balanced on real Utomata (see Implementation Filter → live
 chaos δ̄ / `deltaRateNorm` / `t = δ̄/0.35`).
 
-## Two harnesses
+## Harnesses
 
 1. **Event harness** — `node scripts/investigate-scenarios.mjs --stage N`  
    FieldObserver + GrainScheduler: shares, rates, sampleCenter, eventFlux (Y/Q).
@@ -19,6 +20,11 @@ chaos δ̄ / `deltaRateNorm` / `t = δ̄/0.35`).
    Offline worklet: primary RMS = √mean(L²+R²); mono reported secondary;
    crest, sites, block-RMS, cold-start. Audio Welch-mel flux reported only.
    Source is sent as stereo L/R (mono duplicated).
+3. **See↔hear probes** (not in `npm run verify`) —
+   `node scripts/probe-see-hear.mjs` (synthetic + one Type-U) and
+   `node scripts/probe-typeu-see-hear.mjs` (4 depth-1 + 4 depth-2, settle
+   then measure; `--seed` / `--depth` to run one). Report JSON is
+   generated and gitignored.
 
 In-app: DATA fold → SIM. Overlay off by default (1px outlines when on).
 Grid 128×128 @ 30 steps/s. Default measure: last 7 s of 14 s
@@ -41,9 +47,12 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 - **Ground truth:** 100% **Calm** (connected similar colour + κ; zero temporal δ).
   Not Texture — Texture is still cells with no similar-colour body.
 - **Observer:** calm% ≈ 100; chaos% ≈ 0; one region.
-- **Audio:** calm wash at area share (~64 concurrent), long grains (DUR_MAX),
-  centred pan/yNorm, low spectral flux; mean Q low on a full-height field
-  (vertical extent → wide bandpass).
+- **Audio:** calm wash at area share (~64 concurrent), grains up to DUR_MAX
+  (~2s — overlap, not one drone), centred pan/yNorm, low spectral flux;
+  mean Q low on a full-height field (vertical extent → wide bandpass).
+  Living calm/flow grains follow that extent while they last (Q on the
+  region track; sample window stays frozen).
+  Full-field mass → half-speed layer; full segment window (no microloop).
 - **Assertions:** investigate stage 1/7 (calm%, sampleCenter frozen — no scrub);
   render stage 2–4 (loudness, dispersion ≤0.35/0.30, sites ≤70, flux ×2 ≤ flicker).
 
@@ -56,7 +65,7 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 - **Audio:** calm packing; sampleCenter drifts with polar hue angle (absolute
   colour→material; no scrub clock); flux near static on a flat source spectrum.
 - **Assertions:** investigate stage 4(iv) sampleCenter spread ≥½·0.0006·30·window
-  (polar hue); stage 6 pulse-burst ≤1; render flux ×2 ≤ flicker.
+  (polar hue); stage 6 max calm same-id/step ≤12; render flux ×2 ≤ flicker.
 
 ## frozen-noise
 
@@ -65,9 +74,11 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
   similar-colour mass, partitioned into deterministic hue groups (plus grey).
   Not Chaos (no change); not Calm (no body).
 - **Observer:** ≥90% textured (accidental sub-minArea κ-islands are silent residual).
-- **Audio:** several frozen colour voices (one window each), packing rate
-  higher than a single bag because group areas are smaller; pan/yNorm from
-  each group’s COM/extent. Concurrent tracks textured area (not full grid).
+  Hue bins split into spatial islands (each with its own COM).
+- **Audio:** several frozen colour voices (one window each from **site** colour),
+  packing rate higher than a single bag because island areas are smaller; pan/yNorm
+  from each island’s COM/extent. Concurrent tracks textured area (not full grid).
+  Tight microloops (glassy / phasey); small islands may use double-speed.
 - **Assertions:** investigate stage 4 (static%/textured% ≥90, texture rate/dur,
   avg active ∈ [45, 64], per-group slot sampleCenter spread ≤0.005); render
   dispersion ≥0.7, sites ≤70.
@@ -78,7 +89,7 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 - **Ground truth:** Two interleaved **Calm** masses — same-value cells
   8-connect on diagonals, so this is not Texture leftover. (Frozen mixed
   detail without a connected similar-colour mass is Texture; see frozen-noise.)
-- **Observer/Audio:** calm% ≈ 100; two regions; long calm grains.
+- **Observer/Audio:** calm% ≈ 100; two regions; calm grains up to DUR_MAX (~2s).
 - **Assertions:** investigate stage 4 (calm%, not textured%); render sites/flux.
 
 ## half-half
@@ -98,7 +109,7 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
   solid translating colour is not Flow). Edge δ is real Chaos.
 - **Observer:** largest-region velX ≈ 0.88–1.0; Flow % ≈ 0.
 - **Audio:** background sites stay put (anchor via circular concentration);
-  bar tracks. Dominant-pool pan/yNorm ≤0.35/0.30.
+  bar tracks in pan/Y/Q. Dominant-pool pan/yNorm ≤0.35/0.30.
 - **Assertions:** investigate stage 1 (velX); render stage 4 dispersion on bg.
 
 ## full-flicker
@@ -110,7 +121,8 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
   mean → DUR_MIN); concurrent ≈64; CHAOS_EVENTS_MAX_HZ (4000) must not bind.
   Per-grain duration is a spray around that mean (raw cell δ vs bag mean;
   CHAOS_DUR_SPREAD / CHAOS_DUR_EXP), not a lock to one CA frame — p5/p95
-  ratio clearly above 1.
+  ratio clearly above 1. Large chaotic coverage mixes native / half / double
+  layers so the storm occupies more of the spectrum — not all double.
 - **Assertions:** investigate stage 1/5; render stage 3/5 + chaos sites ≥500.
 
 ## blinker-fast
@@ -118,9 +130,10 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 - **Simulates:** 40×40 centre block alternates A/B every step (period 2); still bg.
 - **Ground truth:** ~1600 **Osc** cells at 15 Hz (sitting period 2); not Chaos.
   Background is Calm.
-- **Observer:** oscillator group period 2, ≥1000 cells.
-- **Audio:** pulse-locked osc bursts ~15/s (envelope left at 0.04/0.2); ≤2
-  chaos ev/s from block.
+- **Observer:** one spatial oscillator group at period 2 (≥1000 cells), with
+  COM/extent matching the block (not a period-bag of the whole field).
+- **Audio:** pulse-locked osc bursts ~15/s (envelope left at 0.04/0.2); Q from
+  block height; ≤2 chaos ev/s from block.
 - **Assertions:** stage 6.
 
 ## blinker-slow
@@ -159,7 +172,9 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 
 - **Simulates:** Two similar-colour discs approach and overlap.
 - **Ground truth:** Region ID continuity through merge → one final region; few IDs.
-- **Assertions:** investigate region continuity; render excludes from block-RMS ≤1.5 dB.
+- **Audio:** living grains of the absorbed id keep following the survivor;
+  the survivor inherits packing credit. Q follows the combined extent.
+- **Assertions:** investigate region continuity; render excludes from block-RMS ≤5 dB.
 
 ## bar-left
 
@@ -179,7 +194,8 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 - **Ground truth:** Chaos share rounds to 1; event rate ≈ share×t/duration ≈ 16/s
   at saturated δ.
 - **Purpose:** Percussive-chaos question — does small-coverage chaos read as
-  discrete clicks? No verify assertions yet.
+  discrete clicks? Native-speed layer (coverage below the occupancy floor).
+  No verify assertions yet.
 
 ## chaos-blob-10pct
 
@@ -213,8 +229,8 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
 - **Simulates:** Four still quadrants at matched luminance — left grey
   (sat 0), right saturated; upper/lower halves.
 - **Ground truth:** Four **Calm** masses (connected similar colour). Isolates
-  identity axes — log-area→window half-width, X→pan, Y→cutoff — without loudness
-  confounding.
+  identity axes — segment window, X→pan, Y→cutoff, shape extent→Q — without
+  loudness confounding.
 - **Purpose:** Isolates identity axes for a single listen.
 
 ## osc-field
@@ -248,7 +264,10 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
   confirm (verify-phase1). Colour stays itself — no tint glue.
 - **Audio:** fifth pool spends area share from regionArea; piece-grains on
   member cells with packing→mid duration band; pan/Y follow via FLOW_ID_BASE
-  hop-velocity conveyor. Chaos bag excludes flow cells.
+  hop-velocity conveyor. Empty seated non-pulsed flow catch-up fills in
+  ~FLOW_FILL_S (force one grain if share>0 and the budget has room).
+  Elongated streams use minor-axis thickness for Q; Q follows live extent.
+  Chaos bag excludes flow cells.
 - **Assertions:** verify-phase1 (packed travelling colour is flow; members
   not also counted as chaos; train vel primarily +y; cascade / wavefront
   correspondence); verify-phase2 runtime (regime flow, share > 0,

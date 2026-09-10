@@ -243,7 +243,7 @@ export interface CoherentRegion {
   velY: number;
   meanDelta: number;
   meanCoherence: number;
-  /** Mean per-cell spatial similarity (spectral axis for material law). */
+  /** Mean per-cell spatial similarity (read-offset spread for material law). */
   meanSimilarity: number;
   meanR: number;
   meanG: number;
@@ -259,6 +259,19 @@ export interface CoherentRegion {
   height: number;
   /** area / (width×height); sparse / L-shapes are low. */
   fillRatio: number;
+  /**
+   * 0 = isotropic blob, 1 = needle (covariance eigenvalues). Optional so
+   * harness fixtures keep compiling — scheduler defaults to 0.
+   */
+  elongation?: number;
+  /** Major-axis angle, radians (0 = +X, π/2 = +Y). */
+  orientation?: number;
+  /** Isoperimetric quotient 4πA/P²; 1 ≈ disk, L-shapes sit low. */
+  compactness?: number;
+  /** Minor-axis thickness in cells — Q uses this when elongation is high. */
+  thickness?: number;
+  /** Signed area change vs last match, ∈ [−1, 1]. Births are +1. */
+  areaDelta?: number;
   /** Cell indices (row-major) belonging to this region. */
   cells: Uint32Array;
 }
@@ -267,7 +280,7 @@ export interface ChaoticArea {
   area: number;
   meanDelta: number;
   meanCoherence: number;
-  /** Mean per-cell spatial similarity (spectral axis for material law). */
+  /** Mean per-cell spatial similarity (read-offset spread for material law). */
   meanSimilarity: number;
   /** Max per-cell δ in the bag (for δ-weighted chaos spawn). */
   maxDelta: number;
@@ -290,6 +303,9 @@ export interface ChaosCluster {
   /** Toroidal circular COM — meaningless for the residual (compact=false). */
   comX: number;
   comY: number;
+  /** Toroidal AABB extents around COM (same law as calm regions). */
+  width: number;
+  height: number;
   /** False for the residual scatter entry (no usable location). */
   compact: boolean;
   meanDelta: number;
@@ -316,7 +332,7 @@ export interface TexturedArea {
   area: number;
   meanDelta: number;
   meanCoherence: number;
-  /** Mean per-cell spatial similarity (spectral axis for material law). */
+  /** Mean per-cell spatial similarity (read-offset spread for material law). */
   meanSimilarity: number;
   meanR: number;
   meanG: number;
@@ -328,7 +344,8 @@ export interface TexturedArea {
 
 /**
  * One frozen colour mass inside the static leftover bag.
- * Grouped by hue (plus a grey bin), not by spatial contiguity.
+ * Grouped by hue, then split into spatial islands so distant same-hue
+ * patches are separate COMs (not one field-wide voice).
  */
 export interface TexturedGroup {
   id: number;
@@ -365,10 +382,20 @@ export interface FlowGroup {
   cells: Uint32Array;
   /** Modal site period on members (0 = none). Pulses Flow grains; exclusive of Osc. */
   period: number;
+  elongation?: number;
+  orientation?: number;
+  compactness?: number;
+  thickness?: number;
 }
 
-/** Confirmed periodic cells grouped by period (re-derived every frame). */
+/**
+ * Confirmed sitting periodic cells as a spatial cluster (re-derived each
+ * frame). Period bags alone erased separate blinkers into one voice; spatial
+ * groups keep COM / extent so Q and pan/Y match the object you see.
+ */
 export interface OscillatorGroup {
+  /** COM-matched id for continuity; not a voice owner. */
+  id: number;
   period: number;
   area: number;
   cells: Uint32Array;
@@ -376,6 +403,14 @@ export interface OscillatorGroup {
   meanG: number;
   meanB: number;
   meanDelta: number;
+  comX: number;
+  comY: number;
+  /** Toroidal AABB extents about COM (≥1). */
+  width: number;
+  height: number;
+  /** Sitting clusters hold ~0; used for playback direction only. */
+  velX: number;
+  velY: number;
 }
 
 export interface FieldObservation {
@@ -425,6 +460,8 @@ type PrevRegion = {
 };
 
 type PrevOscCluster = {
+  /** Spatial group id carried for COM continuity (measurement, not ownership). */
+  id: number;
   period: number;
   comX: number;
   comY: number;
@@ -537,6 +574,9 @@ export class FieldObserver {
   private prevFlowClusters: FlowCluster[] = [];
   private prevFlowBlocks: FlowBlock[] = [];
   private prevOscClusters: PrevOscCluster[] = [];
+  /** Ids for exported sitting oscillator spatial groups. */
+  private prevSittingOsc: PrevOscCluster[] = [];
+  private nextOscId = 1;
   private primed = false;
   private flowFracDisp = 0;
   private flowRejects: Record<string, number> = {};
@@ -610,6 +650,8 @@ export class FieldObserver {
     }
     this.prevRegions = [];
     this.nextRegionId = 1;
+    this.nextOscId = 1;
+    this.prevSittingOsc = [];
     this.prevFlows = [];
     this.nextFlowId = 1;
     this.prevFlowClusters = [];
@@ -892,6 +934,7 @@ export class FieldObserver {
       const minY = (comY + minDy + h) % h;
       const maxY = (comY + maxDy + h) % h;
       const fillRatio = clamp01(area / (width * height));
+      const shape = measureShape(cellBuf, comX, comY, w, h);
 
       const cells = Uint32Array.from(cellBuf);
       regions.push({
@@ -917,6 +960,11 @@ export class FieldObserver {
         width,
         height,
         fillRatio,
+        elongation: shape.elongation,
+        orientation: shape.orientation,
+        compactness: shape.compactness,
+        thickness: shape.thickness,
+        areaDelta: 0,
         cells,
       });
     }
@@ -1000,10 +1048,16 @@ export class FieldObserver {
         const rawVy = useY ? toroidalDelta(region.comY, prev.comY, h) : 0;
         region.velX = prev.velX + (rawVx - prev.velX) * va;
         region.velY = prev.velY + (rawVy - prev.velY) * va;
+        const denom = Math.max(1, region.area, prev.area);
+        region.areaDelta = Math.max(
+          -1,
+          Math.min(1, (region.area - prev.area) / denom),
+        );
       } else {
         region.id = this.nextRegionId++;
         region.velX = 0;
         region.velY = 0;
+        region.areaDelta = 1;
         events.births.push(region.id);
       }
     }
@@ -1249,20 +1303,22 @@ export class FieldObserver {
         bump("oscDefer");
         return false;
       }
-      flows.push({
-        id: row.id,
-        area: row.cells.length,
-        regionArea: row.regionArea,
-        comX: row.comX,
-        comY: row.comY,
-        velX: row.velX,
-        velY: row.velY,
-        meanR: row.meanR,
-        meanG: row.meanG,
-        meanB: row.meanB,
-        cells: row.cells,
-        period: this.flowSitePeriod(row.cells),
-      });
+      flows.push(
+        withFlowShape({
+          id: row.id,
+          area: row.cells.length,
+          regionArea: row.regionArea,
+          comX: row.comX,
+          comY: row.comY,
+          velX: row.velX,
+          velY: row.velY,
+          meanR: row.meanR,
+          meanG: row.meanG,
+          meanB: row.meanB,
+          cells: row.cells,
+          period: this.flowSitePeriod(row.cells),
+        }, w, h),
+      );
       return true;
     };
 
@@ -1273,20 +1329,22 @@ export class FieldObserver {
      */
     const emitCoast = (good: PrevFlow, pose: PrevFlow): void => {
       bump("emitCoast");
-      flows.push({
-        id: good.id,
-        area: good.cells.length,
-        regionArea: good.regionArea,
-        comX: pose.comX,
-        comY: pose.comY,
-        velX: good.velX,
-        velY: good.velY,
-        meanR: good.meanR,
-        meanG: good.meanG,
-        meanB: good.meanB,
-        cells: good.cells,
-        period: this.flowSitePeriod(good.cells),
-      });
+      flows.push(
+        withFlowShape({
+          id: good.id,
+          area: good.cells.length,
+          regionArea: good.regionArea,
+          comX: pose.comX,
+          comY: pose.comY,
+          velX: good.velX,
+          velY: good.velY,
+          meanR: good.meanR,
+          meanG: good.meanG,
+          meanB: good.meanB,
+          cells: good.cells,
+          period: this.flowSitePeriod(good.cells),
+        }, w, h),
+      );
     };
 
     /** Keep held confirmed tracks visible/audible even when emit() rejects. */
@@ -2340,11 +2398,37 @@ export class FieldObserver {
         sumB += current.b[i]!;
       }
       const a = Math.max(1, cellsArr.length);
+      const comX =
+        ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w;
+      const comY =
+        ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h;
+      let minDx = 0;
+      let maxDx = 0;
+      let minDy = 0;
+      let maxDy = 0;
+      for (let c = 0; c < cellsArr.length; c++) {
+        const i = cellsArr[c]!;
+        const x = i % w;
+        const y = (i / w) | 0;
+        const dx = toroidalDelta(x, comX, w);
+        const dy = toroidalDelta(y, comY, h);
+        if (c === 0) {
+          minDx = maxDx = dx;
+          minDy = maxDy = dy;
+        } else {
+          if (dx < minDx) minDx = dx;
+          if (dx > maxDx) maxDx = dx;
+          if (dy < minDy) minDy = dy;
+          if (dy > maxDy) maxDy = dy;
+        }
+      }
       return {
         id: -1,
         area: cellsArr.length,
-        comX: ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w,
-        comY: ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h,
+        comX,
+        comY,
+        width: Math.max(1, maxDx - minDx + 1),
+        height: Math.max(1, maxDy - minDy + 1),
         compact,
         meanDelta: sumD / a,
         maxDelta: maxD,
@@ -2671,12 +2755,14 @@ export class FieldObserver {
       let comSpeed = 0;
       let prevVelX = 0;
       let prevVelY = 0;
+      let clusterId = 0;
       if (best >= 0) {
         const prev = this.prevOscClusters[best]!;
         usedPrev.add(best);
         prevStreak = prev.travelStreak;
         prevVelX = prev.velX;
         prevVelY = prev.velY;
+        clusterId = prev.id;
         const rawVx = toroidalDelta(c.comX, prev.comX, w);
         const rawVy = toroidalDelta(c.comY, prev.comY, h);
         velX = prev.velX + (rawVx - prev.velX) * va;
@@ -2685,6 +2771,8 @@ export class FieldObserver {
         const useVx = c.concX >= concMin ? rawVx : 0;
         const useVy = c.concY >= concMin ? rawVy : 0;
         comSpeed = Math.hypot(useVx, useVy);
+      } else {
+        clusterId = this.nextOscId++;
       }
 
       const hopSpeed = Math.hypot(c.hopX, c.hopY);
@@ -2716,6 +2804,7 @@ export class FieldObserver {
       const storeVx = hopTravel && hopSpeed >= comSpeed ? c.hopX : velX;
       const storeVy = hopTravel && hopSpeed >= comSpeed ? c.hopY : velY;
       nextPrev.push({
+        id: clusterId,
         period: c.period,
         comX: c.comX,
         comY: c.comY,
@@ -2830,42 +2919,185 @@ export class FieldObserver {
   }
 
   private buildOscillatorGroups(current: RgbField): OscillatorGroup[] {
-    const n = this.width * this.height;
-    const byPeriod = new Map<number, number[]>();
-    for (let i = 0; i < n; i++) {
-      if (!this.oscMask[i]) continue;
-      const p = this.oscPeriod[i]!;
-      let list = byPeriod.get(p);
-      if (!list) {
-        list = [];
-        byPeriod.set(p, list);
-      }
-      list.push(i);
-    }
-    const groups: OscillatorGroup[] = [];
-    for (const [period, cells] of byPeriod) {
+    const { width: w, height: h } = this;
+    const n = w * h;
+    const join = FIELD_OBS.oscClusterJoin;
+    const maxDist = FIELD_OBS.comMatchDist;
+    const va = FIELD_OBS.velocityEma;
+
+    this.labels.fill(-1);
+    type Sitting = {
+      period: number;
+      cells: number[];
+      comX: number;
+      comY: number;
+      concX: number;
+      concY: number;
+      width: number;
+      height: number;
+      meanR: number;
+      meanG: number;
+      meanB: number;
+      meanDelta: number;
+    };
+    const clusters: Sitting[] = [];
+
+    for (let seed = 0; seed < n; seed++) {
+      if (!this.oscMask[seed] || this.labels[seed]! >= 0) continue;
+      const period = this.oscPeriod[seed]!;
+      if (period <= 0) continue;
+
+      const cellBuf: number[] = [];
+      let qh = 0;
+      let qt = 0;
+      this.queue[qt++] = seed;
+      this.labels[seed] = clusters.length;
+      let sumXCos = 0;
+      let sumXSin = 0;
+      let sumYCos = 0;
+      let sumYSin = 0;
       let sumR = 0;
       let sumG = 0;
       let sumB = 0;
       let sumD = 0;
-      for (const i of cells) {
+
+      while (qh < qt) {
+        const i = this.queue[qh++]!;
+        cellBuf.push(i);
+        const x = i % w;
+        const y = (i / w) | 0;
+        const angX = (2 * Math.PI * x) / w;
+        const angY = (2 * Math.PI * y) / h;
+        sumXCos += Math.cos(angX);
+        sumXSin += Math.sin(angX);
+        sumYCos += Math.cos(angY);
+        sumYSin += Math.sin(angY);
         sumR += current.r[i]!;
         sumG += current.g[i]!;
         sumB += current.b[i]!;
         sumD += this.deltaSmooth[i]!;
+
+        for (let dy = -join; dy <= join; dy++) {
+          for (let dx = -join; dx <= join; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const j = ((y + dy + h) % h) * w + ((x + dx + w) % w);
+            if (!this.oscMask[j] || this.labels[j]! >= 0) continue;
+            if (this.oscPeriod[j]! !== period) continue;
+            this.labels[j] = clusters.length;
+            this.queue[qt++] = j;
+          }
+        }
       }
-      const area = cells.length;
-      groups.push({
+
+      const area = cellBuf.length;
+      if (area === 0) continue;
+      const comX =
+        ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w;
+      const comY =
+        ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h;
+      let minDx = 0;
+      let maxDx = 0;
+      let minDy = 0;
+      let maxDy = 0;
+      for (let c = 0; c < area; c++) {
+        const i = cellBuf[c]!;
+        const x = i % w;
+        const y = (i / w) | 0;
+        const dx = toroidalDelta(x, comX, w);
+        const dy = toroidalDelta(y, comY, h);
+        if (c === 0) {
+          minDx = maxDx = dx;
+          minDy = maxDy = dy;
+        } else {
+          if (dx < minDx) minDx = dx;
+          if (dx > maxDx) maxDx = dx;
+          if (dy < minDy) minDy = dy;
+          if (dy > maxDy) maxDy = dy;
+        }
+      }
+      clusters.push({
         period,
-        area,
-        cells: Uint32Array.from(cells),
+        cells: cellBuf,
+        comX,
+        comY,
+        concX: Math.hypot(sumXCos, sumXSin) / area,
+        concY: Math.hypot(sumYCos, sumYSin) / area,
+        width: Math.max(1, maxDx - minDx + 1),
+        height: Math.max(1, maxDy - minDy + 1),
         meanR: sumR / area,
         meanG: sumG / area,
         meanB: sumB / area,
         meanDelta: sumD / area,
       });
     }
-    groups.sort((a, b) => a.period - b.period);
+
+    const usedPrev = new Set<number>();
+    const nextPrev: PrevOscCluster[] = [];
+    const groups: OscillatorGroup[] = [];
+    for (const c of clusters) {
+      let best = -1;
+      let bestDist: number = maxDist;
+      for (let p = 0; p < this.prevSittingOsc.length; p++) {
+        if (usedPrev.has(p)) continue;
+        const prev = this.prevSittingOsc[p]!;
+        if (prev.period !== c.period) continue;
+        const d = Math.hypot(
+          toroidalDelta(c.comX, prev.comX, w),
+          toroidalDelta(c.comY, prev.comY, h),
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          best = p;
+        }
+      }
+
+      let id: number;
+      let velX = 0;
+      let velY = 0;
+      if (best >= 0) {
+        const prev = this.prevSittingOsc[best]!;
+        usedPrev.add(best);
+        id = prev.id;
+        const rawVx = toroidalDelta(c.comX, prev.comX, w);
+        const rawVy = toroidalDelta(c.comY, prev.comY, h);
+        velX = prev.velX + (rawVx - prev.velX) * va;
+        velY = prev.velY + (rawVy - prev.velY) * va;
+      } else {
+        id = this.nextOscId++;
+      }
+
+      nextPrev.push({
+        id,
+        period: c.period,
+        comX: c.comX,
+        comY: c.comY,
+        velX,
+        velY,
+        concX: c.concX,
+        concY: c.concY,
+        travelStreak: 0,
+      });
+      groups.push({
+        id,
+        period: c.period,
+        area: c.cells.length,
+        cells: Uint32Array.from(c.cells),
+        meanR: c.meanR,
+        meanG: c.meanG,
+        meanB: c.meanB,
+        meanDelta: c.meanDelta,
+        comX: c.comX,
+        comY: c.comY,
+        width: c.width,
+        height: c.height,
+        velX,
+        velY,
+      });
+    }
+    this.prevSittingOsc = nextPrev;
+    groups.sort(
+      (a, b) => a.period - b.period || b.area - a.area || a.id - b.id,
+    );
     return groups;
   }
 }
@@ -2932,6 +3164,82 @@ export function toroidalDelta(a: number, b: number, period: number): number {
   if (d > period * 0.5) d -= period;
   if (d < -period * 0.5) d += period;
   return d;
+}
+
+/** Geometry of a cell set about its COM — measurements, not voice owners. */
+export interface ShapeMeasure {
+  elongation: number;
+  orientation: number;
+  compactness: number;
+  thickness: number;
+}
+
+/**
+ * Elongation / orientation from the covariance of toroidal offsets;
+ * compactness is 4πA/P² on the 4-neighbour perimeter.
+ */
+export function measureShape(
+  cells: ArrayLike<number>,
+  comX: number,
+  comY: number,
+  w: number,
+  h: number,
+): ShapeMeasure {
+  const n = cells.length;
+  if (n <= 0 || w < 1 || h < 1) {
+    return { elongation: 0, orientation: 0, compactness: 1, thickness: 1 };
+  }
+  let ixx = 0;
+  let iyy = 0;
+  let ixy = 0;
+  const member = new Set<number>();
+  for (let c = 0; c < n; c++) {
+    const i = cells[c]!;
+    member.add(i);
+    const x = i % w;
+    const y = (i / w) | 0;
+    const dx = toroidalDelta(x, comX, w);
+    const dy = toroidalDelta(y, comY, h);
+    ixx += dx * dx;
+    iyy += dy * dy;
+    ixy += dx * dy;
+  }
+  ixx /= n;
+  iyy /= n;
+  ixy /= n;
+  const trace = ixx + iyy;
+  const det = ixx * iyy - ixy * ixy;
+  const disc = Math.sqrt(Math.max(0, (trace * trace) / 4 - det));
+  const lambda1 = Math.max(1e-9, trace / 2 + disc);
+  const lambda2 = Math.max(0, trace / 2 - disc);
+  const elongation = clamp01(1 - Math.sqrt(lambda2 / lambda1));
+  const orientation = 0.5 * Math.atan2(2 * ixy, ixx - iyy);
+  const thickness = Math.max(1, 2 * Math.sqrt(lambda2) + 1);
+
+  let peri = 0;
+  for (const i of member) {
+    const x = i % w;
+    const y = (i / w) | 0;
+    if (!member.has(((y + h - 1) % h) * w + x)) peri += 1;
+    if (!member.has(((y + 1) % h) * w + x)) peri += 1;
+    if (!member.has(y * w + ((x + w - 1) % w))) peri += 1;
+    if (!member.has(y * w + ((x + 1) % w))) peri += 1;
+  }
+  const compactness = clamp01((4 * Math.PI * n) / Math.max(1, peri * peri));
+  return { elongation, orientation, compactness, thickness };
+}
+
+function withFlowShape(
+  flow: FlowGroup,
+  w: number,
+  h: number,
+): FlowGroup {
+  const s = measureShape(flow.cells, flow.comX, flow.comY, w, h);
+  flow.elongation = s.elongation;
+  flow.orientation = s.orientation;
+  flow.compactness = s.compactness;
+  flow.thickness = s.thickness;
+  return flow;
 }
 
 /** Stair-step +x/+y is the same diagonal heading (4×4 bins chatter). */
@@ -3112,6 +3420,8 @@ const TEXTURE_HUE_BINS = 12;
 const TEXTURE_GREY_SAT = 0.15;
 /** Stable id for the grey static group (hue bins use 0..TEXTURE_HUE_BINS-1). */
 const TEXTURE_GREY_ID = -1;
+/** Island ordinals pack under each hue key: hueKey * stride + ordinal. */
+const TEXTURE_ISLAND_STRIDE = 4096;
 
 function textureColourBin(r: number, g: number, b: number): number {
   const { h, s } = rgbToHsvLite(r, g, b);
@@ -3119,15 +3429,22 @@ function textureColourBin(r: number, g: number, b: number): number {
   return Math.min(TEXTURE_HUE_BINS - 1, Math.floor(h * TEXTURE_HUE_BINS));
 }
 
-function hueBinDistance(a: number, b: number): number {
-  if (a === TEXTURE_GREY_ID || b === TEXTURE_GREY_ID) {
-    return a === b ? 0 : 100;
-  }
-  let d = Math.abs(a - b);
-  if (d > TEXTURE_HUE_BINS / 2) d = TEXTURE_HUE_BINS - d;
-  return d;
+/** Map hue bin (−1 grey, 0..11) onto a non-negative key for island ids. */
+function textureHueKey(bin: number): number {
+  return bin < 0 ? 0 : bin + 1;
 }
 
+function textureIslandId(hueBin: number, islandOrdinal: number): number {
+  return (
+    textureHueKey(hueBin) * TEXTURE_ISLAND_STRIDE +
+    (islandOrdinal % TEXTURE_ISLAND_STRIDE)
+  );
+}
+
+/**
+ * Partition leftover still cells by hue, then into 8-connected spatial
+ * islands. Small islands merge into the nearest kept island of the same hue.
+ */
 function partitionTexturedByHue(
   cells: number[],
   current: RgbField,
@@ -3150,43 +3467,143 @@ function partitionTexturedByHue(
     list.push(i);
   }
 
-  const kept: { id: number; cells: number[] }[] = [];
-  const small: { id: number; cells: number[] }[] = [];
-  for (const [id, members] of bins) {
-    if (members.length >= minArea) kept.push({ id, cells: members });
-    else small.push({ id, cells: members });
-  }
+  const n = w * h;
+  const labels = new Int32Array(n);
+  labels.fill(-1);
+  const queue = new Uint32Array(n);
+  const out: TexturedGroup[] = [];
 
-  if (kept.length === 0) {
-    // Nothing meets minArea — keep the largest bin alone so the bag still speaks.
-    let best: { id: number; cells: number[] } | null = null;
-    for (const [id, members] of bins) {
-      if (!best || members.length > best.cells.length) {
-        best = { id, cells: members };
-      }
+  for (const [hueBin, members] of bins) {
+    if (members.length === 0) continue;
+
+    // Mark membership for this hue only; clear prior labels on these cells.
+    const inBin = new Uint8Array(n);
+    for (const i of members) {
+      inBin[i] = 1;
+      labels[i] = -1;
     }
-    if (!best) return [];
-    kept.push(best);
-    for (const s of small) {
-      if (s.id === best.id) continue;
-      best.cells.push(...s.cells);
-    }
-  } else {
-    for (const s of small) {
-      let bestIdx = 0;
-      let bestD = Infinity;
-      for (let k = 0; k < kept.length; k++) {
-        const d = hueBinDistance(s.id, kept[k]!.id);
-        if (d < bestD) {
-          bestD = d;
-          bestIdx = k;
+
+    const islands: number[][] = [];
+    for (const seed of members) {
+      if (labels[seed]! >= 0 || !inBin[seed]) continue;
+      const cellBuf: number[] = [];
+      let qh = 0;
+      let qt = 0;
+      queue[qt++] = seed;
+      labels[seed] = islands.length;
+      while (qh < qt) {
+        const i = queue[qh++]!;
+        cellBuf.push(i);
+        const x = i % w;
+        const y = (i / w) | 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const j = ((y + dy + h) % h) * w + ((x + dx + w) % w);
+            if (!inBin[j] || labels[j]! >= 0) continue;
+            labels[j] = islands.length;
+            queue[qt++] = j;
+          }
         }
       }
-      kept[bestIdx]!.cells.push(...s.cells);
+      islands.push(cellBuf);
+    }
+
+    const kept: { cells: number[]; comX: number; comY: number }[] = [];
+    const small: { cells: number[]; comX: number; comY: number }[] = [];
+    for (const cellBuf of islands) {
+      let sumXCos = 0;
+      let sumXSin = 0;
+      let sumYCos = 0;
+      let sumYSin = 0;
+      for (const i of cellBuf) {
+        const x = i % w;
+        const y = (i / w) | 0;
+        const angX = (2 * Math.PI * x) / w;
+        const angY = (2 * Math.PI * y) / h;
+        sumXCos += Math.cos(angX);
+        sumXSin += Math.sin(angX);
+        sumYCos += Math.cos(angY);
+        sumYSin += Math.sin(angY);
+      }
+      const area = cellBuf.length;
+      const comX =
+        ((Math.atan2(sumXSin, sumXCos) / (2 * Math.PI)) * w + w) % w;
+      const comY =
+        ((Math.atan2(sumYSin, sumYCos) / (2 * Math.PI)) * h + h) % h;
+      const entry = { cells: cellBuf, comX, comY };
+      if (area >= minArea) kept.push(entry);
+      else small.push(entry);
+    }
+
+    if (kept.length === 0) {
+      // Nothing meets minArea — keep the largest island so the hue still speaks.
+      let best: (typeof small)[0] | null = null;
+      for (const s of small) {
+        if (!best || s.cells.length > best.cells.length) best = s;
+      }
+      if (!best) continue;
+      for (const s of small) {
+        if (s === best) continue;
+        best.cells.push(...s.cells);
+      }
+      kept.push(best);
+    } else {
+      for (const s of small) {
+        let bestIdx = 0;
+        let bestD = Infinity;
+        for (let k = 0; k < kept.length; k++) {
+          const d = Math.hypot(
+            toroidalDelta(s.comX, kept[k]!.comX, w),
+            toroidalDelta(s.comY, kept[k]!.comY, h),
+          );
+          if (d < bestD) {
+            bestD = d;
+            bestIdx = k;
+          }
+        }
+        kept[bestIdx]!.cells.push(...s.cells);
+      }
+    }
+
+    // Stable ordinal by COM so island ids do not shuffle every frame.
+    kept.sort(
+      (a, b) =>
+        a.comY - b.comY || a.comX - b.comX || b.cells.length - a.cells.length,
+    );
+    for (let ord = 0; ord < kept.length; ord++) {
+      out.push(
+        measureTexturedGroup(
+          textureIslandId(hueBin, ord),
+          kept[ord]!.cells,
+          current,
+          deltaSmooth,
+          similarity,
+          w,
+          h,
+        ),
+      );
     }
   }
 
-  return kept.map((g) => measureTexturedGroup(g.id, g.cells, current, deltaSmooth, similarity, w, h));
+  // Hue bins that never formed an island (only possible if bins empty) — done.
+  // If every bin failed, fall back to one bag so texture still speaks.
+  if (out.length === 0 && cells.length > 0) {
+    out.push(
+      measureTexturedGroup(
+        textureIslandId(TEXTURE_GREY_ID, 0),
+        cells,
+        current,
+        deltaSmooth,
+        similarity,
+        w,
+        h,
+      ),
+    );
+  }
+
+  out.sort((a, b) => b.area - a.area || a.id - b.id);
+  return out;
 }
 
 function measureTexturedGroup(

@@ -20,6 +20,7 @@ function assert(label, ok) {
 const brief = readFileSync(join(root, "Creative Brief.txt"), "utf8");
 const worklet = readFileSync(join(root, "public/grain-processor.js"), "utf8");
 const sched = readFileSync(join(root, "src/field/GrainScheduler.ts"), "utf8");
+const fieldObs = readFileSync(join(root, "src/field/FieldObserver.ts"), "utf8");
 const main = readFileSync(join(root, "src/main.ts"), "utf8");
 
 assert("Sonic Laws in brief", /Sonic Laws \(authoritative\)/.test(brief));
@@ -27,6 +28,14 @@ assert("freeze-at-spawn in brief", /Freeze at spawn/.test(brief));
 assert(
   "brief allows direct pan/Y region follow",
   /directly follow|Allowed to track directly/i.test(brief),
+);
+assert(
+  "brief allows Q to follow live extent",
+  /Filter Q ← the region's current vertical\/shape extent/.test(brief),
+);
+assert(
+  "brief documents observational lifecycle",
+  /death short-releases/.test(brief) && /inherits the absorbed/.test(brief),
 );
 assert(
   "brief documents V5 polar / stereo / channel-mix follow",
@@ -42,6 +51,10 @@ assert("pipeline: observe → schedule → sendEvents", /fieldObserver\.observe/
 assert(
   "worklet documents sample freeze + direct pan/Y follow",
   /applyTracks/.test(worklet) && /PARAM_RAMP_SAMPLES/.test(worklet),
+);
+assert(
+  "worklet Q follow uses track qExtent (window stays frozen)",
+  /qExtent/.test(worklet) && /function qFromVerticalExtent/.test(worklet),
 );
 assert("ping-pong uses locked bounds only", /voice\.boundLo/.test(worklet) && /voice\.boundHi/.test(worklet));
 const processBody = worklet.slice(worklet.indexOf("process(_inputs"));
@@ -93,6 +106,16 @@ assert(
 assert(
   "Q from vertical extent",
   /qFromVerticalExtent/.test(sched) && /FILT_RATIO/.test(sched),
+);
+assert(
+  "Q extent blends height toward thickness by elongation",
+  /qExtentFromShape/.test(sched) && /FLOW_FILL_S/.test(sched),
+);
+assert(
+  "observer measures elongation / compactness / thickness",
+  /export function measureShape/.test(fieldObs) &&
+    /elongation/.test(fieldObs) &&
+    /compactness/.test(fieldObs),
 );
 assert(
   "attack score uses energy jump (first hop not zero-flux sustain)",
@@ -343,6 +366,189 @@ assert(
     if (inSilence(g.sampleCenter)) hueHitSilence = true;
   }
   assert("no HSV query lands in file silence", !hueHitSilence);
+  assert(
+    "no segment window overlaps leading/trailing silence",
+    segs.every((s) => !inSilence(s.startPos) && !inSilence(s.endPos)),
+  );
+}
+
+// Mid-file silence gap: windows must not bridge audible islands.
+{
+  const { pathToFileURL } = await import("node:url");
+  const { buildPolarSegments, queryMaterialFromHsv, SILENCE_GATE_DB } =
+    await import(pathToFileURL(join(root, "src/audio/spectral.ts")).href);
+
+  const sr = 44100;
+  const n = Math.floor(sr * 3.0);
+  const pcm = new Float32Array(n);
+  // Two loud islands with a long near-silent middle.
+  const a0 = Math.floor(0.2 * sr);
+  const a1 = Math.floor(0.7 * sr);
+  const b0 = Math.floor(2.3 * sr);
+  const b1 = Math.floor(2.8 * sr);
+  for (let i = a0; i < a1; i++) {
+    pcm[i] = 0.4 * Math.sin((2 * Math.PI * 330 * i) / sr);
+  }
+  for (let i = b0; i < b1; i++) {
+    pcm[i] = 0.4 * Math.sin((2 * Math.PI * 550 * i) / sr);
+  }
+  // Floor noise well below the gate (−32 dB ≈ 0.025× peak).
+  const floor = 0.4 * Math.pow(10, (SILENCE_GATE_DB - 12) / 20);
+  for (let i = a1; i < b0; i++) {
+    pcm[i] = floor * Math.sin((2 * Math.PI * 90 * i) / sr);
+  }
+  const segs = buildPolarSegments(pcm, sr);
+  const gapLo = 0.85 / 3;
+  const gapHi = 2.15 / 3;
+  const overlapsGap = (s) => s.startPos < gapHi && s.endPos > gapLo;
+  assert(
+    "no segment window bridges mid-file silence gap",
+    segs.length >= 2 && !segs.some(overlapsGap),
+  );
+  let hueInGap = false;
+  for (let i = 0; i < 36; i++) {
+    const r = queryMaterialFromHsv(segs, i / 36, 0.9, 0.4 + (i % 5) * 0.1);
+    if (r.sampleCenter > gapLo && r.sampleCenter < gapHi) hueInGap = true;
+    if (r.startPos < gapHi && r.endPos > gapLo) hueInGap = true;
+  }
+  assert("no HSV query window lands in mid-file silence", !hueInGap);
+}
+
+assert(
+  "source prep builds half/double rate layers",
+  /buildRateLayers/.test(spectral) && /pcmLHalf/.test(spectral),
+);
+assert(
+  "worklet selects a scale layer",
+  /layerLength/.test(worklet) && /layerBuffers/.test(worklet),
+);
+assert(
+  "worklet edge AM is unipolar and smoothed (no ring-mod default)",
+  /modDepth/.test(worklet) &&
+    /MOD_SMOOTH/.test(worklet) &&
+    /1 - voice\.modDepth \+ voice\.modDepth \* voice\.modSmooth/.test(worklet),
+);
+assert(
+  "scheduler exports scale / loop / edge helpers",
+  /layerFromScale/.test(sched) &&
+    /loopHalfFromStructure/.test(sched) &&
+    /edgeCoupling/.test(sched) &&
+    /LAYER_OCCUPANCY_FLOOR/.test(sched),
+);
+assert(
+  "scheduler wires structure→audio unused axes",
+  /directionFromHeading/.test(sched) &&
+    /readOffsetFromSimilarity/.test(sched) &&
+    /READ_OFFSET_SIM_FLOOR/.test(sched),
+);
+assert(
+  "observer exports spatial oscillator fields",
+  /comX/.test(fieldObs) &&
+    /buildOscillatorGroups/.test(fieldObs) &&
+    /prevSittingOsc/.test(fieldObs),
+);
+assert(
+  "observer splits texture into spatial islands",
+  /textureIslandId/.test(fieldObs) && /TEXTURE_ISLAND_STRIDE/.test(fieldObs),
+);
+
+{
+  const { pathToFileURL } = await import("node:url");
+  const {
+    layerFromScale,
+    loopHalfFromStructure,
+    edgeCoupling,
+    SCHED,
+    qExtentFromShape,
+  } = await import(pathToFileURL(join(root, "src/field/GrainScheduler.ts")).href);
+  const { measureShape } = await import(
+    pathToFileURL(join(root, "src/field/FieldObserver.ts")).href
+  );
+
+  assert(
+    "large mass → half-speed layer",
+    layerFromScale(0.5, 0, 1, true) === 0.5,
+  );
+  assert(
+    "small coherent mass stays native",
+    layerFromScale(0.005, 0, 1, true) === 1,
+  );
+  assert(
+    "small broken non-mass → double-speed layer",
+    layerFromScale(0.01, 0.8, 1, false) === 2,
+  );
+  assert(
+    "chaos below occupancy floor stays native",
+    layerFromScale(0.01, 0.8, 0.05, false) === 1,
+  );
+  assert(
+    "large chaos coverage may use half-speed on a large cluster",
+    layerFromScale(0.4, 0.2, 0.8, true) === 0.5,
+  );
+
+  const wide = loopHalfFromStructure(0.1, 0, 10);
+  const tight = loopHalfFromStructure(0.1, 1, 10);
+  assert("tightness 0 keeps the segment window", Math.abs(wide - 0.1) < 1e-6);
+  assert("tightness 1 shrinks below the segment window", tight < wide * 0.5);
+
+  const w = 8;
+  const h = 8;
+  const n = w * h;
+  const ids = new Int32Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      ids[y * w + x] = x < 4 ? 1 : 2;
+    }
+  }
+  const rgb = {
+    width: w,
+    height: h,
+    r: new Float32Array(n).fill(0.4),
+    g: new Float32Array(n).fill(0.4),
+    b: new Float32Array(n).fill(0.4),
+  };
+  const interior = edgeCoupling(1 * w + 1, 1, ids, rgb, [], 2);
+  const seam = edgeCoupling(1 * w + 3, 1, ids, rgb, [], 2);
+  assert("edge AM depth is 0 in a region interior", interior.modDepth === 0);
+  assert("edge AM depth is > 0 on a region meeting", seam.modDepth > 0);
+  assert(
+    "edge AM depth stays at or under the cap",
+    seam.modDepth <= SCHED.EDGE_AM_DEPTH_MAX + 1e-9,
+  );
+
+  const gw = 32;
+  const gh = 32;
+  const line = [];
+  for (let y = 5; y <= 20; y++) line.push(y * gw + 10);
+  const lineShape = measureShape(line, 10, 12.5, gw, gh);
+  assert("vertical line is elongated", lineShape.elongation > 0.7);
+  assert("vertical line compactness is low", lineShape.compactness < 0.45);
+  assert(
+    "vertical line orientation is near ±π/2",
+    Math.abs(Math.abs(lineShape.orientation) - Math.PI / 2) < 0.35,
+  );
+
+  const blob = [];
+  for (let y = 10; y < 15; y++) {
+    for (let x = 10; x < 15; x++) blob.push(y * gw + x);
+  }
+  const blobShape = measureShape(blob, 12, 12, gw, gh);
+  assert("filled block is not a needle", blobShape.elongation < 0.35);
+  assert("filled block compactness is high", blobShape.compactness > 0.6);
+
+  assert(
+    "needle Q extent uses thickness",
+    qExtentFromShape(20, 1, 0.95) < 4,
+  );
+  assert(
+    "blob Q extent keeps AABB height",
+    Math.abs(qExtentFromShape(20, 2, 0) - 20) < 1e-9,
+  );
+  assert(
+    "thick elongated slab keeps AABB height",
+    qExtentFromShape(128, 20, 0.9) > 100,
+  );
+  assert("FLOW_FILL_S is faster than CALM_FILL_S", SCHED.FLOW_FILL_S < SCHED.CALM_FILL_S);
 }
 
 if (failed) {

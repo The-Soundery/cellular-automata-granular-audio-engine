@@ -324,7 +324,7 @@ export class AudioEngine {
     return this.bank;
   }
 
-  /** Push spawn events + region pan/Y tracks to the worklet. */
+  /** Push spawn events + region pan/Y/Q tracks to the worklet. */
   sendEvents(batch: GrainEventBatch): void {
     if (!this.node || !this.bank) return;
     const tracks = batch.tracks ?? [];
@@ -349,6 +349,10 @@ export class AudioEngine {
     if (!this.node) return;
     const pcmL = bank.pcmL.slice();
     const pcmR = bank.pcmR.slice();
+    const pcmLHalf = bank.pcmLHalf.slice();
+    const pcmRHalf = bank.pcmRHalf.slice();
+    const pcmLDbl = bank.pcmLDbl.slice();
+    const pcmRDbl = bank.pcmRDbl.slice();
     this.node.port.postMessage(
       {
         type: "source",
@@ -356,8 +360,19 @@ export class AudioEngine {
         length: bank.length,
         pcmL: pcmL.buffer,
         pcmR: pcmR.buffer,
+        pcmLHalf: pcmLHalf.buffer,
+        pcmRHalf: pcmRHalf.buffer,
+        pcmLDbl: pcmLDbl.buffer,
+        pcmRDbl: pcmRDbl.buffer,
       },
-      [pcmL.buffer, pcmR.buffer],
+      [
+        pcmL.buffer,
+        pcmR.buffer,
+        pcmLHalf.buffer,
+        pcmRHalf.buffer,
+        pcmLDbl.buffer,
+        pcmRDbl.buffer,
+      ],
     );
   }
 }

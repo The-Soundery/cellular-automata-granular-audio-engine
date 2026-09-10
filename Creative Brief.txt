@@ -4,10 +4,13 @@ Status: AUTHORITATIVE. Sonic Laws below are the current truth for audio behaviou
 Identity:
 
   HSV → polar material plane (hue = mel-PCA 1 · sat = radius · value = mel-PCA 2)
-  log-area → window half-width · regime soft-bias (calm→sustained, chaos→transient)
+  segment bounds → sample window · tightness may microloop inside that window
+  scale → pre-rendered layer (large mass → half-speed; small/broken → double; default native)
   X → stereo pan + source L/R channel mix (both follow region-bound grains)
   Y → absolute log bandpass (80 Hz bottom … 12 kHz top); independent of material centroid
+  Q → shape extent (needles use thickness); follows while the grain lives
   sample window frozen at spawn; file silence is never a colour
+  edge AM marks region/regime meetings only (unipolar; interiors stay clean)
 
 ------------------------------------------------------------------------------
 Project Overview
@@ -110,20 +113,44 @@ One-sentence axiom:
                 — same direct region follow
    - Envelope / duration → continuous functions of δ and extent at spawn —
                 not binary calm|chaos presets, not RGB
-   - Filter Q → vertical extent of the spawning mass (same log law as Y→fc:
-                thin structures narrow, tall masses wide), capped by how
-                many cycles the grain length can carry at the centre frequency
+   - Filter Q → vertical/shape extent of the mass (same log law as Y→fc:
+                thin structures narrow, tall masses wide). Needles (small
+                minor-axis thickness) use that thickness instead of AABB
+                height so a 1-cell line does not smear like a filled slab of
+                the same box. Tall filled bands keep height. Capped by how
+                many cycles the grain length can carry at the centre
+                frequency. Initial at spawn; follows the live extent the
+                same way Y follows (window stays frozen)
+   - Scale → source layer (half-speed / native / double-speed), frozen at
+                spawn. Large masses hear the half-speed copy; small or
+                broken-up things hear the double-speed copy; everything in
+                between stays on the uploaded file. Chaos may leave native
+                only when chaotic coverage is large enough to occupy more
+                of the spectrum — a small chaos blob stays native. Colour
+                does not pick the layer. The worklet still reads at ±1
+                sample/step (pre-rendered layers, not Doppler). Layer
+                gain is √layer so the scale axis does not buy loudness.
+   - Loop tightness → ping-pong half-width inside the polar segment
+                (frozen). Texture and oscillators may microloop; a solid
+                calm fill keeps the full segment window.
+   - Edge AM → unipolar amplitude mark only where the spawn neighbourhood
+                contains a different region or regime. The modulator is
+                that neighbour’s material. Interiors stay clean. This marks
+                a meeting already placed by X and Y — it is not a new
+                spatial map, and not ring-mod or filter FM.
 
    Colour chooses where in the source the grain listens. Selectable centres
    are audible material only — file silence is never a colour. Spatial X
    places the grain in the stereo field and selects which source channel feeds
    the grain. Colour must never set loudness, allocation, or topology. Luminance
-   is not volume. Playback rate stays ±1 (no Doppler).
+   is not volume. Playback rate stays ±1 (no Doppler). Pre-rendered half- and
+   double-speed layers are a scale axis, not velocity→rate.
 
-   Two axes, two consequences: timeOrder (stability + extent) → duration and
-   envelope; region height → Q. Still-and-uniform and still-and-detailed
-   differ in material at matched loudness. Q is spectral purity, not loudness;
-   the bandpass is unity-gain at its centre frequency.
+   Two axes, two consequences: timeOrder (stability + extent + compactness)
+   → duration and envelope; shape extent → Q (follows while the grain lives).
+   Still-and-uniform and still-and-detailed differ in material at matched
+   loudness. Q is spectral purity, not loudness; the bandpass is unity-gain
+   at its centre frequency.
 
 
 3. Field observation (how we see regimes)
@@ -134,7 +161,9 @@ One-sentence axiom:
    - δ   local rate of change (smoothed colour/state delta)
    - s   local colour similarity (inverse of neighbour variance)
    - κ   coherence = similarity × stability (high only when BOTH hold)
-   - extent via region width / height / area (spatial scale of a coherent mass)
+   - extent via region width / height / area, plus elongation, orientation,
+     compactness, thickness, and signed area change (spatial scale and shape
+     of a coherent mass)
 
    Classification order (exclusive by construction): Osc → Calm → Flow →
    then leftover split by δ into Chaos (changing) or Texture (still, no body).
@@ -148,23 +177,23 @@ One-sentence axiom:
      gate — it shapes grains and keeps solid stamps out of Flow. Speckles
      below min area are not Calm (and not Texture — silent residual). Slow
      whole-field drift / breathing stays Calm. Tracks COM, velocity, area A,
-     κ̄, δ̄.
+     κ̄, δ̄, and shape (elongation / compactness / thickness / dA).
    - Texture (HUD TEX; code alias textured / regime "texture"): still cells
      that do not form a connected similar-colour mass — δ below the chaos
      floor, not claimed as Calm, Osc, or Flow. Typical look is frozen mixed
      detail. A solid never-changing colour field is Calm, not Texture.
      Speckles that pass κ + colour-join but fail min area stay silent; they
-     are not promoted into Texture. Delivered as one colour group per distinct
-     frozen hue (plus a grey bin) — each group has its own mean colour, COM,
-     Y extent, and seat share — not one undifferentiated bag that samples
-     every colour at once.
+     are not promoted into Texture. Delivered as hue bins split into
+     spatial islands (each island has its own mean colour, COM, Y extent,
+     and seat share) — distant same-hue patches are not one voice.
    - Osc: sitting cells whose colour repeats with a confirmed period
      (2..8 steps). The pulse does not travel; travelling period-looking
      patterns are stripped to Flow or Chaos. Wavelength-2 site-revisit
      with cancelling hops (train tracks, checkerboards) stays Osc.
      Longer rhythms on a coherent mass stay Calm (scheduler may phase
-     grains — that is not Osc). Grouped by period (one bag per period),
-     re-derived every frame.
+     grains — that is not Osc). Delivered as spatial clusters (COM,
+     extent, colour) that share a pulse by period — not one bag per
+     period that erases separate blinkers.
    - Flow: similarity travel — the same colour reappears nearby along a
      consistent heading (correspondence / hop). Organised and gappy: stream,
      cascade, wavefront, or dithered sheet — not a filled translating
@@ -192,16 +221,16 @@ One-sentence axiom:
 
    Regions are re-derived each frame with smoothing / confirm streaks.
    They are measurements, not voice owners. Do not score “interestingness”
-   or prefer one regime. Calm and Flow are tracked bodies; Texture, Chaos,
-   and Osc are bags (no pan/Y follow except Flow/Calm region ids).
+   or prefer one regime. Calm and Flow are tracked bodies (pan / Y / mix / Q
+   follow); Texture, Chaos, and Osc are bags (no follow).
 
    Region lifecycle is part of the observation: births, deaths, and merges
-   are real events of computational flow. A newborn region speaks the step
-   it appears; a merged region’s living grains follow the surviving body;
-   a dead region’s grains decay without replacement. A COM axis where the
-   mass wraps the torus is not a measurement — it is excluded from identity
-   matching and contributes no velocity (ids must not churn on stable
-   wrapping structures).
+   are real events of computational flow. A seated birth speaks the step
+   the body appears; a merge keeps those grains following the survivor
+   and donates packing credit; a death short-releases that id’s grains.
+   A COM axis where the mass wraps the torus is not a measurement — it is
+   excluded from identity matching and contributes no velocity (ids must
+   not churn on stable wrapping structures).
 
 
 4. Region laws → grain function (how grains behave)
@@ -217,8 +246,8 @@ One-sentence axiom:
 
    Calm packing:  few long overlapping grains → one continuous wash
    Texture packing: few long overlapping grains; identity diversity across
-                  hue groups / spawn sites carries frozen detail (same pool
-                  shape as calm)
+                  hue×island groups / spawn sites carries frozen detail
+                  (same pool shape as calm)
    Osc packing:   pulse-locked bursts at the visual period; share spent at
                   the hit; silence between hits is not an unspent share
    Chaos packing: many short non-overlapping grains from random cells
@@ -264,14 +293,23 @@ One-sentence axiom:
    - Stereo pan ← region follow-anchor X + spawn offset (equal-power; no follow EMA)
    - Spectral Y ← region follow-anchor Y + spawn offset (no follow EMA)
    - Channel mix ← region follow-anchor X (same follow)
+   - Filter Q ← the region's current vertical/shape extent (same log law
+     and cycle ceiling as spawn; needles use thickness). Window stays frozen.
 
    Calm follow-anchor is hop-velocity conveyor + capped COM correction
    (same idea as flow). Raw COM can teleport on a stable id when a moving
    mass changes shape — that must not be one follow hop.
 
-   Logical pan/Y/mix follow the region this CA step. The worklet may ramp
+   Logical pan/Y/mix/Q follow the region this CA step. The worklet may ramp
    those audio parameters to the new target inside one render block so a
    step is not a sample discontinuity — that is zipper prevention, not lag.
+
+   Lifecycle is the same allocation and follow laws, not a loudness mark
+   and not a reserved event sample. A birth that has a seat speaks the
+   step the body appears. A death short-releases that id's living grains.
+   A merge keeps those grains following the survivor and the survivor
+   inherits the absorbed region's packing credit. Regime-flip derivatives
+   are not a separate gesture.
 
    Forbidden: modulating the sample window during playback to chase a
    moving region or cell (causes undesirable glitches / pitch tears).
@@ -281,10 +319,10 @@ One-sentence axiom:
    the whole source file.
 
    How region texture follows motion: grains that belong to a coherent region
-   move their pan and spectrum with that region; sample material stays locked;
-   new grains also spawn from the updated mask/colour; overlap crossfades
-   create continuous evolution. Chaos-bag grains have no region id and keep
-   spawn pan/Y.
+   move their pan, spectrum, and Q with that region; sample material stays
+   locked; new grains also spawn from the updated mask/colour; overlap
+   crossfades create continuous evolution. Chaos-bag grains have no region
+   id and keep spawn pan/Y/Q.
 
 
 6. Geometry and colour laws at spawn (setup for each grain)
@@ -296,11 +334,12 @@ One-sentence axiom:
      If the read head reaches either edge before the grain ends, it reverses
      and continues (ping-pong) until the grain’s defined length completes.
    - X → pan: spawn cell horizontal position maps to equal-power stereo pan.
-   - Motion → direction: if the region’s COM is moving left/right, playback
-     direction may be forward or reverse to match that motion.
-   - Height → filter Q: the structure’s vertical span sets bandpass Q through
-     the same log law as Y→frequency (thin → narrow; tall → wide). Each grain’s
-     centre frequency still comes from its own Y.
+   - Motion → direction: full heading (dominant axis of velX/velY) may freeze
+     playback forward or reverse to match that motion — not velX alone.
+   - Height → filter Q: the structure’s shape extent sets bandpass Q through
+     the same log law as Y→frequency (thin → narrow; tall → wide; needles
+     use minor-axis thickness). Each grain’s centre frequency still comes
+     from its own Y. Q may follow the live extent after spawn.
 
    These are physics of colour, geometry, and motion — not aesthetic effects.
 
@@ -314,8 +353,8 @@ One-sentence axiom:
    and spend it as few long overlapping grains. Chaotic areas receive share
    by their area and spend it as many short hits.
 
-   Every confirmed calm region, flow group, oscillator group, and texture colour
-   group gets at least one seat before leftovers (area-ranked if guaranteed
+   Every confirmed calm region, flow group, oscillator group, and texture
+   island gets at least one seat before leftovers (area-ranked if guaranteed
    seats overflow the budget). A structure large enough to detect must not be
    silent because rounding took its seat.
 
@@ -369,7 +408,7 @@ Regime borders (overlay + Field % + scheduler pools) — membership only:
   Texture  still cells with no similar-colour body (δ below chaos floor);
            not Calm / Osc / Flow. Frozen mixed detail is the typical case —
            not “one solid colour”. Speckles below min area are silent
-           residual, not Texture. Overlay draws each hue group + COM.
+           residual, not Texture. Overlay draws each hue×island + COM.
   Osc      sitting confirmed period 2..8. Travelling period-looking cells
            are stripped. Wavelength-2 site-revisit with cancelling hops
            (train tracks, checkerboards) stays Osc. Periods longer than
@@ -404,7 +443,7 @@ Regime borders (overlay + Field % + scheduler pools) — membership only:
 Overlay (one colour per regime, not per region id): gold calm, grey texture,
 orange chaos, blue osc, green flow. Drawn as 1px outlines at display
 resolution — no interior wash. Tracked calm / oscillator / flow regions
-get L-brackets and a COM mark; texture hue groups get outlines + COM (no
+get L-brackets and a COM mark; texture islands get outlines + COM (no
 brackets); chaos is edge fragments. Live grains are ticks on the source
 waveform under the field, not dots on the CA.
 
@@ -434,7 +473,7 @@ Flow grain laws:
     area-blind (short).
   - Envelope from that timeOrder; absolute colour → material;
     window from the chosen segment’s start/end (same for every pool).
-  - Pan / Y / channelMix follow via applyTracks with
+  - Pan / Y / channelMix / Q follow via applyTracks with
     regionId = FLOW_ID_BASE + flow.id (disjoint from calm ids).
     Follow hop-velocity conveyor (velX/velY), not group COM deltas.
     Pan and Y saturate at the torus seam (no wrap to the opposite edge).
@@ -442,8 +481,8 @@ Flow grain laws:
     does not invert the stream.
     When a grain reaches the leading edge, end it; spawn the next at
     the trailing edge.
-  - Sample window frozen at spawn. Playback direction may freeze from
-    velX (same as calm) — that is not Doppler.
+  - Sample window frozen at spawn. Playback direction freezes from the
+    full heading (same as calm) — that is not Doppler.
 
 
 ------------------------------------------------------------------------------
@@ -498,7 +537,8 @@ Source audio is raw material from which grains are formed. On load, offline
 prep builds a polar material map: onset-aligned units, each embedded by a
 ~24-band log-mel spectrum; the file’s top-two PCA axes are rank-uniformised
 into hue angle and value band (saturation radius stays fixed). Hops far
-below the loudest analysis hop are dropped so colour cannot choose silence.
+below the loudest analysis hop are dropped so colour cannot choose silence;
+windows stay inside contiguous audible runs and never bridge silent gaps.
 The CA’s evolution redistributes exploration of that map through the Sonic
 Laws. No traditional effects rack is required for the listening philosophy.
 
@@ -539,7 +579,8 @@ Live pipeline
                       channel mix; absolute Y; freeze-at-spawn window;
                       region-bound pan/Y/channelMix follow; flow conveyor)
     → AudioEngine.sendEvents (+ track)
-    → grain-processor (locked window, ping-pong, per-grain bandpass,
+    → grain-processor (locked window, ping-pong, scale layer, optional
+                       microloop, edge AM, per-grain bandpass,
                        analytic envelope, equal-power pan, applyTracks)
 
 
@@ -576,7 +617,10 @@ FORBIDDEN
 - Treating the CA as a modulation source for an unrelated granular synth
 - Optimising for ambient beauty, glitch excitement, or “musicality”
 - Letting high activity increase loudness or steal budget beyond area share
-- Doppler / velocity→grain rate (pitch offsets beyond ±1)
+- Doppler / velocity→grain rate (pitch offsets beyond ±1).
+  Pre-rendered half/double-speed layers are a scale axis, not Doppler.
+- Ring-mod or filter FM as a default grain process; voice-to-voice pairing.
+  Unipolar edge AM at region/regime meetings is the only allowed coupling.
 - Caps that prevent a pool from spending its area share
 - Treating CHAOS_EVENTS_MAX_HZ as a mix knob
 - A sixth “moving static” regime (calm covers translating silhouettes)

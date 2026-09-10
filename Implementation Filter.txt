@@ -14,7 +14,8 @@ STOP — do not revive
 - Voice ownership / structure tracking / fieldOrder scoring
 - Rebake-on-change or “dumb paint of frozen scrub positions”
 - Mid-grain sample-window scrub chase of moving regions
-  (direct pan / Y-spectrum / channel-mix follow for region-bound grains is allowed)
+  (direct pan / Y-spectrum / channel-mix / Q follow for region-bound
+  grains is allowed; window stays frozen)
 - V3 identity (X→sample / RGB→envelope)
 - 48-bin offline spectral bank (replaced by per-grain resonant bandpass)
 - 1D hue→centroid LUT as the sole material axis (superseded by polar map)
@@ -24,7 +25,12 @@ STOP — do not revive
   selectable centres onto silent file edges (use SILENCE_GATE_DB relative
   to the loudest hop; edge clones only when that edge is audible)
 - Mono fold-down of the source as the only playback buffer (analysis may use mono)
-- Doppler / velocity→grain rate (pitch offsets beyond ±1)
+- Doppler / velocity→grain rate (pitch offsets beyond ±1).
+  Pre-rendered half/double layers are a scale axis (large mass → half;
+  small/broken → double; default native). Chaos is not always double —
+  occupancy widens with chaotic area fraction.
+- Ring-mod or filter FM as a default process; voice-to-voice pairing.
+  Unipolar AM is only an edge mark between different region/regime ids.
 - Stratified spawn sites for calm/texture are sampling, not listening posts;
   they are scoped to those two pools and must never be given persistence or
   ownership. Do not apply stratification to chaos or osc.
@@ -70,9 +76,9 @@ STOP — do not revive
   COM↔grid-centre every frame is a ~half-grid pan/Y teleport. Hysteresis
   on GrainScheduler.anchorLocks; do not restore a hard 0.5 threshold.
 - TRACK_SMOOTH / EMA follow lag. PARAM_RAMP_SAMPLES (one render block) is
-  zipper prevention: logical x/y still follow this message, audio pan/Y/mix
-  arrive at that target by the end of the block. Do not stretch this into
-  a CA-frame smoother.
+  zipper prevention: logical x/y/Q still follow this message, audio
+  pan/Y/mix/Q arrive at that target by the end of the block. Do not
+  stretch this into a CA-frame smoother.
 - Applying a raw calm COM delta as the follow hop. Shape-change on a
   stable id can move COM by ~comMatchDist (~18 cells) in one step.
   Calm tracks ride velX/velY with CALM_FOLLOW_CORR_CAP correction.
@@ -106,8 +112,17 @@ Closed — do not reopen without new evidence
 - Regime membership: Osc → Calm → Flow → Chaos/Texture remainder. Texture is
   still cells with no similar-colour body (not “one solid colour” — that is
   Calm). Speckles below minRegionArea are silent residual, not Texture.
-  Chaos is leftover change (frozen noise is Texture). Fill gates Flow rejects
-  only.
+  Chaos is leftover change (frozen noise is Texture).   Fill gates Flow rejects
+  only. Osc exports spatial clusters (COM, width/height, id) — not one bag
+  per period. Texture hue bins split into spatial islands (site colour at
+  spawn; each island its own COM). meanSimilarity → read-offset spread;
+  chaos spawn biases toward cluster COM; playback direction uses full heading.
+- Scale layer: large mass → half-speed, small/broken → double, default
+  native. Chaos coverage below LAYER_OCCUPANCY_FLOOR stays native.
+- Loop tightness shrinks ping-pong inside the polar segment (texture/osc
+  high; solid calm fill stays wide). Not sat→width.
+- Edge AM is unipolar and only at region/regime meetings. No ring-mod,
+  no filter FM, no voice pairing.
 
 ------------------------------------------------------------------------------
 Still deferred
@@ -126,9 +141,11 @@ Live pipeline
 Utomata (or TestPatterns) → FrameObserver (cold-start primes both buffers)
   → FieldObserver → GrainScheduler → AudioEngine.sendEvents (+ track)
   → grain-processor (polar HSV window; stereo L/R by channelMix;
-                     absolute Y bandpass 80 Hz–12 kHz; bandwidth-compensated;
-                     envNorm after attack/release rescale; equal-power pan;
-                     direct pan/Y/channelMix follow with one-block param ramp)
+                     scale layer half/native/double; loopHalf microloop;
+                     unipolar edge AM; absolute Y bandpass 80 Hz–12 kHz;
+                     bandwidth-compensated; envNorm after attack/release
+                     rescale; equal-power pan; direct pan/Y/channelMix/Q
+                     follow with one-block param ramp; window frozen)
 
 Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
   Chaos (changing) or Texture (still, no body; code alias textured). Calm =
@@ -151,22 +168,37 @@ Scheduler: five pools (calm / texture / chaos / osc / flow); area-share
   at least one seat (area-ranked via largest remainder if guaranteed seats
   overflow); chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄,
   duration from own bag stats; residual bag included; global share + budget
-  still the ceilings); flow piece-spawn + FLOW_ID_BASE tracks; texture colour
-  groups use TEXTURE_ID_BASE; timeOrder→dur/env, vertical extent→Q;
+  still the ceilings; compact ChaosCluster AABB height → Q like calm,
+  residual scatter stays one-row); flow piece-spawn + FLOW_ID_BASE tracks;
+  texture colour groups use TEXTURE_ID_BASE (hue×island spatial ids);
+  timeOrder→dur/env, shape extent→Q (needles blend AABB height toward
+  minor-axis thickness; filled slabs keep height; compactness blends
+  duration/brokenness with fillRatio; Q follows live qExtent on
+  calm/flow tracks, window frozen); meanSimilarity→read-offset spread;
+  chaos spawn biased toward cluster COM; directionFromHeading (full vel);
   stratified+dispersion sites (calm/texture groups); SPAWN_ANCHOR_R_MIN;
   no inter-grain scrub clock; CHAOS_EVENTS_MAX_HZ CPU rail only;
-  HSV→polar material query absolute (segment startPos/endPos = window);
-  calm/texture read past onset inside the window; silence never selectable.
+  HSV→polar material query absolute (segment startPos/endPos = window;
+  loop tightness may shrink ping-pong inside that window);
+  scale layer from structure area / broken-up-ness (default native;
+  chaos occupancy floor);
+  calm/texture read past onset inside the window; silence never selectable
+  (energetic hops only; windows stay in contiguous audible runs).
   Periods in steps convert to seconds with the measured step interval
   (stepSec EMA; HUD RATE row) — not the nominal 30 (display-quantised CA
   rarely runs at 30 and osc pitch must lock to the visual period).
-  Region births fire their first grain the step they appear; merged-away
-  ids keep alias tracks at the survivor's anchor while their grains live
-  and count against that survivor's share. Dead-id and over-share grains
+  Region births fire their first grain the step they appear (rhythm
+  path included when the seat is empty); merged-away ids keep alias
+  tracks at the survivor's anchor while their grains live, count against
+  that survivor's share, and donate packing credit to the survivor
+  clock. Dead-id grains short-release on death; over-share grains
   yield seats (worklet forceShortRelease by grainId — bake envelope first)
   so a newly allocated pool can spend; flow occupancy is live `active`
   only (do not add events — that halved fill). Calm follow is velX/velY
-  conveyor + CALM_FOLLOW_CORR_CAP, not raw COM.
+  conveyor + CALM_FOLLOW_CORR_CAP, not raw COM. Calm attack is fraction
+  law capped by ATT_ABS_MAX_S; under-seat catch-up fills in ~CALM_FILL_S
+  (skip when shrinking hard; empty seated calm/non-pulsed flow force one
+  grain if the budget has room). Non-pulsed flow catch-up uses FLOW_FILL_S.
 Renderer RMS (scripts/render-scenarios.mjs): primary = sqrt(mean(L²+R²));
   mono 0.5*(L+R) reported secondary only.
 
@@ -175,7 +207,7 @@ Presentation (locked):
   regime colours only when those layers are on (calm gold, texture grey,
   chaos red, osc blue, flow green). VT323 chrome, Share Tech Mono readout.
 - Corner HUD. Overlay off by default: 1px vector outlines at display
-  resolution, L-brackets + COM on tracked calm/osc/flow, texture hue groups
+  resolution, L-brackets + COM on tracked calm/osc/flow, texture islands
   as outlines + COM (no brackets), chaos as fragments.
 - Source waveform + grain ticks sit under the field (chrome), not on the sim.
 - DATA fold: regime budget meters (concurrent/share seats + tick bar =
@@ -204,9 +236,14 @@ Negotiable (not doctrine):
   region colour eps (flowColourEps stays 0.12 — no tint join),
   chaosClusterJoin≈2 / chaosClusterMinArea≈16 / chaosClusterMax≈24,
   regionComResultantMin≈2, …
-- SCHED — DUR_MIN 0.03, DUR_MAX 8, ATT_MIN 0.02, ATT_MAX 0.30,
-  REL_CHAOS 0.98, REL_CALM 0.34, Q_MIN≈0.1, Q_MAX≈26 (vertical extent → Q),
+- SCHED — DUR_MIN 0.03, DUR_MAX 2, ATT_MIN 0.02, ATT_MAX 0.30,
+  ATT_ABS_MAX_S 0.22, CALM_FILL_S 0.3, FLOW_FILL_S 0.15,
+  REL_CHAOS 0.98, REL_CALM 0.34, Q_MIN≈0.1, Q_MAX≈26 (shape extent → Q),
   WINDOW_HALF_ABS_MIN_S (safety rail; window = segment start/end),
+  LOOP_HALF_ABS_MIN_S 0.008 (microloop floor; shorter ticks),
+  LAYER_AREA_LARGE 0.12 / LAYER_AREA_SMALL 0.025 /
+  LAYER_BROKEN_FOR_DOUBLE 0.55 / LAYER_OCCUPANCY_FLOOR 0.15,
+  EDGE_AM_DEPTH_MAX 0.22,
   SUSTAINED_ONSET_SKIP_S 0.08 (calm/texture read past onset),
   FLOW_ORDER_MIN 0.28, FLOW_ORDER_MAX 0.52, FLOW_ID_BASE 1e6,
   TEXTURE_ID_BASE 2e6, FLOW_TRAVEL_DUR_BLEND 1, FLOW_DUR_SPREAD 1.5,
@@ -216,14 +253,16 @@ Negotiable (not doctrine):
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
   SITE_SALT_*, rhythm_*, oscBurstMax
 - Spectral — CENTROID_HOP_SEC, analysis FFT, MEL_BANDS≈24, SILENCE_GATE_DB
-  −40 (relative to loudest hop), polar weights (absolute colour → material),
+  −32 (relative to loudest hop), polar weights (absolute colour → material),
   ONSET_ATTACK_MIN 0.45, SEGMENT_MAX_SEC 1.0 (onset-aligned units with
   startPos/endPos; transient units pin pos to their onset, sustained
   stretches split for coverage — replaces fixed-hop slices;
   polar axes = rank-uniform mel-PCA 1/2, not centroid/energy)
 - Worklet — Q_REF, FC_REF, SPECTRAL_TILT_COMP, ENV_RAMP_MS, FILT_*, TARGET_RMS,
   NORM_ATTACK 0.06, NORM_RELEASE 0.0004, PRESCALE_SMOOTH 0.004 (independent),
-  PARAM_RAMP_SAMPLES 128 (one block; do not turn into a follow EMA)
+  PARAM_RAMP_SAMPLES 128 (one block; do not turn into a follow EMA),
+  layer gain √layer (scale axis must not buy loudness),
+  MOD_SMOOTH ≈ 0.0104 (edge AM; do not multiply by raw PCM)
 
 Harnesses:
 - verify-phase0.mjs — lattice path stays gone from the live tree
@@ -234,11 +273,20 @@ Harnesses:
   sitting / wrapping wavelength-2 line = Osc; checkerboard = Osc;
   still 1-cell strip = Calm; travelling solid 1-cell strip = Calm persist)
 - verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band /
-  hop2 period-2 pulse; wrapping glider trailing edge; worklet Y-seam saturate
+  hop2 period-2 pulse; wrapping glider trailing edge; worklet Y-seam saturate;
+  worklet Q follows track qExtent (window frozen); merge packing inherit;
+  death short-release
 - verify-phase4.mjs — polar / stereo / absolute Y; absolute colour→material;
-  segment start/end bounds; silence gate; timbre neighbourhood
+  segment start/end bounds; silence gate; timbre neighbourhood;
+  scale-layer / loop tightness / edge-AM helpers; measureShape
+  line-vs-blob; qExtentFromShape needle vs slab; Q follow in Brief
 - investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q);
   Stage 5: chaos duration p95/p5 spray + chaos-blob-2pct ~1 hit/step
+- probe-see-hear.mjs — silent structures, osc spatial vs periods, texture
+  islands, lifecycle vs audio, motion-without-track
+- probe-typeu-see-hear.mjs — 4 random depth-1 + 4 depth-2 Type-U, settle
+  then measure (optional `--seed` / `--depth`); report JSON generated
+  (do not commit)
 - investigate-chaos-stutter.mjs — offline 30 Hz fold / voice-steal / reset
   ramp probe (report JSON is generated; do not commit)
 - render-scenarios.mjs — total-power RMS, crest, sites, block-RMS, cold-start;

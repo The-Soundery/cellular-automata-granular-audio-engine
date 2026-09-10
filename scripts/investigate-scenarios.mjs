@@ -163,6 +163,8 @@ function runScenario(pattern) {
   let flowEvents = 0;
   let maxPerStep = 0;
   let burstSteps = 0;
+  let heavyBurstSteps = 0;
+  let maxCalmSameId = 0;
   let sumCalmFrac = 0;
   let sumChaosFrac = 0;
   let sumStaticFrac = 0;
@@ -268,7 +270,13 @@ function runScenario(pattern) {
         eventFluxHists.push({ bins, logQ });
       }
 
-      for (const c of calmThisStep.values()) if (c >= 2) burstSteps++;
+      for (const c of calmThisStep.values()) {
+        if (c >= 2) burstSteps++;
+        // Catch-up fill may place ~8 same-id grains in a step after a death
+        // clump; a full seat dump would be far higher.
+        if (c >= 4) heavyBurstSteps++;
+        if (c > maxCalmSameId) maxCalmSameId = c;
+      }
       if (oscThisStep > 0) oscBurstSteps++;
       if (batch.events.length > maxPerStep) maxPerStep = batch.events.length;
       sumCalmFrac += o.calmAreaFraction;
@@ -394,6 +402,8 @@ function runScenario(pattern) {
     flowEvPerSec: flowEvents / secs,
     maxPerStep,
     burstSteps,
+    heavyBurstSteps,
+    maxCalmSameId,
     avgActive: sumActive / measured,
     calmAvgActive: sumCalmActive / measured,
     durMin: Number.isFinite(durMin) ? durMin : 0,
@@ -641,8 +651,8 @@ console.log("");
   const r = results.get("uniform-calm");
   assertGe(1, "uniform-calm", "calm%", r.calmPct, 99);
   assertLe(1, "uniform-calm", "chaos ev/s", r.chaosEvPerSec, 0.01);
-  // A2: calm ev/s = budget / DUR_MAX = 64 / 8.0 = 8.0; band [6,10]
-  assertIn(1, "uniform-calm", "calm ev/s", r.calmEvPerSec, 6, 10);
+  // A2: calm ev/s = budget / DUR_MAX = 64 / 2.0 = 32; band [24,40]
+  assertIn(1, "uniform-calm", "calm ev/s", r.calmEvPerSec, 24, 40);
   assertIn(1, "uniform-calm", "avg active", r.avgActive, 55, 64);
 }
 {
@@ -718,8 +728,9 @@ for (const q of [0.8, 2, 4, 8]) {
   assertLe(4, "frozen-noise", "chaos ev/s", r.chaosEvPerSec, 1);
   // Hue-grouped texture: several colour voices share the bag; packing rate
   // rises because each group's area (and duration) is smaller than the bag.
-  assertIn(4, "frozen-noise", "texture ev/s", r.textureEvPerSec, 8, 24);
-  assertGe(4, "frozen-noise", "min texture grain duration", r.textureDurMin, 1.5);
+  // With DUR_MAX=2 the turnover band sits higher than the old 8s ceiling.
+  assertIn(4, "frozen-noise", "texture ev/s", r.textureEvPerSec, 30, 55);
+  assertGe(4, "frozen-noise", "min texture grain duration", r.textureDurMin, 0.5);
   // Seat spend follows textured area (silent residual does not get seats).
   assertIn(4, "frozen-noise", "avg active", r.avgActive, 45, 64);
 }
@@ -828,7 +839,9 @@ for (const q of [0.8, 2, 4, 8]) {
 // Stage 6
 {
   const r = results.get("hue-drift");
-  assertLe(6, "hue-drift", "pulse-burst steps", r.burstSteps, 1);
+  // Ordinary packing / catch-up at DUR_MAX=2 can multi-spawn; forbid dumping
+  // a large fraction of the calm share in one step (false choir / rhythm).
+  assertLe(6, "hue-drift", "max calm same-id per step", r.maxCalmSameId, 12);
 }
 {
   const r = results.get("blinker-fast");

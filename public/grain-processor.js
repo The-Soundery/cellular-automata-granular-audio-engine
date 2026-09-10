@@ -3,13 +3,18 @@
  *
  * Sample window / ping-pong bounds freeze at spawn (no scrub chase).
  * Any grain with a regionId directly follows that region's COM for pan, Y,
- * and source L/R channelMix (spawn offset preserved). Logical follow is
- * unsmoothed; audio params ramp to the new target within one render block
- * so a CA-frame step is not a sample discontinuity.
+ * source L/R channelMix, and filter Q from live shape extent (spawn offset
+ * preserved; sample window stays frozen). Logical follow is unsmoothed;
+ * audio params ramp to the new target within one render block so a
+ * CA-frame step is not a sample discontinuity.
  * Calm and flow use regionId (flow ids are offset by FLOW_ID_BASE in the
  * scheduler so they never collide with calm). Envelope frozen at spawn.
  * Y→spectrum is an absolute log sweep (80 Hz bottom … 12 kHz top).
  * Stereo source read via channelMix.
+ * Scale layers: half / native / double pre-rendered buffers; read still ±1.
+ * loopHalf may tighten the frozen ping-pong window inside the segment.
+ * Edge AM is unipolar and one-pole smoothed; interiors stay clean.
+ * Ping-pong reverses in place — no fade-to-zero at the bound.
  * Slow voice-count leveler: target RMS scales with sqrt(sounding/BUDGET).
  * Fast attack is a safety duck only — not a block-RMS flattener.
  */
@@ -36,6 +41,11 @@ const SHARE_RELEASE_SEC = 0.02;
  * at the new target by the last sample of the ramp.
  */
 const PARAM_RAMP_SAMPLES = 128;
+/**
+ * Edge-AM smoother. Raw neighbour PCM as a multiplier ticks; a ~80 Hz
+ * one-pole keeps the seam mark without audio-rate holes.
+ */
+const MOD_SMOOTH = 0.0104;
 /** Chaos defaults when spawn omits attack/release (regime packing material). */
 const ENV_ATTACK_CHAOS = 0.06;
 const ENV_RELEASE_CHAOS = 0.15;
@@ -46,6 +56,9 @@ const FILT_FMIN = 80;
 const FILT_FMAX = 12000;
 /** Fallback Q when spawn omits q (scheduler always sends continuous q). */
 const Q_DEFAULT = 2.0;
+const Q_MIN = 0.1;
+const Q_MAX = 26.0;
+const FILT_RATIO = FILT_FMAX / FILT_FMIN;
 /** Reference Q for bandwidth-compensated gain — keeps absolute level familiar. */
 const Q_REF = 2.0;
 /** Geometric centre of the Y bandpass span (loudness reference). */
@@ -103,6 +116,7 @@ class GrainVoice {
     this.releaseN = 1;
     this.delaySamples = 0;
     this.q = Q_DEFAULT;
+    this.qTarget = Q_DEFAULT;
     this.fcNorm = -1;
     this.filtQ = -1;
     this.ic1eq = 0;
@@ -115,6 +129,13 @@ class GrainVoice {
     this.envNorm = 1;
     this.sounding = false;
     this.grainId = -1;
+    this.layer = 1;
+    this.modSmooth = 0.5;
+    this.modDepth = 0;
+    this.modPos = 0;
+    this.modDir = 1;
+    this.modLo = 0;
+    this.modHi = 1;
   }
 }
 
@@ -128,6 +149,12 @@ class GrainProcessor extends AudioWorkletProcessor {
     /** Legacy alias — points at left (or mono) for length checks. */
     this.pcm = null;
     this.length = 0;
+    this.pcmLHalf = null;
+    this.pcmRHalf = null;
+    this.lengthHalf = 0;
+    this.pcmLDbl = null;
+    this.pcmRDbl = null;
+    this.lengthDbl = 0;
     this.sampleRate_ = sampleRate;
     this.masterGainTarget = 1;
     this.masterGain = 0;
@@ -164,6 +191,24 @@ class GrainProcessor extends AudioWorkletProcessor {
           this.pcm = null;
         }
         if (!this.length && this.pcmL) this.length = this.pcmL.length;
+        if (msg.pcmLHalf && msg.pcmRHalf) {
+          this.pcmLHalf = new Float32Array(msg.pcmLHalf);
+          this.pcmRHalf = new Float32Array(msg.pcmRHalf);
+          this.lengthHalf = this.pcmLHalf.length;
+        } else {
+          this.pcmLHalf = this.pcmL;
+          this.pcmRHalf = this.pcmR;
+          this.lengthHalf = this.length;
+        }
+        if (msg.pcmLDbl && msg.pcmRDbl) {
+          this.pcmLDbl = new Float32Array(msg.pcmLDbl);
+          this.pcmRDbl = new Float32Array(msg.pcmRDbl);
+          this.lengthDbl = this.pcmLDbl.length;
+        } else {
+          this.pcmLDbl = this.pcmL;
+          this.pcmRDbl = this.pcmR;
+          this.lengthDbl = this.length;
+        }
       } else if (msg.type === "events") {
         this.masterGainTarget =
           typeof msg.masterGain === "number" ? msg.masterGain : 1;
@@ -186,6 +231,12 @@ class GrainProcessor extends AudioWorkletProcessor {
         this.pcmL = null;
         this.pcmR = null;
         this.length = 0;
+        this.pcmLHalf = null;
+        this.pcmRHalf = null;
+        this.lengthHalf = 0;
+        this.pcmLDbl = null;
+        this.pcmRDbl = null;
+        this.lengthDbl = 0;
         this.masterGainTarget = 0;
         this.masterGain = 0;
         this.pendingResetBlocks = 0;
@@ -256,6 +307,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.envNorm = 1 / Math.sqrt(Math.max(1e-6, envMs));
 
       voice.q = typeof e.q === "number" && e.q > 0 ? e.q : Q_DEFAULT;
+      voice.qTarget = voice.q;
 
       const delaySec =
         typeof e.startOffsetSec === "number" ? e.startOffsetSec : 0;
@@ -298,8 +350,14 @@ class GrainProcessor extends AudioWorkletProcessor {
         half = (hi - lo) * 0.5;
       }
       half = Math.min(0.49, half);
+      if (typeof e.loopHalf === "number" && e.loopHalf > 0) {
+        half = Math.min(half, Math.max(1 / len, e.loopHalf));
+      }
 
-      const maxIdx = Math.max(0, len - 1);
+      voice.layer =
+        e.layer === 0.5 || e.layer === 2 ? e.layer : 1;
+      const layerLen = this.layerLength(voice.layer);
+      const maxIdx = Math.max(0, layerLen - 1);
       voice.windowCenter = center * maxIdx;
       voice.windowHalf = Math.max(1, half * maxIdx);
       // Unwrapped window coordinates (verify-phase4 pins boundLo/Hi names).
@@ -310,6 +368,32 @@ class GrainProcessor extends AudioWorkletProcessor {
       // readOffset ∈ [-1,1] decorrelates concurrent grains sharing a window.
       const off = typeof e.readOffset === "number" ? e.readOffset : 0;
       voice.readPos = voice.windowCenter + off * voice.windowHalf;
+      const minHalfSamp = Math.max(32, Math.floor(0.004 * this.sampleRate_));
+      const segHalfNorm =
+        typeof e.sampleHalf === "number" ? Math.min(0.49, e.sampleHalf) : half;
+      const maxHalfSamp = Math.max(minHalfSamp, segHalfNorm * maxIdx);
+      if (voice.windowHalf < minHalfSamp && maxHalfSamp > voice.windowHalf) {
+        voice.windowHalf = Math.min(minHalfSamp, maxHalfSamp);
+        voice.boundLo = voice.windowCenter - voice.windowHalf;
+        voice.boundHi = voice.windowCenter + voice.windowHalf;
+        voice.readPos = voice.windowCenter + off * voice.windowHalf;
+      }
+
+      voice.modDepth =
+        typeof e.modDepth === "number" ? clamp01(e.modDepth) : 0;
+      if (voice.modDepth > 0 && typeof e.modCenter === "number") {
+        const modHalf =
+          typeof e.modHalf === "number" ? Math.max(1 / layerLen, e.modHalf) : half;
+        const mc = clamp01(e.modCenter) * maxIdx;
+        const mh = Math.max(1, Math.min(0.49, modHalf) * maxIdx);
+        voice.modLo = mc - mh;
+        voice.modHi = mc + mh;
+        voice.modPos = mc;
+        voice.modDir = 1;
+        voice.modSmooth = 0.5;
+      } else {
+        voice.modDepth = 0;
+      }
 
       this.updateFilterCoeffs(voice);
       this.statsTriggers++;
@@ -354,10 +438,11 @@ class GrainProcessor extends AudioWorkletProcessor {
   }
 
   /**
-   * Direct pan/Y/channelMix follow: any voice with regionId tracks the
+   * Direct pan/Y/channelMix/Q follow: any voice with regionId tracks the
    * region's anchor by the shortest toroidal step (spawn offset preserved).
-   * Sample window stays frozen. Logical x/y jump this message; pan/Y/mix
-   * audio params ramp to that target within PARAM_RAMP_SAMPLES.
+   * Sample window stays frozen. Q follows live qExtent (same log law as
+   * spawn). Logical x/y/Q jump this message; pan/Y/mix/Q audio params
+   * ramp to that target within PARAM_RAMP_SAMPLES.
    *
    * Calm and flow anchors are hop-integrated conveyors from the scheduler
    * (calm also soft-corrects toward COM). Grains ride perceptual motion,
@@ -374,7 +459,7 @@ class GrainProcessor extends AudioWorkletProcessor {
    * the gap as one hop.
    */
   applyTracks(tracks) {
-    /** @type {Map<number, {comX:number,comY:number,w:number,h:number}>} */
+    /** @type {Map<number, {comX:number,comY:number,w:number,h:number,qExtent:number}>} */
     const byId = new Map();
     for (const t of tracks) {
       if (typeof t.regionId !== "number") continue;
@@ -383,6 +468,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         comY: t.anchorY ?? t.comY ?? 0,
         w: Math.max(1, t.gridWidth || 1),
         h: Math.max(1, t.gridHeight || 1),
+        qExtent: typeof t.qExtent === "number" ? t.qExtent : 0,
       });
     }
     for (const voice of this.voices) {
@@ -443,10 +529,15 @@ class GrainProcessor extends AudioWorkletProcessor {
       voice.panTarget = pan;
       voice.yNormTarget = yNorm;
       voice.mixTarget = mix;
+      if (t.qExtent > 0) {
+        const durSec = voice.duration / Math.max(1, this.sampleRate_);
+        voice.qTarget = qFromVerticalExtent(t.qExtent, t.h, durSec, yNorm);
+      }
       const jumped =
         Math.abs(pan - voice.pan) > 1e-6 ||
         Math.abs(yNorm - voice.yNorm) > 1e-6 ||
-        Math.abs(mix - voice.channelMix) > 1e-6;
+        Math.abs(mix - voice.channelMix) > 1e-6 ||
+        Math.abs(voice.qTarget - voice.q) > 1e-6;
       if (jumped) voice.rampN = PARAM_RAMP_SAMPLES;
     }
   }
@@ -480,7 +571,7 @@ class GrainProcessor extends AudioWorkletProcessor {
 
   updateFilterCoeffs(voice) {
     const y = clamp01(voice.yNorm);
-    const q = Math.max(0.1, voice.q);
+    const q = Math.max(Q_MIN, voice.q);
     if (
       Math.abs(y - voice.fcNorm) < 1e-6 &&
       Math.abs(q - voice.filtQ) < 1e-6
@@ -527,11 +618,35 @@ class GrainProcessor extends AudioWorkletProcessor {
     return 1;
   }
 
-  readPcm(pos, channelMix = 0.5) {
-    const len = this.length;
+  layerLength(layer) {
+    if (layer === 0.5) return this.lengthHalf || this.length;
+    if (layer === 2) return this.lengthDbl || this.length;
+    return this.length;
+  }
+
+  layerBuffers(layer) {
+    if (layer === 0.5) {
+      return {
+        L: this.pcmLHalf || this.pcmL,
+        R: this.pcmRHalf || this.pcmR,
+      };
+    }
+    if (layer === 2) {
+      return {
+        L: this.pcmLDbl || this.pcmL,
+        R: this.pcmRDbl || this.pcmR,
+      };
+    }
+    return { L: this.pcmL, R: this.pcmR };
+  }
+
+  readPcm(pos, channelMix = 0.5, layer = 1) {
+    const buf = this.layerBuffers(layer);
+    const len = this.layerLength(layer);
+    if (!buf.L || len < 2) return 0;
     const idx = wrapIndex(Math.round(pos), len);
-    const l = this.pcmL ? this.pcmL[idx] || 0 : 0;
-    const r = this.pcmR ? this.pcmR[idx] || 0 : l;
+    const l = buf.L[idx] || 0;
+    const r = buf.R ? buf.R[idx] || 0 : l;
     const t = clamp01(channelMix);
     return l * (1 - t) + r * t;
   }
@@ -592,6 +707,7 @@ class GrainProcessor extends AudioWorkletProcessor {
           voice.pan += (voice.panTarget - voice.pan) * a;
           voice.yNorm += (voice.yNormTarget - voice.yNorm) * a;
           voice.channelMix += (voice.mixTarget - voice.channelMix) * a;
+          voice.q += (voice.qTarget - voice.q) * a;
           applyEqualPowerPan(voice, voice.pan);
           voice.fcNorm = -1;
           this.updateFilterCoeffs(voice);
@@ -608,13 +724,28 @@ class GrainProcessor extends AudioWorkletProcessor {
         }
 
         const e = this.envelopeAt(voice);
-        const raw = this.readPcm(voice.readPos, voice.channelMix);
+        let raw = this.readPcm(voice.readPos, voice.channelMix, voice.layer);
+        if (voice.modDepth > 0) {
+          const mod = this.readPcm(
+            voice.modPos,
+            voice.channelMix,
+            voice.layer,
+          );
+          const uni = 0.5 + 0.5 * Math.max(-1, Math.min(1, mod));
+          voice.modSmooth += (uni - voice.modSmooth) * MOD_SMOOTH;
+          const gain =
+            1 - voice.modDepth + voice.modDepth * voice.modSmooth;
+          const mean = 1 - 0.5 * voice.modDepth;
+          raw *= gain / Math.max(1e-6, mean);
+        }
         const band = this.bandpass(voice, raw);
+        const layerGain = Math.sqrt(voice.layer || 1);
         const s =
           band *
           e *
           voice.envNorm *
           voice.amp *
+          layerGain *
           this.masterGain *
           this.preScale;
 
@@ -629,6 +760,16 @@ class GrainProcessor extends AudioWorkletProcessor {
         } else if (voice.readPos <= voice.boundLo) {
           voice.readPos = voice.boundLo;
           voice.dir = 1;
+        }
+        if (voice.modDepth > 0) {
+          voice.modPos += voice.modDir;
+          if (voice.modPos >= voice.modHi) {
+            voice.modPos = voice.modHi;
+            voice.modDir = -1;
+          } else if (voice.modPos <= voice.modLo) {
+            voice.modPos = voice.modLo;
+            voice.modDir = 1;
+          }
         }
 
         voice.age++;
@@ -766,6 +907,17 @@ function toroidalDelta(to, from, period) {
 function panFromX(x, width) {
   const t = x / Math.max(1, width - 1);
   return Math.max(-1, Math.min(1, t * 2 - 1));
+}
+
+/** Same log law as scheduler qFromVerticalExtent. */
+function qFromVerticalExtent(heightCells, gridH, durationSec, yNorm) {
+  const dy = Math.max(1, heightCells) / Math.max(1, gridH - 1);
+  const r = Math.pow(FILT_RATIO, dy);
+  let q = r <= 1 + 1e-9 ? Q_MAX : Math.sqrt(r) / (r - 1);
+  q = Math.max(Q_MIN, Math.min(Q_MAX, q));
+  const y = Math.max(0, Math.min(1, yNorm));
+  const fc = FILT_FMIN * Math.pow(FILT_RATIO, y);
+  return Math.min(q, Math.max(1, durationSec * fc));
 }
 
 function applyEqualPowerPan(voice, pan) {
