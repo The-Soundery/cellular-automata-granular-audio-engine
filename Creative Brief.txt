@@ -111,8 +111,11 @@ One-sentence axiom:
                 spectrum (80 Hz at the bottom of the grid, 12 kHz at the top);
                 independent of the chosen segment’s spectral centroid
                 — same direct region follow
-   - Envelope / duration → continuous functions of δ and extent at spawn —
-                not binary calm|chaos presets, not RGB
+   - Envelope / duration → continuous functions of δ and extent at spawn
+                (chaos bags also use the area's palette occupancy: few
+                hues raise time-order into the flow mid-band so tails
+                lengthen; mixed scramble stays short). Not binary
+                calm|chaos presets, and not the spawn cell's RGB
    - Filter Q → vertical/shape extent of the mass (same log law as Y→fc:
                 thin structures narrow, tall masses wide). Needles (small
                 minor-axis thickness) use that thickness instead of AABB
@@ -146,7 +149,8 @@ One-sentence axiom:
    is not volume. Playback rate stays ±1 (no Doppler). Pre-rendered half- and
    double-speed layers are a scale axis, not velocity→rate.
 
-   Two axes, two consequences: timeOrder (stability + extent + compactness)
+   Two axes, two consequences: timeOrder (stability + extent + compactness;
+   chaos bags substitute palette occupancy for extent)
    → duration and envelope; shape extent → Q (follows while the grain lives).
    Still-and-uniform and still-and-detailed differ in material at matched
    loudness. Q is spectral purity, not loudness; the bandpass is unity-gain
@@ -210,6 +214,9 @@ One-sentence axiom:
      spawn δ-weighted so change is the event. The bag is partitioned into
      connected chaotic areas (plus one residual scatter) — spatial
      measurements so the spend lands where the change is, never owners.
+     Each area also measures palette occupancy (occupied-hue entropy):
+     that shapes grain length inside Chaos; it does not change membership.
+     Spawn-cell HSV still picks material — few hues are few windows.
 
    Calm vs Flow: high persist (mass keeps its colour as it slides) → Calm;
    high hop (colour leaves cells and lands nearby) → Flow.
@@ -262,6 +269,13 @@ One-sentence axiom:
                   by their area): each area’s sub-share ∝ its area, its
                   rate ∝ its own δ̄, its duration from its own stats — a hot
                   storm sprays fast where it is seen; a cool patch patters.
+                  Palette occupancy of that area (few hues vs mixed
+                  scramble) raises time-order into the flow mid-band so
+                  limited-palette chaos grows longer tails; packing rate
+                  follows the new mean. Mixed scramble stays short. Spawn
+                  cells still carry HSV → material, so a few hues are a
+                  few sample windows heard with those longer tails — the
+                  cell’s RGB does not pick the envelope.
    Flow packing:  fifth area-share pool; conveyor grains — see Flow section.
                   If members blink at a confirmed site period, share is
                   spent as pulse-locked bursts at that period.
@@ -574,10 +588,12 @@ Live pipeline
 ------------------------------------------------------------------------------
 
   Utomata → FrameObserver
-    → FieldObserver (δ, s, κ; Osc → Calm → Flow → Chaos/Texture remainder)
+    → FieldObserver (δ, s, κ; Osc → Calm → Flow → Chaos/Texture remainder;
+                     chaos areas measure palette occupancy)
     → GrainScheduler (five area-share pools; polar HSV material; X→pan +
                       channel mix; absolute Y; freeze-at-spawn window;
-                      region-bound pan/Y/channelMix follow; flow conveyor)
+                      region-bound pan/Y/channelMix follow; flow conveyor;
+                      chaos palette occupancy → time-order, cap FLOW_ORDER_MAX)
     → AudioEngine.sendEvents (+ track)
     → grain-processor (locked window, ping-pong, scale layer, optional
                        microloop, edge AM, per-grain bandpass,
@@ -613,7 +629,10 @@ FORBIDDEN
   (direct pan / Y-spectrum / channel-mix follow for region-bound grains
   is allowed; no follow EMA. Pan and Y saturate at the torus seam.
   A one-block audio ramp to the new target is zipper prevention.)
-- Colour → loudness, allocation, or macro schedule
+- Colour → loudness, allocation, or macro schedule.
+  Occupied-hue entropy of a chaotic *area* may shape that area's
+  grain length (time-order); the spawn cell's RGB still must not
+  pick envelope, loudness, or which cell speaks.
 - Treating the CA as a modulation source for an unrelated granular synth
 - Optimising for ambient beauty, glitch excitement, or “musicality”
 - Letting high activity increase loudness or steal budget beyond area share
@@ -643,7 +662,8 @@ Success: the listener feels they are hearing the simulation’s behaviour evolve
 calm, chaos, flow, propagation, collapse, transformation — as continuous
 changing sonic texture. Large coherent areas form long overlapping textures
 that evolve as successive grains follow regional motion; chaotic areas spray
-short grains; travelling colour rides a conveyor; overall loudness stays
+short grains (limited-palette chaos lengthens those tails); travelling colour
+rides a conveyor; overall loudness stays
 neutral; balance matches area weighting.
 
 Failure: constant repeating texture; curated voices; fixed posts; aesthetic

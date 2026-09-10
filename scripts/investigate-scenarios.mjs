@@ -173,6 +173,7 @@ function runScenario(pattern) {
   let sumKappa = 0;
   let sumActive = 0;
   let sumCalmActive = 0;
+  let sumPaletteT = 0;
   let velXSamples = [];
   let measured = 0;
   let durMin = Infinity;
@@ -287,6 +288,20 @@ function runScenario(pattern) {
       sumKappa += o.meanCoherence;
       sumActive += batch.predictedActive;
       sumCalmActive += batch.calmActive;
+      {
+        const clusters = o.chaotic.clusters ?? [];
+        if (clusters.length > 0) {
+          let palW = 0;
+          let palA = 0;
+          for (const c of clusters) {
+            palW += (c.paletteT ?? 0) * c.area;
+            palA += c.area;
+          }
+          sumPaletteT += palA > 0 ? palW / palA : 0;
+        } else {
+          sumPaletteT += o.chaotic.paletteT ?? 0;
+        }
+      }
       if (o.coherent.length > 0) {
         const biggest = o.coherent.reduce((m, r) => (r.area > m.area ? r : m));
         velXSamples.push(biggest.velX);
@@ -412,6 +427,11 @@ function runScenario(pattern) {
     chaosDurP5,
     chaosDurP95,
     chaosDurSpread,
+    chaosDurMean:
+      chaosDurs.length > 0
+        ? chaosDurs.reduce((a, b) => a + b, 0) / chaosDurs.length
+        : 0,
+    meanPaletteT: sumPaletteT / measured,
     meanVelX,
     finalRegionCount,
     distinctRegionIds: regionIdsSeen.size,
@@ -606,6 +626,11 @@ for (const pattern of TEST_PATTERNS) {
   if (r.chaosDurSpread > 0) {
     console.log(
       `    chaos duration spray: p5=${(r.chaosDurP5 * 1000).toFixed(1)}ms p95=${(r.chaosDurP95 * 1000).toFixed(1)}ms ratio=${r.chaosDurSpread.toFixed(2)}`,
+    );
+  }
+  if (r.chaosDurMean > 0.005) {
+    console.log(
+      `    chaos paletteT ${r.meanPaletteT.toFixed(2)} | mean dur ${(r.chaosDurMean * 1000).toFixed(1)}ms`,
     );
   }
   if (Math.abs(r.meanVelX) > 0.01) {
@@ -833,6 +858,17 @@ for (const q of [0.8, 2, 4, 8]) {
   if (r) {
     // Share 1 at saturated δ → ~1 event per CA step (30/s), still discrete.
     assertIn(5, "chaos-blob-2pct", "chaos ev/s", r.chaosEvPerSec, 20, 40);
+  }
+}
+{
+  const flicker = results.get("full-flicker");
+  const pal = results.get("palette-chaos");
+  if (flicker && pal) {
+    assertGe(5, "palette-chaos", "chaos%", pal.chaosPct, 80);
+    assertGe(5, "palette-chaos", "paletteT", pal.meanPaletteT, 0.45);
+    assertLe(5, "full-flicker", "paletteT (mixed scramble)", flicker.meanPaletteT, 0.25);
+    const ratio = pal.chaosDurMean / Math.max(1e-6, flicker.chaosDurMean);
+    assertGe(5, "palette-chaos", "mean duration vs full-flicker", ratio, 1.25);
   }
 }
 

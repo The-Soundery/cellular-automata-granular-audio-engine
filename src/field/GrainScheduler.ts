@@ -115,6 +115,13 @@ export const SCHED = {
   CHAOS_DUR_SPREAD: 1.7,
   /** Exponent on (bagδ̄ / cellδ) before the SPREAD clamp. */
   CHAOS_DUR_EXP: 1.0,
+  /**
+   * Chaos-bag palette occupancy → extra time-order (area stays 0).
+   * At paletteT=1 and saturated δ, order = this, capped at FLOW_ORDER_MAX
+   * so limited-palette chaos sits in the flow mid-band (longer tails,
+   * not a calm wash). Mixed scramble (paletteT≈0) is unchanged.
+   */
+  CHAOS_PALETTE_WEIGHT: 0.32,
   velDirEps: 0.08,
   /**
    * Read-offset half-range shrinks toward this floor as meanSimilarity → 1
@@ -389,6 +396,8 @@ type ChaosSpendBag = {
   meanDelta: number;
   maxDelta: number;
   meanSimilarity: number;
+  /** Few hues → 1; mixed scramble → 0. Optional on harness fixtures. */
+  paletteT?: number;
   /** False for residual scatter; omitted bags count as a single body. */
   compact?: boolean;
   /** Toroidal AABB height when measured (compact clusters); Q uses this. */
@@ -1077,6 +1086,7 @@ export class GrainScheduler {
                 meanDelta: obs.chaotic.meanDelta,
                 maxDelta: obs.chaotic.maxDelta,
                 meanSimilarity: obs.chaotic.meanSimilarity,
+                paletteT: obs.chaotic.paletteT ?? 0,
                 compact: true,
               },
             ]
@@ -1833,13 +1843,23 @@ function grainMaterial(
   area: number,
   fillT: number,
   nCells: number,
+  paletteT = 0,
 ): GrainMaterial {
   const stabilityT = 1 - clamp01(delta / SCHED.deltaRateNorm);
   const fillRatio = clamp01(fillT);
   // area=0 for bag/per-cell spawns: a bag is not a coherent extent, so its
   // area must not lengthen its grains. Fill weights duration only.
   const sizeForDur = areaT(area, nCells) * (0.7 + 0.3 * fillRatio);
-  const order = clamp01(0.65 * stabilityT + 0.35 * sizeForDur);
+  let order = clamp01(0.65 * stabilityT + 0.35 * sizeForDur);
+  // Chaos bags (area=0): few occupied hues raise order into the flow
+  // mid-band — longer decay tails, never a calm wash. Spawn-cell RGB
+  // still does not pick the envelope.
+  if (area <= 0 && paletteT > 0) {
+    order = Math.min(
+      SCHED.FLOW_ORDER_MAX,
+      clamp01(order + SCHED.CHAOS_PALETTE_WEIGHT * clamp01(paletteT)),
+    );
+  }
   const durationSec =
     SCHED.DUR_MIN * Math.pow(SCHED.DUR_MAX / SCHED.DUR_MIN, order);
   const s = smoothstep01(order);
@@ -1908,8 +1928,15 @@ function brokennessFromShape(
 
 /** Representative chaos duration from bag means (for packing rate). */
 function durationChaosMean(chaotic: ChaosSpendBag, nCells: number): number {
-  // Chaos bag: areaT = 0 (not a coherent extent).
-  return grainMaterial(chaotic.meanDelta, 0, 0, nCells).durationSec;
+  // Chaos bag: areaT = 0 (not a coherent extent). Palette occupancy
+  // may raise the mean into the flow mid-band; packing rate follows.
+  return grainMaterial(
+    chaotic.meanDelta,
+    0,
+    0,
+    nCells,
+    chaotic.paletteT ?? 0,
+  ).durationSec;
 }
 
 function materialFromTexture(
@@ -2245,7 +2272,13 @@ function spawnChaos(
   const deltaSmooth = obs.deltaSmooth?.[ci] ?? obs.delta[ci] ?? chaotic.meanDelta;
   const deltaRaw = obs.delta[ci] ?? deltaSmooth;
   const nCells = w * h;
-  const mat = grainMaterial(deltaSmooth, 0, 0, nCells);
+  const mat = grainMaterial(
+    deltaSmooth,
+    0,
+    0,
+    nCells,
+    chaotic.paletteT ?? 0,
+  );
   const durationSec = chaosDurationAroundMean(meanDur, bagMeanDelta, deltaRaw);
   const win = sampleWindowFromColour(r, g, b, bankDur, segments);
   const yNorm = 1 - y / Math.max(1, h - 1);

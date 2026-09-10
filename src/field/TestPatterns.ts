@@ -250,6 +250,25 @@ export const TEST_PATTERNS: TestPattern[] = [
     },
   },
   {
+    id: "palette-chaos",
+    label: "Limited-palette chaos",
+    fill(field, step) {
+      // Two complementary hues, independently re-picked each step — leftover
+      // change (Chaos), not a period-2 blinker (Osc). Few occupied hue bins
+      // so palette occupancy is high while δ stays elevated.
+      const a = hsv2rgb(0.02, 0.95, 0.95);
+      const b = hsv2rgb(0.55, 0.95, 0.95);
+      const n = field.width * field.height;
+      const rng = mulberry32(81000 + step);
+      for (let i = 0; i < n; i++) {
+        const [r, g, bl] = rng() < 0.5 ? a : b;
+        field.r[i] = r;
+        field.g[i] = g;
+        field.b[i] = bl;
+      }
+    },
+  },
+  {
     id: "blinker-fast",
     label: "Blinker fast (period 2)",
     fill(field, step) {

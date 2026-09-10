@@ -125,6 +125,23 @@ silhouettes stay **Calm** (persist); gappy correspondence travel is **Flow**
   layers so the storm occupies more of the spectrum — not all double.
 - **Assertions:** investigate stage 1/5; render stage 3/5 + chaos sites ≥500.
 
+## palette-chaos
+
+- **Simulates:** Every cell independently picks one of two complementary
+  hues each step (aperiodic; not a blinker).
+- **Ground truth:** **Chaos** (changing remainder). Limited palette, high δ.
+  Not Osc (no confirmed period 2..8); not Calm; scramble of two hues is
+  not Flow.
+- **Observer:** chaos% high (~97%; a few cells may confirm period 2 by
+  chance and sit in Osc — the bag stays Chaos). Each chaotic area's
+  paletteT high (few occupied hue bins) vs full-flicker near 0.
+- **Audio:** same Chaos pool and area share as a full scramble, but bag-mean
+  duration sits in the flow mid-band (longer decay tails). Packing rate
+  follows the new mean — less of a click spray, not a calm wash. Spawn
+  cells are only those two hues, so material is those two polar windows.
+- **Assertions:** investigate stage 5 (paletteT vs full-flicker; mean chaos
+  duration longer at the law, not from a δ confound in the fixture test).
+
 ## blinker-fast
 
 - **Simulates:** 40×40 centre block alternates A/B every step (period 2); still bg.

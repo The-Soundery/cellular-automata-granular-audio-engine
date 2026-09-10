@@ -49,6 +49,11 @@ export const FIELD_OBS = {
   chaosClusterMinArea: 16,
   /** Max distinct chaos clusters per frame (largest kept; rest → residual). */
   chaosClusterMax: 24,
+  /**
+   * EMA for per-area palette occupancy (few hues → 1). Slower than δ so a
+   * collapsing palette lengthens tails gradually instead of jumping.
+   */
+  chaosPaletteEma: 0.22,
   /** Max oscillator period (steps) tested ascending. */
   oscPeriodMax: 8,
   /** RGB match epsilon for period-p frame compare. */
@@ -282,6 +287,11 @@ export interface ChaoticArea {
   meanCoherence: number;
   /** Mean per-cell spatial similarity (read-offset spread for material law). */
   meanSimilarity: number;
+  /**
+   * Palette occupancy of the bag (1 = few hues, 0 = mixed scramble).
+   * Area-weighted mean of cluster values; optional on harness fixtures.
+   */
+  paletteT?: number;
   /** Max per-cell δ in the bag (for δ-weighted chaos spawn). */
   maxDelta: number;
   cells: Uint32Array;
@@ -314,6 +324,11 @@ export interface ChaosCluster {
   meanR: number;
   meanG: number;
   meanB: number;
+  /**
+   * Occupied-hue entropy of this area (1 = few colours, 0 = mixed).
+   * Bag measurement for chaos time-order — not the spawn cell's RGB.
+   */
+  paletteT: number;
   cells: Uint32Array;
 }
 
@@ -592,6 +607,8 @@ export class FieldObserver {
   private readonly chaosLabel: Int32Array;
   private prevChaosClusters: { id: number; comX: number; comY: number }[] = [];
   private nextChaosClusterId = 1;
+  /** Last-frame paletteT by cluster id (including residual −1). */
+  private prevChaosPalette = new Map<number, number>();
   private last: FieldObservation;
 
   constructor(width: number, height: number) {
@@ -664,6 +681,7 @@ export class FieldObserver {
     this.lastRegionEvents = { births: [], deaths: [], merges: [] };
     this.prevChaosClusters = [];
     this.nextChaosClusterId = 1;
+    this.prevChaosPalette.clear();
     this.last = emptyObservation(
       this.width,
       this.height,
@@ -2304,14 +2322,28 @@ export class FieldObserver {
       if (d > maxDelta) maxDelta = d;
     }
     const area = cells.length;
+    const clusters = this.clusterChaos(cells, current);
+    let paletteT = 0;
+    if (clusters.length > 0) {
+      let palW = 0;
+      let palA = 0;
+      for (const c of clusters) {
+        palW += c.paletteT * c.area;
+        palA += c.area;
+      }
+      paletteT = palA > 0 ? palW / palA : 0;
+    } else if (area > 0) {
+      paletteT = chaosPaletteOccupancy(cells, current);
+    }
     return {
       area,
       meanDelta: area ? sumD / area : 0,
       meanCoherence: area ? sumK / area : 0,
       meanSimilarity: area ? sumS / area : 0,
+      paletteT,
       maxDelta,
       cells: Uint32Array.from(cells),
-      clusters: this.clusterChaos(cells, current),
+      clusters,
     };
   }
 
@@ -2436,6 +2468,7 @@ export class FieldObserver {
         meanR: sumR / a,
         meanG: sumG / a,
         meanB: sumB / a,
+        paletteT: chaosPaletteOccupancy(cellsArr, current),
         cells: Uint32Array.from(cellsArr),
       };
     };
@@ -2473,6 +2506,18 @@ export class FieldObserver {
     }));
 
     if (residual.length > 0) clusters.push(measure(residual, false));
+
+    const ema = FIELD_OBS.chaosPaletteEma;
+    const nextPal = new Map<number, number>();
+    for (const c of clusters) {
+      const prev = this.prevChaosPalette.get(c.id);
+      if (prev != null) {
+        c.paletteT = prev + ema * (c.paletteT - prev);
+      }
+      nextPal.set(c.id, c.paletteT);
+    }
+    this.prevChaosPalette = nextPal;
+
     return clusters;
   }
 
@@ -3380,6 +3425,7 @@ function emptyObservation(
       meanDelta: 0,
       meanCoherence: 0,
       meanSimilarity: 0,
+      paletteT: 0,
       maxDelta: 0,
       cells: new Uint32Array(0),
     },
@@ -3432,6 +3478,38 @@ function textureColourBin(r: number, g: number, b: number): number {
 /** Map hue bin (−1 grey, 0..11) onto a non-negative key for island ids. */
 function textureHueKey(bin: number): number {
   return bin < 0 ? 0 : bin + 1;
+}
+
+const CHAOS_PALETTE_BINS = TEXTURE_HUE_BINS + 1;
+const CHAOS_PALETTE_HMAX = Math.log2(CHAOS_PALETTE_BINS);
+
+/**
+ * Occupied-hue entropy of a cell set. 1 = few colours (one bin), 0 = mixed
+ * scramble across grey + 12 hue bins. Bag measurement — not local similarity
+ * and not RMS spread from the mean (two complementary hues score as diverse).
+ */
+export function chaosPaletteOccupancy(
+  cells: ArrayLike<number>,
+  current: RgbField,
+): number {
+  const n = cells.length;
+  if (n <= 0) return 0;
+  const counts = new Float64Array(CHAOS_PALETTE_BINS);
+  for (let c = 0; c < n; c++) {
+    const i = cells[c]!;
+    const bin = textureColourBin(
+      current.r[i]!,
+      current.g[i]!,
+      current.b[i]!,
+    );
+    counts[textureHueKey(bin)]! += 1;
+  }
+  let H = 0;
+  for (let k = 0; k < CHAOS_PALETTE_BINS; k++) {
+    const p = counts[k]! / n;
+    if (p > 0) H -= p * Math.log2(p);
+  }
+  return clamp01(1 - H / CHAOS_PALETTE_HMAX);
 }
 
 function textureIslandId(hueBin: number, islandOrdinal: number): number {

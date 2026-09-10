@@ -17,6 +17,11 @@ function assert(label, ok) {
   }
 }
 
+const fieldObsSrc = readFileSync(join(root, "src/field/FieldObserver.ts"), "utf8");
+assert(
+  "observer measures chaos palette occupancy",
+  /chaosPaletteOccupancy/.test(fieldObsSrc) && /chaosPaletteEma/.test(fieldObsSrc),
+);
 const main = readFileSync(join(root, "src/main.ts"), "utf8");
 const schedSrc = readFileSync(join(root, "src/field/GrainScheduler.ts"), "utf8");
 const audioSrc = readFileSync(join(root, "src/audio/AudioEngine.ts"), "utf8");
@@ -77,6 +82,12 @@ assert(
 assert(
   "unified continuous law",
   /order/.test(schedSrc) && /DUR_MIN/.test(schedSrc) && /grainMaterial/.test(schedSrc),
+);
+assert(
+  "chaos palette occupancy raises time-order (capped at FLOW_ORDER_MAX)",
+  /CHAOS_PALETTE_WEIGHT/.test(schedSrc) &&
+    /paletteT/.test(schedSrc) &&
+    /FLOW_ORDER_MAX/.test(schedSrc),
 );
 assert(
   "δ-weighted chaos spawn",
@@ -227,7 +238,7 @@ async function runtimeScheduler() {
     return;
   }
 
-  const { FieldObserver } = fieldMod;
+  const { FieldObserver, chaosPaletteOccupancy } = fieldMod;
   const { GrainScheduler, GRAIN_BUDGET, SCHED, FLOW_ID_BASE } = schedMod;
   const w = 32;
   const h = 32;
@@ -568,6 +579,130 @@ async function runtimeScheduler() {
     `full-chaos concurrent fills area share (peak ${peakFullChaos} ≥ ${chaosShareFloor}, δ̄=${chaosObs.chaotic.meanDelta.toFixed(3)} t=${deltaT.toFixed(2)})`,
     peakFullChaos >= chaosShareFloor,
   );
+
+  // Limited-palette chaos: occupancy is a bag measurement; at matched δ it
+  // lengthens tails into the flow mid-band without becoming a calm wash.
+  {
+    const cells = new Uint32Array(n);
+    for (let i = 0; i < n; i++) cells[i] = i;
+    const twoHue = makeField((r, g, b, i) => {
+      const on = i % 2 === 0;
+      r[i] = on ? 0.95 : 0.05;
+      g[i] = on ? 0.12 : 0.85;
+      b[i] = on ? 0.08 : 0.9;
+    });
+    const mixed = makeField((r, g, b, i) => {
+      r[i] = ((i * 17) % 97) / 97;
+      g[i] = ((i * 31) % 89) / 89;
+      b[i] = ((i * 13) % 83) / 83;
+    });
+    const palTwo = chaosPaletteOccupancy(cells, twoHue);
+    const palMix = chaosPaletteOccupancy(cells, mixed);
+    assert(
+      `two complementary hues score high paletteT (${palTwo.toFixed(2)} > 0.55)`,
+      palTwo > 0.55,
+    );
+    assert(
+      `mixed RGB scramble scores low paletteT (${palMix.toFixed(2)} < 0.25)`,
+      palMix < 0.25,
+    );
+
+    const meanDelta = SCHED.deltaRateNorm;
+    function chaosOnlyObs(paletteT) {
+      const delta = new Float32Array(n);
+      delta.fill(meanDelta);
+      return {
+        width: w,
+        height: h,
+        delta,
+        deltaSmooth: delta,
+        similarity: new Float32Array(n),
+        coherence: new Float32Array(n),
+        coherent: [],
+        textured: {
+          area: 0,
+          meanDelta: 0,
+          meanCoherence: 0,
+          meanSimilarity: 0,
+          meanR: 0,
+          meanG: 0,
+          meanB: 0,
+          colourSpread: 0,
+          cells: new Uint32Array(0),
+        },
+        texturedGroups: [],
+        oscillators: [],
+        flows: [],
+        meanDelta,
+        meanCoherence: 0,
+        calmAreaFraction: 0,
+        chaosAreaFraction: 1,
+        texturedAreaFraction: 0,
+        flowAreaFraction: 0,
+        flowRejects: {},
+        chaotic: {
+          area: n,
+          meanDelta,
+          meanCoherence: 0,
+          meanSimilarity: 0.2,
+          paletteT,
+          maxDelta: meanDelta,
+          cells,
+          clusters: [
+            {
+              id: 1,
+              area: n,
+              comX: w / 2,
+              comY: h / 2,
+              width: w,
+              height: h,
+              compact: true,
+              meanDelta,
+              maxDelta: meanDelta,
+              meanSimilarity: 0.2,
+              meanR: 0.5,
+              meanG: 0.5,
+              meanB: 0.5,
+              paletteT,
+              cells,
+            },
+          ],
+        },
+      };
+    }
+    function meanChaosDur(paletteT) {
+      const sched = new GrainScheduler(GRAIN_BUDGET);
+      const obs = chaosOnlyObs(paletteT);
+      const rgb = makeField((r, g, b) => {
+        r.fill(0.8);
+        g.fill(0.2);
+        b.fill(0.15);
+      });
+      let sum = 0;
+      let count = 0;
+      let now = 40000;
+      for (let t = 0; t < 90; t++) {
+        now += 1000 / 30;
+        const batch = sched.step(obs, rgb, now);
+        for (const e of batch.events) {
+          if (e.regime !== "chaos") continue;
+          sum += e.durationSec;
+          count += 1;
+        }
+      }
+      return count > 0 ? sum / count : 0;
+    }
+    const durMix = meanChaosDur(0);
+    const durPal = meanChaosDur(0.85);
+    assert(
+      `limited palette lengthens chaos grains at matched δ (${(durPal * 1000).toFixed(0)}ms > ${(durMix * 1000).toFixed(0)}ms × 1.4)`,
+      durPal > durMix * 1.4 && durMix > 0,
+    );
+    assert(
+      `paletted chaos stays below calm wash (${durPal.toFixed(3)}s < 0.45s, cap FLOW_ORDER_MAX)`,
+      durPal < 0.45,
+    );
+  }
 
   // Region tracks carry COM + grid size; calm grains carry spawn offset for direct follow.
   const trackFo = new FieldObserver(w, h);

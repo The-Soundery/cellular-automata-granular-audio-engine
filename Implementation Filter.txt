@@ -65,6 +65,9 @@ STOP — do not revive
   choir) — packing rate uses bag-mean duration; per-grain length sprays from
   raw cell δ (CHAOS_DUR_SPREAD / CHAOS_DUR_EXP). Do not “fix” by banking
   chaosAcc up to desiredChaos or by naive endMs = offset+duration fill.
+- Mapping the spawn cell’s RGB / hue onto chaos envelope. Palette occupancy
+  of the chaotic *area* (occupied-hue entropy) may raise time-order; the
+  cell’s colour still only picks the sample window.
 - Wrapping follow Y (or flow heading in raw grid coords) at the torus seam.
   Pan already saturates; Y wrap jumped the bandpass 80 Hz↔12 kHz. Heading
   projection is toroidal about COM so a straddling pack keeps its length
@@ -95,11 +98,20 @@ Closed — do not reopen without new evidence
   verify / live listening, not on the HUD.
 - Frozen-and-detailed vs still-and-uniform are different materials.
 - Percussive chaos + blinker envelope: 0.04/0.2 left alone — do not “harmonise”.
-- Chaos duration spray: packing rate = share / durationChaosMean(δ̄); each
-  spawn’s duration = meanDur × clamp((bagδ̄/rawCellδ)^CHAOS_DUR_EXP,
-  1/SPREAD, SPREAD). Envelope/Q still from smoothed δ. Accumulators seed
-  random and leftover clamps to 3 (no catch-up volley) — now one per
-  chaotic area, same closed semantics. Oscillators stay pulse-locked.
+- Chaos duration spray: packing rate = share / durationChaosMean(δ̄, paletteT);
+  each spawn’s duration = meanDur × clamp((bagδ̄/rawCellδ)^CHAOS_DUR_EXP,
+  1/SPREAD, SPREAD). Envelope/Q still from smoothed δ (+ paletteT on chaos
+  bags). Accumulators seed random and leftover clamps to 3 (no catch-up
+  volley) — now one per chaotic area, same closed semantics. Oscillators
+  stay pulse-locked.
+- Chaos palette occupancy: occupied-hue entropy of each chaotic area
+  (grey + 12 hue bins, same as texture) → paletteT ∈ [0,1] (1 = few hues).
+  EMA on COM-matched cluster id (chaosPaletteEma). Raises chaos time-order
+  by CHAOS_PALETTE_WEIGHT × paletteT, capped at FLOW_ORDER_MAX — longer
+  tails for limited-palette chaos, mixed scramble unchanged, never a calm
+  wash. Spawn-cell HSV still picks the sample window (a few hues → a few
+  materials). Colour of a cell still does not set envelope, loudness, or
+  share.
 - Flow is similarity travel (colour correspondence), not pack-COM. Filled
   translating silhouettes stay calm (persist); gappy streams / dithered
   sheets are flow (hop). When pack COM jumps on a torus, velocity may keep
@@ -157,7 +169,8 @@ Observation: exclusive order Osc → Calm → Flow → leftover split by δ into
   minRegionArea stay silent — not promoted into Texture. Chaos bag is
   partitioned into connected chaotic areas (ChaosCluster, Chebyshev join;
   small fragments → one residual scatter entry) — spatial measurements with
-  COM-matched ids for rate-clock phase, never owners.
+  COM-matched ids for rate-clock phase, never owners. Each area measures
+  palette occupancy (occupied-hue entropy → paletteT).
   Region id matching / velocity ignore torus-degenerate COM axes
   (regionComResultantMin — absolute circular resultant, NOT conc-relative:
   a full-height mass has float-noise COM; a near-wrapping strip does not).
@@ -169,7 +182,8 @@ Scheduler: five pools (calm / texture / chaos / osc / flow); area-share
   overflow); chaos spent per chaotic area (sub-share ∝ area, rate ∝ own δ̄,
   duration from own bag stats; residual bag included; global share + budget
   still the ceilings; compact ChaosCluster AABB height → Q like calm,
-  residual scatter stays one-row); flow piece-spawn + FLOW_ID_BASE tracks;
+  residual scatter stays one-row; chaos paletteT → time-order cap
+  FLOW_ORDER_MAX); flow piece-spawn + FLOW_ID_BASE tracks;
   texture colour groups use TEXTURE_ID_BASE (hue×island spatial ids);
   timeOrder→dur/env, shape extent→Q (needles blend AABB height toward
   minor-axis thickness; filled slabs keep height; compactness blends
@@ -234,8 +248,8 @@ Negotiable (not doctrine):
   stitchHeadingCos/trackHeadingCos/modeWakeFrac/hueEps/chromaEps;
   confirmed tracks freeze hop/density EMA on emit-poison samples),
   region colour eps (flowColourEps stays 0.12 — no tint join),
-  chaosClusterJoin≈2 / chaosClusterMinArea≈16 / chaosClusterMax≈24,
-  regionComResultantMin≈2, …
+  chaosClusterJoin≈2 / chaosClusterMinArea≈16 / chaosClusterMax≈24 /
+  chaosPaletteEma≈0.22, regionComResultantMin≈2, …
 - SCHED — DUR_MIN 0.03, DUR_MAX 2, ATT_MIN 0.02, ATT_MAX 0.30,
   ATT_ABS_MAX_S 0.22, CALM_FILL_S 0.3, FLOW_FILL_S 0.15,
   REL_CHAOS 0.98, REL_CALM 0.34, Q_MIN≈0.1, Q_MAX≈26 (shape extent → Q),
@@ -249,7 +263,8 @@ Negotiable (not doctrine):
   TEXTURE_ID_BASE 2e6, FLOW_TRAVEL_DUR_BLEND 1, FLOW_DUR_SPREAD 1.5,
   FLOW_DUR_EXP 1.0, maxCalmConcurrent/textureMaxConcurrent 64,
   calmPackRateMin 1.0, CHAOS_EVENTS_MAX_HZ 4000, CHAOS_DUR_SPREAD 1.7,
-  CHAOS_DUR_EXP 1.0, deltaRateNorm 0.35 (← chaos live-balance lever),
+  CHAOS_DUR_EXP 1.0, CHAOS_PALETTE_WEIGHT 0.32, deltaRateNorm 0.35
+  (← chaos live-balance lever),
   SPAWN_SPREAD_*, SPAWN_SLOT_Z_MAX, SPAWN_SNAP_MAX_RING, SPAWN_ANCHOR_R_MIN,
   SITE_SALT_*, rhythm_*, oscBurstMax
 - Spectral — CENTROID_HOP_SEC, analysis FFT, MEL_BANDS≈24, SILENCE_GATE_DB
@@ -275,13 +290,14 @@ Harnesses:
 - verify-phase2.mjs — flow spend / FLOW_ID_BASE / mid duration band /
   hop2 period-2 pulse; wrapping glider trailing edge; worklet Y-seam saturate;
   worklet Q follows track qExtent (window frozen); merge packing inherit;
-  death short-release
+  death short-release; chaos palette occupancy → longer tails at matched δ
 - verify-phase4.mjs — polar / stereo / absolute Y; absolute colour→material;
   segment start/end bounds; silence gate; timbre neighbourhood;
   scale-layer / loop tightness / edge-AM helpers; measureShape
   line-vs-blob; qExtentFromShape needle vs slab; Q follow in Brief
 - investigate-scenarios.mjs — events, shares, sampleCenter, eventFlux (Y/Q);
-  Stage 5: chaos duration p95/p5 spray + chaos-blob-2pct ~1 hit/step
+  Stage 5: chaos duration p95/p5 spray + chaos-blob-2pct ~1 hit/step +
+  palette-chaos tails vs full-flicker
 - probe-see-hear.mjs — silent structures, osc spatial vs periods, texture
   islands, lifecycle vs audio, motion-without-track
 - probe-typeu-see-hear.mjs — 4 random depth-1 + 4 depth-2 Type-U, settle
